@@ -36,6 +36,7 @@ import type {
   Classification,
   Policy,
   Assessment,
+  CompletionTerminal,
 } from './types.js';
 import type { ProviderId } from '../providers/port.js';
 import { route, type CapabilityRouteContext, type CapabilityTaskSignals } from './route.js';
@@ -57,6 +58,7 @@ import { buildSharedContextBlockOptions } from './context-block-options.js';
 import {
   runCandidateQualityGate,
   buildVerifyReceiptEvents,
+  attachTerminalCompletionIfFlag,
   type AcceptedRunSessionData,
   type CandidateResult,
 } from './accept-stage.js';
@@ -1480,11 +1482,16 @@ export async function* runPanel(
 
   let totalCostUsd = 0;
   let attempts = 0;
+  const terminalFinal = (
+    final: Extract<CoreEvent, { readonly type: 'final' }>,
+    terminal: CompletionTerminal,
+  ): Extract<CoreEvent, { readonly type: 'final' }> =>
+    attachTerminalCompletionIfFlag({ deps, final, task, terminal });
 
   // Early abort: nothing ran yet.
   if (signal.aborted) {
     yield { type: 'notice', level: 'warn', message: 'cancelled' };
-    yield {
+    yield terminalFinal({
       type: 'final',
       success: false,
       output: 'Task was cancelled before it started.',
@@ -1493,7 +1500,7 @@ export async function* runPanel(
       sessionId: deps.session.id,
       attempts,
       ...(signal.aborted ? { canceled: true } : {}),
-    };
+    }, 'cancelled');
     return;
   }
 
@@ -1637,7 +1644,7 @@ export async function* runPanel(
   // Cancellation during candidate runs → stop honestly.
   if (signal.aborted) {
     yield { type: 'notice', level: 'warn', message: 'cancelled' };
-    yield {
+    yield terminalFinal({
       type: 'final',
       success: false,
       output: 'Task was cancelled.',
@@ -1646,7 +1653,7 @@ export async function* runPanel(
       sessionId: deps.session.id,
       attempts,
       ...(signal.aborted ? { canceled: true } : {}),
-    };
+    }, 'cancelled');
     return;
   }
 
@@ -1666,7 +1673,7 @@ export async function* runPanel(
 
   if (succeeded.length === 0) {
     // Every panelist failed — nothing to synthesize. Surface the last error.
-    yield {
+    yield terminalFinal({
       type: 'final',
       success: false,
       output:
@@ -1678,7 +1685,7 @@ export async function* runPanel(
       attempts,
       ...(lastErrored !== undefined ? { errorCategory: lastErrored.category } : {}),
       ...(lastErroredProvider !== undefined ? { provider: lastErroredProvider } : {}),
-    };
+    }, 'failed');
     return;
   }
 
@@ -1925,7 +1932,7 @@ export async function* runPanel(
 
   if (synthOutcome.canceled) {
     yield { type: 'notice', level: 'warn', message: 'cancelled' };
-    yield {
+    yield terminalFinal({
       type: 'final',
       success: false,
       output: 'Task was cancelled.',
@@ -1934,7 +1941,7 @@ export async function* runPanel(
       sessionId: deps.session.id,
       attempts,
       ...(synthOutcome.canceled ? { canceled: true } : {}),
-    };
+    }, 'cancelled');
     return;
   }
 
@@ -2014,7 +2021,7 @@ export async function* runPanel(
 
   if (!synthSuccess) {
     // The synthesizer itself failed; surface honestly rather than ship its error.
-    yield {
+    yield terminalFinal({
       type: 'final',
       success: false,
       output: synthText,
@@ -2028,7 +2035,7 @@ export async function* runPanel(
         ? { errorCategory: synthOutcome.errored.category }
         : {}),
       provider: plan.synthesizer,
-    };
+    }, 'failed');
     return;
   }
 

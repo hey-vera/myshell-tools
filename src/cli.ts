@@ -363,8 +363,7 @@ function welcome(deps: OrchestrateDeps, color: boolean): string {
     );
   }
   return dim(
-    'No providers detected.  Install Claude Code or Codex, then run: myshell-tools login  ' +
-      '(diagnose: myshell-tools status --fix)',
+    'No providers detected.  Install Claude Code or Codex, then run: myshell-tools login',
     color,
   );
 }
@@ -513,7 +512,7 @@ async function main(): Promise<void> {
   // Health check — surfaced automatically in the control panel, so this is no
   // longer an advertised command. Kept as a hidden, scriptable entry point for
   // support/CI; `status` and `check` are friendlier aliases for the old
-  // `doctor` name (which still works for muscle-memory / existing scripts).
+  // `doctor` name (legacy/hidden; still accepted for muscle-memory and existing scripts/CI).
   if (args[0] === 'doctor' || args[0] === 'status' || args[0] === 'check') {
     const fix = args.includes('--fix');
     process.exit(await runDoctor(out, fix ? { fix: true } : undefined));
@@ -876,6 +875,7 @@ async function main(): Promise<void> {
     // ENVIRONMENT / repo-map orientation block (E1, codebase-awareness §1.2):
     // gather the deterministic block once for the one-shot run. Fully fail-soft
     // (→ ''), NO model call. Kill-switch: config.codebaseAwareness === false → skip.
+    // (Phase1 seam: render now carries compact symbols via ranker; reuses ENV cap.)
     const environmentContext =
       config.codebaseAwareness === false
         ? ''

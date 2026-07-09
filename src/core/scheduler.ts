@@ -45,7 +45,7 @@
  * (same as ensemble/hedge): no fs/child_process, no Date.now/Math.random.
  */
 
-import type { CoreEvent } from './types.js';
+import type { CompletionResultV1, CompletionTerminal, CoreEvent, DeliveryQualityResult, CompletionVerification } from './types.js';
 import type { ProviderId } from '../providers/port.js';
 import { pressureFromSignals, type QuotaPressure } from './capability-budget.js';
 import { availableAfterCooldown, cooldownExpiry } from './cooldown.js';
@@ -252,6 +252,10 @@ export interface ScheduleDeps {
    * Dependency skip finals include a blocked record with dependency_blocked code.
    */
   readonly blockedStateV1?: boolean;
+  /** Additive terminal truth flag for scheduler-synthetic goal finals. */
+  readonly completionResultV1?: boolean;
+  /** Deterministic ISO clock for CompletionResultV1; absent degrades to 'unknown'. */
+  readonly isoNow?: () => string;
 }
 
 /**
@@ -350,6 +354,76 @@ export async function* runSchedule(
         setTimeout(resolve, Math.max(0, ms));
       }));
   const authedCount = deps.authedProviders.length;
+  const buildSchedulerCompletionResult = (
+    spec: GoalSpec,
+    final: Extract<CoreEvent, { readonly type: 'final' }>,
+    terminal: CompletionTerminal,
+  ): CompletionResultV1 => {
+    const verification: CompletionVerification = {
+      status: terminal === 'blocked' || terminal === 'failed' ? 'failing' : 'not-applicable',
+      testEvidence: { status: 'not-needed' },
+      repair: { attempted: false, attempts: 0, maxAttempts: 0, retestedAfterLastRepair: false, finalAttemptChangedPaths: [] },
+      factualClaims: [],
+      obligationsSatisfied: [],
+      obligationsUnmet: terminal === 'blocked'
+        ? ['scheduler did not start this goal because a prerequisite failed']
+        : terminal === 'failed'
+          ? ['scheduler goal phase did not complete']
+          : [],
+      ruleCodes: terminal === 'cancelled' ? ['cancelled'] : ['not-applicable'],
+    };
+    const deliveryQuality: DeliveryQualityResult = {
+      status: final.output.trim().length > 0 ? 'passed' : 'failed',
+      checked: false,
+      issues: final.output.trim().length > 0 ? [] : [{ code: 'unsafe-or-confusing', message: 'scheduler synthetic final had no user-visible output' }],
+      nextActionNamed: terminal === 'blocked',
+      userVisibleSummary: 'scheduler synthetic terminal event',
+    };
+    const goalId = spec.id.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 32) || 'goal';
+    return {
+      version: 1,
+      id: `cr-${goalId}-scheduler-${final.attempts}`.slice(0, 63),
+      turnId: spec.id,
+      sessionId: spec.id,
+      createdAt: deps.isoNow?.() ?? 'unknown',
+      scope: 'goal-work',
+      terminal,
+      objective: spec.title.slice(0, 120),
+      doneCondition: null,
+      output: final.output,
+      success: terminal === 'done' || terminal === 'answered' ? final.success : false,
+      bestEffort: true,
+      verification,
+      deliveryQuality,
+      worktree: {
+        baseline: 'unknown',
+        baselineEntries: [],
+        changedByAssistant: [],
+        excludedPreExisting: [],
+        concurrentUserEdits: [],
+        conflictPaths: [],
+      },
+      goalSettlement: { allowed: false, state: terminal === 'blocked' ? 'blocked' : terminal === 'cancelled' ? 'needs-user' : 'none', reason: terminal },
+      replayPolicy: {
+        replay: terminal === 'cancelled' ? 'needs-user' : terminal === 'blocked' ? 'repair-only' : 'unknown',
+        reason: terminal === 'cancelled'
+          ? 'scheduler was cancelled before the goal settled'
+          : terminal === 'blocked'
+            ? 'resolve prerequisite goal before replaying this goal'
+            : 'scheduler synthetic failure requires inspection',
+      },
+      receipt: { lines: [] },
+      upstream: {},
+    };
+  };
+  const terminalFinal = (
+    spec: GoalSpec,
+    final: Extract<CoreEvent, { readonly type: 'final' }>,
+    terminal: CompletionTerminal,
+  ): Extract<CoreEvent, { readonly type: 'final' }> =>
+    deps.completionResultV1 === true
+      ? { ...final, completionResult: buildSchedulerCompletionResult(spec, final, terminal) }
+      : final;
 
   // [LOW-8] Reject duplicate goal ids up front: two specs sharing an id would
   // silently clobber the workers Map (leaking a goal) and cross-tag events. Fail
@@ -592,7 +666,7 @@ export async function* runSchedule(
             : null;
           events.push(
             tagEvent(
-              {
+              terminalFinal(q.spec, {
                 type: 'final',
                 success: false,
                 output: `goal "${q.spec.title}" skipped — a prerequisite goal failed`,
@@ -601,7 +675,7 @@ export async function* runSchedule(
                 sessionId: '',
                 attempts: 0,
                 ...(blockedTag !== null ? { blocked: blockedTag } : {}),
-              },
+              }, 'blocked'),
               q.spec.id,
             ),
           );
@@ -668,7 +742,7 @@ export async function* runSchedule(
       if (signal.aborted) {
         for (const [wid, w] of workers) {
           yield tagEvent(
-            {
+            terminalFinal(w.spec, {
               type: 'final',
               success: false,
               output: `goal "${w.spec.title}" canceled`,
@@ -677,7 +751,7 @@ export async function* runSchedule(
               sessionId: '',
               attempts: 0,
               canceled: true,
-            },
+            }, 'cancelled'),
             wid,
           );
         }
@@ -696,7 +770,7 @@ export async function* runSchedule(
         // Then break; the `finally` aborts controllers + .return()s the generators.
         for (const [wid, w] of workers) {
           yield tagEvent(
-            {
+            terminalFinal(w.spec, {
               type: 'final',
               success: false,
               output: `goal "${w.spec.title}" canceled`,
@@ -705,7 +779,7 @@ export async function* runSchedule(
               sessionId: '',
               attempts: 0,
               canceled: true,
-            },
+            }, 'cancelled'),
             wid,
           );
         }
@@ -723,7 +797,7 @@ export async function* runSchedule(
         workers.delete(id);
         const message = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
         yield tagEvent(
-          {
+          terminalFinal(worker?.spec ?? { id, title: id }, {
             type: 'final',
             success: false,
             output: `goal "${worker?.spec.title ?? id}" crashed: ${message}`,
@@ -731,7 +805,7 @@ export async function* runSchedule(
             totalCostUsd: 0,
             sessionId: '',
             attempts: 0,
-          },
+          }, 'failed'),
           id,
         );
         if (worker !== undefined) {

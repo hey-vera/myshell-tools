@@ -1,8 +1,9 @@
 import type { OutputSink } from './render.js';
 import type { Confirm } from './menu-key-confirm.js';
-import { readMenuKey } from './menu-key-confirm.js';
+import { readMenuKey, NAV_ESC, NAV_LEFT, getMenuStack } from './menu-key-confirm.js';
 import { readSecretLine } from './menu-secret-input.js';
 import { dim, bold, yellow } from '../ui/theme.js';
+import { navFooterText } from './ui/nav-footer.js';
 import type { ReadlineEchoController } from './menu-readline.js';
 import type { Clock } from '../core/types.js';
 import {
@@ -42,12 +43,15 @@ async function selectPoolScreen(
   readLine: () => Promise<string | null>,
   inkReadKey?: () => Promise<string>,
 ): Promise<OpencodePool | null> {
+  out.beginFrame?.();
   out.write('\nChoose pool:\n\n');
   out.write('  [z] Zen\n');
   out.write('  [g] Go\n');
   out.write('  [b] back\n\n');
   out.write('> ');
+  out.endFrame?.();
   const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+  if (key === NAV_ESC) { getMenuStack().requestExit(); return null; }
   if (key === 'z') return 'zen';
   if (key === 'g') return 'go';
   return null;
@@ -191,8 +195,10 @@ async function editAccountScreen(
   account: OpencodeSubscriptionAccount,
   inkReadKey?: () => Promise<string>,
 ): Promise<void> {
+  getMenuStack().push();
   for (;;) {
     const expiryDisplay = account.expiresAt ? account.expiresAt.slice(0, 10) : '-';
+    out.beginFrame?.();
     out.write(`\n${bold('Edit OpenCode Account: ' + account.label, out.color)}\n\n`);
     out.write(`  pool: ${account.pool}\n`);
     out.write(`  priority: ${account.priority} (weight=${account.priorityWeight})\n`);
@@ -202,11 +208,14 @@ async function editAccountScreen(
     out.write('  [x] set/clear expiry\n');
     out.write('  [t] toggle enabled\n');
     out.write('  [d] delete\n');
-    out.write('  [b] back\n\n');
+    out.write(`  [b] back  (${navFooterText('back-and-exit', out.color)})\n\n`);
     out.write('> ');
+    out.endFrame?.();
     const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
 
-    if (key === null || key === 'b') return;
+    if (key === null || key === 'b') { getMenuStack().pop(); return; }
+    if (key === NAV_ESC) { getMenuStack().requestExit(); return; }
+    if (key === NAV_LEFT) { getMenuStack().pop(); return; }
 
     if (key === 'p') {
       const sel = await prioritySelectScreen(out, readLine, inkReadKey);
@@ -294,6 +303,7 @@ async function prioritySelectScreen(
   readLine: () => Promise<string | null>,
   inkReadKey?: () => Promise<string>,
 ): Promise<AccountPriority | 'custom' | null> {
+  out.beginFrame?.();
   out.write('\nPriority:\n\n');
   out.write('  [l] low (25)\n');
   out.write('  [m] medium (100)\n');
@@ -302,7 +312,9 @@ async function prioritySelectScreen(
   out.write('  [d] disabled\n');
   out.write('  [b] back\n\n');
   out.write('> ');
+  out.endFrame?.();
   const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+  if (key === NAV_ESC) { getMenuStack().requestExit(); return null; }
   if (key === 'l') return 'low';
   if (key === 'm') return 'medium';
   if (key === 'h') return 'high';
@@ -315,7 +327,9 @@ async function customWeightPrompt(
   out: OutputSink,
   readLine: () => Promise<string | null>,
 ): Promise<number | null> {
+  out.beginFrame?.();
   out.write('\nCustom weight (0..1000, 0=disabled): ');
+  out.endFrame?.();
   out.flush?.();
   const raw = await readLine();
   if (raw === null || raw.trim().length === 0) return null;
@@ -334,13 +348,16 @@ async function expirySelectScreen(
   inkReadKey?: () => Promise<string>,
 ): Promise<string | undefined> {
   const currentDisplay = currentExpiry ? currentExpiry.slice(0, 10) : 'none';
+  out.beginFrame?.();
   out.write(`\nExpiry: currently ${currentDisplay}\n\n`);
   out.write('  [s] set\n');
   out.write('  [c] clear\n');
   out.write('  [b] back\n\n');
   out.write('> ');
+  out.endFrame?.();
   const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
 
+  if (key === NAV_ESC) { getMenuStack().requestExit(); return currentExpiry; }
   if (key === 'c') return undefined;
   if (key === 's') {
     out.write('\nExpiry date (YYYY-MM-DD): ');
@@ -394,6 +411,7 @@ export async function runOpencodeAccountsMenu(
   clock: Clock,
   inkReadKey?: () => Promise<string>,
 ): Promise<void> {
+  getMenuStack().push();
   for (;;) {
     let allAccounts: readonly SubscriptionAccount[];
     try {
@@ -404,6 +422,7 @@ export async function runOpencodeAccountsMenu(
     }
     const accounts = allAccounts.filter(isOpencodeAccount);
 
+    out.beginFrame?.();
     out.write('\n' + bold('OpenCode Accounts', out.color) + '\n');
 
     if (accounts.length === 0) {
@@ -423,11 +442,14 @@ export async function runOpencodeAccountsMenu(
     if (accounts.length > 0) {
       out.write('  [e] edit\n');
     }
-    out.write('  [b] back\n\n');
+    out.write(`  [b] back  (${navFooterText('back-and-exit', out.color)})\n\n`);
     out.write('> ');
+    out.endFrame?.();
     const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
 
-    if (key === null || key === 'b') return;
+    if (key === null || key === 'b') { getMenuStack().pop(); return; }
+    if (key === NAV_ESC) { getMenuStack().requestExit(); return; }
+    if (key === NAV_LEFT) { getMenuStack().pop(); return; }
 
     if (key === 'c') {
       await createAccountFlow(out, readLine, readlineEcho, clock, inkReadKey);

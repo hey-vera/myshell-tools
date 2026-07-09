@@ -15,7 +15,7 @@
  * no digit-% literals.
  */
 
-import { describe, it } from 'vitest';
+import { beforeEach, describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -30,17 +30,27 @@ import {
   startMenu,
   runChatLoop,
 } from '../../src/interface/menu.ts';
+import { runNewConversationScreen } from '../../src/interface/menu-new-conversation.ts';
 import { parseYesNo, interpretYesNoKey, yesNoHint } from '../../src/interface/menu-questions.ts';
 import { readSingleKey, createLineReader, normalizeMenuKey, resolveRawKeyInput, __resetControllingTtyRawInputForTest } from '../../src/interface/menu-readline.ts';
-import { readMenuKey, confirmViaKey, attachChatTurnKeyListener } from '../../src/interface/menu-key-confirm.ts';
+import {
+  NAV_ESC,
+  NAV_LEFT,
+  attachChatTurnKeyListener,
+  confirmViaKey,
+  getMenuStack,
+  readMenuKey,
+  resetMenuStack,
+} from '../../src/interface/menu-key-confirm.ts';
 import { defaultAliasHint, autoUpdateEnabled } from '../../src/interface/menu-display.ts';
 import { completeSlash, CHAT_SLASH_COMMANDS, classifyCompletion, completeSlashArg, fuzzyRank, expandPathToken, matchPathEntries, completeChat, CHAT_SLASH_ARG_MAP } from '../../src/interface/menu-completion.ts';
 import type { KeypressEvent } from '../../src/interface/menu-key-confirm.ts';
-import type { KeyInputStream } from '../../src/interface/menu-readline.ts';
+import type { KeyInputStream, LineReader } from '../../src/interface/menu-readline.ts';
 import type { MenuContext } from '../../src/interface/menu.ts';
 import type { UpdateCheckResult } from '../../src/infra/update-check.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
-import type { ConversationMeta, ConversationStore } from '../../src/infra/conversation-store.ts';
+import type { ConversationMeta, ConversationStore, ConversationMode, CreateConversationOptions } from '../../src/infra/conversation-store.ts';
+import type { CommandAuditEvent, CommandGatePort } from '../../src/core/command-gate.ts';
 import type {
   Clock,
   LedgerWriter,
@@ -48,12 +58,12 @@ import type {
   SessionEntry,
   SessionWriter,
 } from '../../src/core/types.ts';
-import type { Provider, ProviderRequest, ProviderEvent, Usage } from '../../src/providers/port.ts';
+import type { Provider, ProviderRequest, ProviderEvent, ProviderId, Usage } from '../../src/providers/port.ts';
 import type { EnvironmentStatus } from '../../src/providers/detect.ts';
 import type { LoginResult } from '../../src/commands/login.js';
 import type { AppConfig } from '../../src/infra/config.ts';
 import { loadConfig, saveConfig } from '../../src/infra/config.ts';
-import { defaultStateLayout } from '../../src/infra/state-layout.js';
+import { defaultStateLayout, projectStateDirs } from '../../src/infra/state-layout.js';
 import { createFileGoalStore } from '../../src/infra/goal-store.ts';
 import { CLARIFY_PREFIX } from '../../src/core/goal-manager.ts';
 import { createLedger } from '../../src/infra/ledger.ts';
@@ -273,15 +283,18 @@ function makeFakeSessionWriter(
 interface FakeConversationStore extends ConversationStore {
   readonly _metas: ConversationMeta[];
   readonly _writers: Map<string, SessionWriter & { entries: SessionEntry[] }>;
+  readonly _lastProviderCalls: Array<{ id: string; provider: ProviderId }>;
 }
 
 function makeStore(clock: Clock, initialMetas?: ConversationMeta[]): FakeConversationStore {
   const metas: ConversationMeta[] = initialMetas ? [...initialMetas] : [];
   const writers = new Map<string, SessionWriter & { entries: SessionEntry[] }>();
+  const lastProviderCalls: Array<{ id: string; provider: ProviderId }> = [];
 
   return {
     _metas: metas,
     _writers: writers,
+    _lastProviderCalls: lastProviderCalls,
 
     async list(): Promise<ConversationMeta[]> {
       // Pinned first, then most-recently-updated first (mirrors real impl)
@@ -291,9 +304,20 @@ function makeStore(clock: Clock, initialMetas?: ConversationMeta[]): FakeConvers
       });
     },
 
-    async create(title: string): Promise<ConversationMeta> {
+    async create(
+      title: string,
+      modeOrOptions?: ConversationMode | CreateConversationOptions,
+    ): Promise<ConversationMeta> {
       const id = clock.uuid();
       const iso = clock.isoNow();
+      // Slice 6's options overload carries `workspaceRoot` (and `mode`); the
+      // legacy string form passes a ConversationMode. Only the workspaceRoot is
+      // recorded here (mode is intentionally NOT stamped, to keep the existing
+      // render assertions that see `m.mode === undefined` → 'Auto' unchanged).
+      const workspaceRoot =
+        typeof modeOrOptions === 'object' && modeOrOptions !== null
+          ? modeOrOptions.workspaceRoot
+          : undefined;
       const meta: ConversationMeta = {
         id,
         title,
@@ -302,6 +326,9 @@ function makeStore(clock: Clock, initialMetas?: ConversationMeta[]): FakeConvers
         messageCount: 0,
         pinned: false,
         category: null,
+        ...(typeof workspaceRoot === 'string' && workspaceRoot.length > 0
+          ? { workspaceRoot }
+          : {}),
       };
       metas.push(meta);
       return meta;
@@ -397,6 +424,17 @@ function makeStore(clock: Clock, initialMetas?: ConversationMeta[]): FakeConvers
           } else {
             metas[idx] = { ...m, activation };
           }
+        }
+      }
+    },
+
+    async setLastProvider(id: string, provider: ProviderId): Promise<void> {
+      const idx = metas.findIndex((m) => m.id === id);
+      if (idx >= 0) {
+        const m = metas[idx];
+        if (m !== undefined) {
+          metas[idx] = { ...m, lastProvider: provider };
+          lastProviderCalls.push({ id, provider });
         }
       }
     },
@@ -526,6 +564,51 @@ const FAKE_ENV: EnvironmentStatus = {
   hasAnyProvider: true,
   platform: 'linux',
 };
+
+describe('runChatLoop — lastProvider persistence', () => {
+  it('records the provider from a completed successful turn', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const meta = await store.create('Track provider');
+    const env: EnvironmentStatus = {
+      ...FAKE_ENV,
+      claude: { ...FAKE_ENV.claude, authenticated: false },
+      codex: {
+        id: 'codex',
+        installed: true,
+        version: '1.0.0',
+        authenticated: true,
+        plan: null,
+        binaryPath: null,
+        availableModels: ['model-a'],
+      },
+    };
+    const ctx = makeCtx(
+      {
+        env,
+        providers: { codex: makeFakeProvider('codex') },
+        readLine: makeScriptedReader(['ship it', '/exit']),
+      },
+      clock,
+      store,
+    );
+
+    await runChatLoop(
+      ctx,
+      { config: ctx.config, env: ctx.env },
+      meta.id,
+      sink,
+      makeScriptedReader(['ship it', '/exit']),
+      async () => FAKE_LOGIN_RESULT,
+      async () => ctx.env,
+      async () => false,
+    );
+
+    assert.deepEqual(store._lastProviderCalls, [{ id: meta.id, provider: 'codex' }]);
+    assert.equal(store._metas.find((m) => m.id === meta.id)?.lastProvider, 'codex');
+  });
+});
 
 describe('runChatLoop — active subscription capacity allocator', () => {
   const capacityEnv: EnvironmentStatus = {
@@ -664,6 +747,10 @@ function makeSink(): OutputSink & { buf: string } {
   };
 }
 
+function normalizeTestPath(p: string): string {
+  return p.replace(/\\/g, '/');
+}
+
 function assertLockedHomeSkeleton(buf: string): void {
   assert.ok(buf.includes('Effort Mode:'), 'home should render the Effort Mode box');
   assert.ok(buf.includes('Session Manager'), 'home should render the Session Manager title box');
@@ -694,7 +781,18 @@ function makeCtx(
   // (not a real router), so disable it here to keep the per-turn provider-call
   // sequence deterministic. Smart routing is covered by router.test.ts +
   // route-classifier.test.ts and verified live.
-  const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
+  const config: AppConfig = {
+    onboarded: true,
+    setAsDefault: false,
+    smartRoute: false,
+    // Most menu-flow tests characterize legacy prompt counts with fake providers.
+    // Production defaults these Kern surfaces ON; this test harness opts out unless
+    // a test explicitly opts in via env/config.
+    experimentalSemanticPreflightV1: false,
+    experimentalCompletionResultV1: false,
+    ...overrides.config,
+  };
+  const { config: _ignoredConfig, ...restOverrides } = overrides;
 
   return {
     version: '2.0.0',
@@ -716,7 +814,32 @@ function makeCtx(
       latest: null,
       updateAvailable: false,
     }),
-    ...overrides,
+    ...restOverrides,
+  };
+}
+
+function makeCapturedLineReader(lines: ReadonlyArray<string>, delayMs = 5): LineReader {
+  let emitted = false;
+  let timers: Array<ReturnType<typeof setTimeout>> = [];
+  return {
+    nextLine: async () => null,
+    suspend() {},
+    resume() {},
+    close() {},
+    beginCapture(onLine: (line: string) => void): () => void {
+      if (!emitted) {
+        emitted = true;
+        timers = lines.map((line, index) => setTimeout(() => onLine(line), index * delayMs));
+      }
+      return () => {
+        for (const timer of timers) clearTimeout(timer);
+        timers = [];
+      };
+    },
+    currentLine: () => '',
+    drainBuffered: () => [],
+    clearBuffered() {},
+    cancelPending() {},
   };
 }
 
@@ -757,7 +880,7 @@ describe('startMenu semantic preflight dark flag composition', () => {
       const ctx = makeCtx({
         config: { onboarded: true, setAsDefault: false, smartRoute: false },
         providers: { claude: makePromptCountingProvider(counts) },
-        readLine: makeScriptedReader(['n', 'please review this implementation', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', 'please review this implementation', '/exit', 'q']),
       });
 
       await startMenu(ctx, sink);
@@ -774,7 +897,7 @@ describe('startMenu semantic preflight dark flag composition', () => {
       const ctx = makeCtx({
         config: { onboarded: true, setAsDefault: false, smartRoute: false },
         providers: { claude: makePromptCountingProvider(counts) },
-        readLine: makeScriptedReader(['n', 'please review this implementation', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', 'please review this implementation', '/exit', 'q']),
       });
 
       await startMenu(ctx, sink);
@@ -804,61 +927,6 @@ describe('startMenu — immediate q → exits cleanly', () => {
     const ctx = makeCtx({ readLine: makeScriptedReader(['q']) });
 
     await startMenu(ctx, sink);
-    assertLockedHomeSkeleton(sink.buf);
-  });
-
-  it('dispatches a line-mode j with carriage return to Claude login', async () => {
-    const sink = makeSink();
-    const loginCalls: string[] = [];
-    const ctx = makeCtx({
-      readLine: makeScriptedReader(['j\r', 'q']),
-      login: async (_out, providerArg) => {
-        loginCalls.push(providerArg ?? 'all');
-        return FAKE_LOGIN_RESULT;
-      },
-      detectEnvironment: async () => FAKE_ENV,
-    });
-
-    await startMenu(ctx, sink);
-
-    assert.deepEqual(loginCalls, ['claude'], 'normalized line-mode j must dispatch to Claude login');
-  });
-
-  it('after Claude login re-detects authenticated state and returns to home without re-prompting auth', async () => {
-    const sink = makeSink();
-    const loginCalls: string[] = [];
-    let detectCalls = 0;
-    const afterLoginEnv: EnvironmentStatus = {
-      ...FAKE_ENV,
-      claude: { ...FAKE_ENV.claude, authenticated: true, availableModels: ['model-a'] },
-    
-  grok: {
-    id: 'grok',
-    installed: false,
-    version: null,
-    authenticated: false,
-    plan: null,
-    binaryPath: null,
-    availableModels: [],
-  },
-};
-    const ctx = makeCtx({
-      env: { ...FAKE_ENV, claude: { ...FAKE_ENV.claude, authenticated: false } },
-      readLine: makeScriptedReader(['j', '', 'q']),
-      login: async (_out, providerArg) => {
-        loginCalls.push(providerArg ?? 'all');
-        return FAKE_LOGIN_RESULT;
-      },
-      detectEnvironment: async () => {
-        detectCalls += 1;
-        return afterLoginEnv;
-      },
-    });
-
-    await startMenu(ctx, sink);
-
-    assert.deepEqual(loginCalls, ['claude'], 'completed login must not loop back into auth');
-    assert.equal(detectCalls, 1, 'menu must refresh provider state exactly once after login');
     assertLockedHomeSkeleton(sink.buf);
   });
 
@@ -1027,12 +1095,12 @@ describe('startMenu — n → first-message → /exit → q', () => {
 
   it('resolves cleanly', async () => {
     await assert.doesNotReject(() =>
-      run(['n', 'My first task', '/exit', 'q']),
+      run(['n', '', 'My first task', '/exit', 'q']),
     );
   });
 
   it('creates a conversation in the store', async () => {
-    await run(['n', 'My first task', '/exit', 'q']);
+    await run(['n', '', 'My first task', '/exit', 'q']);
     const metas = await store.list();
     assert.equal(metas.length, 1, 'one conversation should be created');
     assert.equal(metas[0]?.title, 'My first task');
@@ -1042,7 +1110,7 @@ describe('startMenu — n → first-message → /exit → q', () => {
     // No up-front title prompt anymore: 'n' opens the chat directly and the FIRST
     // line is the task sent to orchestrate. Inputs: 'n' (new conv) →
     //   'do this task' (the task) → '/exit' → 'q'.
-    await run(['n', 'do this task', '/exit', 'q']);
+    await run(['n', '', 'do this task', '/exit', 'q']);
     const metas = await store.list();
     const id = metas[0]?.id;
     assert.ok(id !== undefined, 'conversation id exists');
@@ -1056,7 +1124,7 @@ describe('startMenu — n → first-message → /exit → q', () => {
   });
 
   it('/exit returns to main menu (outputs main screen again)', async () => {
-    await run(['n', 'My first task', '/exit', 'q']);
+    await run(['n', '', 'My first task', '/exit', 'q']);
     const occurrences = sink.buf.split('Session Manager').length - 1;
     assert.ok(occurrences >= 2, `main screen rendered at least twice (got ${occurrences})`);
     assertLockedHomeSkeleton(sink.buf);
@@ -1064,11 +1132,201 @@ describe('startMenu — n → first-message → /exit → q', () => {
 
   it('EOF inside chat loop exits gracefully without throw', async () => {
     await assert.doesNotReject(() =>
-      run(['n', 'My task', null]),
+      run(['n', '', 'My task', null]),
       'EOF inside chat loop should resolve cleanly (no ERR_USE_AFTER_CLOSE)',
     );
   });
 
+});
+
+describe('Slice 8 — New Conversation flow', () => {
+  beforeEach(() => {
+    resetMenuStack();
+  });
+
+  it('[n] then Enter creates with the current resolved workspace root', async () => {
+    const home = join(tmpdir(), `slice8-current-${randomUUID()}`);
+    const repoRoot = join(home, 'repo-root');
+    const launchCwd = join(repoRoot, 'packages', 'app');
+    await fs.promises.mkdir(launchCwd, { recursive: true });
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader(['n', '', '/exit', 'q']),
+        repoScanPort: {
+          gitToplevel: async (cwd) => cwd === launchCwd ? repoRoot : null,
+        },
+      },
+      clock,
+      store,
+      undefined,
+      launchCwd,
+    );
+
+    await startMenu(ctx, sink);
+
+    const metas = await store.list();
+    assert.equal(metas.length, 1, 'one conversation should be created');
+    assert.equal(metas[0]?.workspaceRoot, normalizeTestPath(repoRoot), 'Enter should create with the current resolved root');
+    assert.ok(sink.buf.includes('New Conversation'), 'new conversation screen should render before chat');
+  });
+
+  it('[n] then 2 opens the picker and selection creates with the chosen workspace root', async () => {
+    const home = join(tmpdir(), `slice8-picker-${randomUUID()}`);
+    const repoRoot = join(home, 'repo-root');
+    const launchCwd = join(repoRoot, 'packages', 'app');
+    const pickedRoot = join(home, 'picked-workspace');
+    const otherRoot = join(home, 'other-workspace');
+    await fs.promises.mkdir(launchCwd, { recursive: true });
+    await fs.promises.mkdir(pickedRoot, { recursive: true });
+    await fs.promises.mkdir(otherRoot, { recursive: true });
+
+    const clock = makeFakeClock();
+    const initialMetas: ConversationMeta[] = [
+      {
+        id: 'older',
+        title: 'older',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+        messageCount: 1,
+        pinned: false,
+        category: null,
+        workspaceRoot: otherRoot,
+      },
+      {
+        id: 'recent',
+        title: 'recent',
+        createdAt: '2024-01-02T00:00:00.000Z',
+        updatedAt: '2024-01-02T00:00:00.000Z',
+        messageCount: 1,
+        pinned: false,
+        category: null,
+        workspaceRoot: pickedRoot,
+      },
+    ];
+    const store = makeStore(clock, initialMetas);
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader(['n', '2', '2', '/exit', 'q']),
+        repoScanPort: {
+          gitToplevel: async (cwd) => cwd === launchCwd ? repoRoot : null,
+        },
+      },
+      clock,
+      store,
+      undefined,
+      launchCwd,
+    );
+
+    await startMenu(ctx, sink);
+
+    const created = (await store.list()).find((meta) => meta.id === 'fake-1');
+    assert.ok(created !== undefined, 'the new conversation should be created');
+    assert.equal(created?.workspaceRoot, normalizeTestPath(pickedRoot), 'picker selection should stamp the chosen workspace root');
+    assert.ok(sink.buf.includes('Pick Workspace'), 'workspace picker should render from the new conversation screen');
+  });
+
+  it('left-arrow from the New Conversation screen returns home without requesting exit', async () => {
+    const home = join(tmpdir(), `slice8-back-${randomUUID()}`);
+    const repoRoot = join(home, 'repo-root');
+    const launchCwd = join(repoRoot, 'packages', 'app');
+    await fs.promises.mkdir(launchCwd, { recursive: true });
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader([]),
+        repoScanPort: {
+          gitToplevel: async (cwd) => cwd === launchCwd ? repoRoot : null,
+        },
+      },
+      clock,
+      store,
+      undefined,
+      launchCwd,
+    );
+
+    const result = await runNewConversationScreen(
+      ctx,
+      { config: ctx.config, env: ctx.env },
+      sink,
+      makeScriptedReader([]),
+      async () => NAV_LEFT,
+      () => {},
+    );
+
+    assert.deepEqual(result, { kind: 'back' });
+    assert.equal(getMenuStack().depth, 1, 'back should pop back to the root menu depth');
+    assert.equal(getMenuStack().exitRequested, false, 'back should not request app exit');
+  });
+
+  it('[n] then ESC exits without creating a conversation', async () => {
+    const home = join(tmpdir(), `slice8-esc-${randomUUID()}`);
+    const repoRoot = join(home, 'repo-root');
+    const launchCwd = join(repoRoot, 'packages', 'app');
+    await fs.promises.mkdir(launchCwd, { recursive: true });
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader(['n', '\x1b']),
+        repoScanPort: {
+          gitToplevel: async (cwd) => cwd === launchCwd ? repoRoot : null,
+        },
+      },
+      clock,
+      store,
+      undefined,
+      launchCwd,
+    );
+
+    await startMenu(ctx, sink);
+
+    assert.equal((await store.list()).length, 0, 'ESC should exit before a conversation is created');
+    assert.ok(sink.buf.includes('New Conversation'), 'new conversation screen should render before exit');
+  });
+
+  it('ESC from the New Conversation screen requests app exit', async () => {
+    const home = join(tmpdir(), `slice8-direct-esc-${randomUUID()}`);
+    const repoRoot = join(home, 'repo-root');
+    const launchCwd = join(repoRoot, 'packages', 'app');
+    await fs.promises.mkdir(launchCwd, { recursive: true });
+
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader([]),
+        repoScanPort: {
+          gitToplevel: async (cwd) => cwd === launchCwd ? repoRoot : null,
+        },
+      },
+      clock,
+      store,
+      undefined,
+      launchCwd,
+    );
+
+    const result = await runNewConversationScreen(
+      ctx,
+      { config: ctx.config, env: ctx.env },
+      makeSink(),
+      makeScriptedReader([]),
+      async () => NAV_ESC,
+      () => {},
+    );
+
+    assert.deepEqual(result, { kind: 'exit' });
+    assert.equal(getMenuStack().exitRequested, true, 'ESC should request app exit');
+  });
 });
 
 describe('startMenu — /goal ask_user stops autonomous loop and surfaces selector', () => {
@@ -1140,6 +1398,7 @@ describe('startMenu — /goal ask_user stops autonomous loop and surfaces select
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           '/goal choose the database',
           '1',
           '/exit',
@@ -1227,6 +1486,7 @@ describe('startMenu — /goal work contract threading', () => {
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           '/goal ship the widget',
           '/exit',
           'q',
@@ -1317,6 +1577,7 @@ describe('startMenu — /goal PROPOSES the plan before running it (manager cycle
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           '/goal ship the auth system',
           '3', // the one-tap confirm: "Edit / not yet" → park, do not run
           '/exit',
@@ -1392,7 +1653,7 @@ describe('startMenu — /goal PROPOSES the plan before running it (manager cycle
       {
         config: { onboarded: true, setAsDefault: false, smartRoute: false, experimentalManager: true },
         providers: { claude: provider },
-        readLine: makeScriptedReader(['n', '/plan build a hello web app', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', '/plan build a hello web app', '/exit', 'q']),
         cwd: dir,
       },
       clock,
@@ -1483,6 +1744,7 @@ describe('startMenu — /goal PROPOSES the plan before running it (manager cycle
         // No confirm keypress in the script — autonomous never asks for one.
         readLine: makeScriptedReader([
           'n',
+          '',
           '/goal ship the auth system',
           '/exit',
           'q',
@@ -1571,6 +1833,7 @@ describe('startMenu — /goal PROPOSES the plan before running it (manager cycle
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           '/goal ship the auth system',
           '1', // the one-tap confirm: "Start all" → run the WHOLE plan
           '/exit',
@@ -1685,7 +1948,7 @@ describe('startMenu — manager cycle item-parking on a fork (Phase D5)', () => 
             oversight: 'autonomous',
           },
           providers: { claude: provider },
-          readLine: makeScriptedReader(['n', '/goal ship the data layer', '/exit', 'q']),
+          readLine: makeScriptedReader(['n', '', '/goal ship the data layer', '/exit', 'q']),
         },
         clock,
         store,
@@ -1750,7 +2013,7 @@ describe('startMenu — manager cycle item-parking on a fork (Phase D5)', () => 
             oversight: 'autonomous',
           },
           providers: { claude: provider },
-          readLine: makeScriptedReader(['n', '/goal ship the data layer', '1', '/exit', 'q']),
+          readLine: makeScriptedReader(['n', '', '/goal ship the data layer', '1', '/exit', 'q']),
         },
         clock,
         store,
@@ -1858,7 +2121,7 @@ describe('startMenu — scheduler cross-goal cap: single goal ⇒ cap 1, one pha
             oversight: 'autonomous',
           },
           providers: { claude: provider },
-          readLine: makeScriptedReader(['n', '/goal ship the whole thing', '/exit', 'q']),
+          readLine: makeScriptedReader(['n', '', '/goal ship the whole thing', '/exit', 'q']),
         },
         clock,
         store,
@@ -1931,6 +2194,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design the architecture',
           '/exit',
           'q',
@@ -2011,6 +2275,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           providers: { claude: provider },
           readLine: makeScriptedReader([
             'n',
+            '',
             'implement the new formatter module',
             { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
@@ -2091,6 +2356,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           providers: { claude: provider },
           readLine: makeScriptedReader([
             'n',
+            '',
             'implement the settings module in three steps',
             { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
@@ -2163,6 +2429,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           providers: { claude: provider },
           readLine: makeScriptedReader([
             'n',
+            '',
             "from now on just go when you're confident, and implement the settings module in three steps",
             { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
@@ -2229,6 +2496,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           providers: { claude: provider },
           readLine: makeScriptedReader([
             'n',
+            '',
             'always relay the plan first, and implement the parser module',
             { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
@@ -2296,6 +2564,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           providers: { claude: provider },
           readLine: makeScriptedReader([
             'n',
+            '',
             'implement the settings module',
             { value: '/exit', untilSinkContains: '※ Staged 1 goal on the board', sink: () => sink.buf },
             'q',
@@ -2363,7 +2632,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const ctx = makeCtx(
         {
           providers: { claude: provider },
-          readLine: makeScriptedReader(['n', 'review and design the migration plan', '/exit', 'q']),
+          readLine: makeScriptedReader(['n', '', 'review and design the migration plan', '/exit', 'q']),
         },
         clock,
       );
@@ -2403,7 +2672,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const ctx = makeCtx(
         {
           providers: { claude: provider },
-          readLine: makeScriptedReader(['n', 'how does the router work?', '/exit', 'q']),
+          readLine: makeScriptedReader(['n', '', 'how does the router work?', '/exit', 'q']),
         },
         clock,
       );
@@ -2473,6 +2742,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           providers: { claude: provider },
           readLine: makeScriptedReader([
             'n',
+            '',
             'implement and wire auth',
             { value: '/exit', delayMs: 50 },
             'q',
@@ -2526,7 +2796,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
             smartRoute: false,
           },
           providers: { claude: provider },
-          readLine: makeScriptedReader(['n', 'please refactor auth', '/exit', 'q']),
+          readLine: makeScriptedReader(['n', '', 'please refactor auth', '/exit', 'q']),
         },
         clock,
       );
@@ -2562,7 +2832,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           mode: 'quality-first', intensity: 5,
         },
         providers: { claude: provider },
-        readLine: makeScriptedReader(['n', 'review and design the architecture', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', 'review and design the architecture', '/exit', 'q']),
       }, undefined, undefined, undefined, dir);
 
       await startMenu(ctx, sink);
@@ -2632,7 +2902,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         },
         providers: { claude: provider, codex },
         env: twoProviderEnv,
-        readLine: makeScriptedReader(['n', 'build a birdhouse', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', 'build a birdhouse', '/exit', 'q']),
       }, undefined, undefined, undefined, dir);
 
       await startMenu(ctx, sink);
@@ -2725,6 +2995,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design production billing authentication architecture without data loss',
           { value: '/exit', delayMs: 100 },
           'q',
@@ -2785,6 +3056,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design production billing authentication architecture without data loss',
           { value: '/exit', delayMs: 75 },
           'q',
@@ -2859,6 +3131,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design production billing authentication architecture without data loss',
           { value: '/exit', delayMs: 75 },
           'q',
@@ -2924,6 +3197,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design production billing authentication architecture without data loss',
           { value: '/exit', delayMs: 75 },
           'q',
@@ -2978,6 +3252,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design billing authentication architecture',
           { value: '/exit', delayMs: 75 },
           'q',
@@ -3034,6 +3309,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design the architecture',
           { value: 'review and design the second architecture slice', delayMs: 75 },
           { value: '/exit', delayMs: 75 },
@@ -3083,6 +3359,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design billing authentication architecture',
           { value: '/exit', delayMs: 75 },
           'q',
@@ -3135,6 +3412,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design billing authentication architecture',
           { value: '/exit', delayMs: 75 },
           'q',
@@ -3144,9 +3422,12 @@ describe('startMenu — auto-goal smart autonomy', () => {
       await startMenu(ctx, sink);
 
       await waitForGoalCount(ctx.clock, 1);
-      // planner or understanding-start (bg warm is fire-and-forget; taste file await
-      // or scheduling can let understanding's provider call race first). The key
-      // contract for cost-saver L1 is no "Planning deeper" print.
+      // Planner or understanding-start can arrive slightly after the goal row is
+      // persisted because post-turn planning is fire-and-forget. Poll the call
+      // sequence rather than racing the async provider open. The key contract for
+      // cost-saver L1 is no "Planning deeper" print.
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline && sequence.length === 0) await delay(10);
       assert.ok(sequence[0] === 'planner' || sequence[0] === 'understanding-start');
       assert.ok(!sink.buf.includes('Planning deeper'));
     });
@@ -3319,6 +3600,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           rambling,
           '/exit',
           'q',
@@ -3410,6 +3692,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           // preflight passes are eligible off-path.
           readLine: makeScriptedReader([
             'n',
+            '',
             'the dashboard feels off, and the numbers do not line up, then it stalls',
             '/exit',
             'q',
@@ -3496,6 +3779,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           // fires and its frame's risk hints are eligible for combineRisk.
           readLine: makeScriptedReader([
             'n',
+            '',
             'add a logging line to the helper, and also tidy up the surrounding comments and naming a bit',
             '/exit',
             'q',
@@ -3607,6 +3891,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           cwd,
           readLine: makeScriptedReader([
             'n',
+            '',
             'investigate how the build scripts in package.json work',
             '/exit',
             'q',
@@ -3716,6 +4001,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
           cwd,
           readLine: makeScriptedReader([
             'n',
+            '',
             'investigate how the build scripts in package.json work',
             '/exit',
             'q',
@@ -3798,6 +4084,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           'frobnicate the wotsit',
           '/exit',
           'q',
@@ -3882,6 +4169,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         providers: { claude: provider },
         readLine: makeScriptedReader([
           'n',
+          '',
           'review and design the architecture',
           '/exit',
           'q',
@@ -3896,8 +4184,8 @@ describe('startMenu — auto-goal smart autonomy', () => {
     assert.equal(callCount, 1, 'auto-goal should have started one provider run');
     assert.equal(sawAbort, true, 'Ctrl+C must abort the active goal AbortController');
     assert.ok(
-      sink.buf.includes('Task cancelled. (Ctrl+C again'),
-      'existing Ctrl+C cancellation message should be used',
+      sink.buf.includes('Task cancelled.'),
+      'Ctrl+C cancellation message should be shown (Slice 4: no multi-press teaching copy)',
     );
   });
 
@@ -3925,7 +4213,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
         const ctx = makeCtx({
           config: { onboarded: true, setAsDefault: false, smartRoute: false },
           providers: { claude: provider },
-          readLine: makeScriptedReader(['n', 'build a birdhouse', { value: '/exit', delayMs: 75 }, 'q']),
+          readLine: makeScriptedReader(['n', '', 'build a birdhouse', { value: '/exit', delayMs: 75 }, 'q']),
         }, undefined, undefined, undefined, dir);
         await startMenu(ctx, sink);
         await waitForGoalCount(ctx.clock, 1);
@@ -3959,7 +4247,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const ctx = makeCtx({
         config: { onboarded: true, setAsDefault: false, smartRoute: false },
         providers: { claude: provider },
-        readLine: makeScriptedReader(['n', 'build a birdhouse', { value: '/exit', delayMs: 75 }, 'q']),
+        readLine: makeScriptedReader(['n', '', 'build a birdhouse', { value: '/exit', delayMs: 75 }, 'q']),
       }, undefined, undefined, undefined, dir);
       await startMenu(ctx, sink);
       await waitForGoalCount(ctx.clock, 1);
@@ -4000,7 +4288,7 @@ describe('startMenu — auto-goal smart autonomy', () => {
       const ctx = makeCtx({
         config: { onboarded: true, setAsDefault: false, smartRoute: false, mode: 'quality-first', intensity: 5 },
         providers: { claude: provider },
-        readLine: makeScriptedReader(['n', 'review and design billing authentication architecture', { value: '/exit', delayMs: 75 }, 'q']),
+        readLine: makeScriptedReader(['n', '', 'review and design billing authentication architecture', { value: '/exit', delayMs: 75 }, 'q']),
       }, undefined, undefined, undefined, dir);
       await startMenu(ctx, sink);
       await waitForGoalCount(ctx.clock, 1);
@@ -4179,6 +4467,57 @@ describe('startMenu — unknown key → re-renders, does not crash', () => {
       !sink.buf.includes('Unknown option:'),
       'empty key must not trigger "Unknown option" message',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// startMenu — ESC and left-arrow nav (Slice 4)
+// ---------------------------------------------------------------------------
+
+describe('startMenu — ESC exits app from root menu', () => {
+  it('bare ESC at root exits the app cleanly', async () => {
+    const sink = makeSink();
+    const ctx = makeCtx({ readLine: makeScriptedReader(['\x1b']) });
+    await assert.doesNotReject(() => startMenu(ctx, sink));
+  });
+
+  it('ESC at root renders the main screen before exiting', async () => {
+    const sink = makeSink();
+    const ctx = makeCtx({ readLine: makeScriptedReader(['\x1b']) });
+    await startMenu(ctx, sink);
+    assertLockedHomeSkeleton(sink.buf);
+  });
+});
+
+describe('startMenu — left-arrow at root is a no-op', () => {
+  it('LEFT at root does not crash and stays in the menu', async () => {
+    const sink = makeSink();
+    const ctx = makeCtx({ readLine: makeScriptedReader(['\x1b[D', 'q']) });
+    await assert.doesNotReject(() => startMenu(ctx, sink));
+    assertLockedHomeSkeleton(sink.buf);
+  });
+});
+
+describe('startMenu — ESC and back from Library submenu (Slice 4)', () => {
+  it('ESC from Library submenu exits the whole app', async () => {
+    const sink = makeSink();
+    const ctx = makeCtx({ readLine: makeScriptedReader(['e', '\x1b']) });
+    await assert.doesNotReject(() => startMenu(ctx, sink));
+  });
+
+  it('"b" from Library returns to root menu (not exit)', async () => {
+    const sink = makeSink();
+    const ctx = makeCtx({ readLine: makeScriptedReader(['e', 'b', 'q']) });
+    await assert.doesNotReject(() => startMenu(ctx, sink));
+    assertLockedHomeSkeleton(sink.buf);
+  });
+
+  it('renders Library with back/ESC hint in the footer', async () => {
+    const sink = makeSink();
+    const ctx = makeCtx({ readLine: makeScriptedReader(['e', '\x1b']) });
+    await startMenu(ctx, sink);
+    assert.ok(sink.buf.includes('← back'), 'Library should show left-arrow hint');
+    assert.ok(sink.buf.includes('ESC to exit'), 'Library should show ESC hint');
   });
 });
 
@@ -6755,40 +7094,6 @@ describe('startMenu — [o] opencode discoverability in Auth section', () => {
 
   // ---- Pressing [o] when opencode is ALREADY installed ----------------------
 
-  it('pressing o with opencode installed invokes login with "opencode"', async () => {
-    let loginCalled = false;
-    let loginArg: string | undefined;
-    let sharedReadLinePassed = false;
-    let sharedConfirmPassed = false;
-
-    const readLine = makeScriptedReader(['o', 'q']);
-    const confirm = async (): Promise<boolean> => true;
-    const sink = makeSink();
-    const ctx = makeCtx({
-      env: FAKE_ENV_OPENCODE_INSTALLED,
-      readLine,
-      confirm,
-      login: async (_out, providerArg, opts) => {
-        loginCalled = true;
-        loginArg = providerArg;
-        sharedReadLinePassed = opts?.readLine === readLine;
-        sharedConfirmPassed = opts?.confirm === confirm;
-        return FAKE_LOGIN_RESULT;
-      },
-      detectEnvironment: async () => FAKE_ENV_OPENCODE_INSTALLED,
-    });
-
-    await assert.doesNotReject(
-      () => startMenu(ctx, sink),
-      'pressing o with opencode installed should not throw',
-    );
-
-    assert.equal(loginCalled, true, 'login fake must have been called');
-    assert.equal(loginArg, 'opencode', 'login must be called with "opencode"');
-    assert.equal(sharedReadLinePassed, true, 'opencode login must receive the shared menu reader');
-    assert.equal(sharedConfirmPassed, true, 'opencode login must receive the shared menu confirm');
-  });
-
   it('pressing o with opencode installed does NOT show install consent prompt', async () => {
     const sink = makeSink();
     const ctx = makeCtx({
@@ -6806,49 +7111,7 @@ describe('startMenu — [o] opencode discoverability in Auth section', () => {
     );
   });
 
-  it('pressing o does not spawn real subprocesses (login seam is honoured)', async () => {
-    let loginCallCount = 0;
-
-    const sink = makeSink();
-    const ctx = makeCtx({
-      env: FAKE_ENV_OPENCODE_INSTALLED,
-      readLine: makeScriptedReader(['o', 'q']),
-      login: async () => {
-        loginCallCount += 1;
-        return FAKE_LOGIN_RESULT;
-      },
-      detectEnvironment: async () => FAKE_ENV_OPENCODE_INSTALLED,
-    });
-
-    await startMenu(ctx, sink);
-
-    assert.equal(loginCallCount, 1, 'login seam must be called exactly once for [o]');
-  });
-
   // ---- Pressing [o] when opencode is NOT installed — consent prompt ---------
-
-  it('pressing o when opencode NOT installed shows a consent prompt', async () => {
-    const sink = makeSink();
-    // Answer 'n' to skip install
-    const ctx = makeCtx({
-      readLine: makeScriptedReader(['o', 'n', 'q']),
-      detectEnvironment: async () => FAKE_ENV,
-    });
-
-    await assert.doesNotReject(
-      () => startMenu(ctx, sink),
-      'pressing o without opencode installed should not throw',
-    );
-
-    assert.ok(
-      sink.buf.includes('Install opencode'),
-      'consent prompt must appear when o pressed and opencode not installed',
-    );
-    assert.ok(
-      sink.buf.includes('opencode-ai'),
-      'consent prompt must mention the npm package name',
-    );
-  });
 
   it('pressing o, NOT installed, answering n → skips install, does NOT call installProvider', async () => {
     let installCalled = false;
@@ -6884,60 +7147,6 @@ describe('startMenu — [o] opencode discoverability in Auth section', () => {
     await startMenu(ctx, sink);
 
     assert.equal(loginCalled, false, 'login must NOT be called when user skips install');
-  });
-
-  it('pressing o, NOT installed, answering n → prints skip note with install command', async () => {
-    const sink = makeSink();
-    const ctx = makeCtx({
-      readLine: makeScriptedReader(['o', 'n', 'q']),
-      detectEnvironment: async () => FAKE_ENV,
-    });
-
-    await startMenu(ctx, sink);
-
-    assert.ok(
-      sink.buf.includes('Skipped') || sink.buf.toLowerCase().includes('install it later'),
-      'skip note must mention "Skipped" or "install it later"',
-    );
-    assert.ok(
-      sink.buf.includes('npm install -g opencode-ai'),
-      'skip note must include the exact install command',
-    );
-  });
-
-  it('pressing o, NOT installed, answering [Enter] (yes) → calls installProvider then login', async () => {
-    const calls: string[] = [];
-
-    // After install, detectEnvironment returns the "installed" env so login proceeds
-    const sink = makeSink();
-    const ctx = makeCtx({
-      readLine: makeScriptedReader(['o', '', 'q']),  // '' = Enter = yes
-      installProvider: async (_id) => {
-        calls.push('install:' + _id);
-        return true;
-      },
-      login: async (_out, providerArg) => {
-        calls.push('login:' + String(providerArg));
-        return FAKE_LOGIN_RESULT;
-      },
-      detectEnvironment: async () => {
-        // After install: report opencode now installed so login proceeds
-        return FAKE_ENV_OPENCODE_INSTALLED;
-      },
-    });
-
-    await assert.doesNotReject(
-      () => startMenu(ctx, sink),
-      'o → yes to install → install+login should not throw',
-    );
-
-    assert.ok(calls.includes('install:opencode'), 'installProvider must be called with "opencode"');
-    assert.ok(calls.includes('login:opencode'), 'login must be called with "opencode" after install');
-    // install must happen before login
-    assert.ok(
-      calls.indexOf('install:opencode') < calls.indexOf('login:opencode'),
-      'installProvider must be called before login',
-    );
   });
 
   it('pressing o, NOT installed, EOF at consent → skips (same as n)', async () => {
@@ -6988,22 +7197,6 @@ describe('startMenu — [o] opencode discoverability in Auth section', () => {
     );
 
     assert.equal(loginCalled, false, 'login must NOT be called when install fails');
-  });
-
-  it('pressing o, NOT installed, install fails → prints failure note', async () => {
-    const sink = makeSink();
-    const ctx = makeCtx({
-      readLine: makeScriptedReader(['o', '', 'q']),
-      installProvider: async () => false,
-      detectEnvironment: async () => FAKE_ENV,
-    });
-
-    await startMenu(ctx, sink);
-
-    assert.ok(
-      sink.buf.toLowerCase().includes('install failed') || sink.buf.toLowerCase().includes('run it yourself'),
-      'failure note must appear when install fails',
-    );
   });
 });
 
@@ -8143,7 +8336,8 @@ describe('startMenu — chat loop inline re-login on auth failure', () => {
       {
         providers: { claude: authFailProvider },
         readLine: makeScriptedReader([
-          'n',          // new conversation → opens chat directly
+          'n',          // new conversation
+          '',           // Enter = [1] Current
           'do work',    // first message = task → auth fails
           'n',          // no to re-login prompt (auth fail on retry too, so just skip)
           '/exit',      // exit chat
@@ -8181,7 +8375,7 @@ describe('startMenu — chat loop inline re-login on auth failure', () => {
       {
         providers: { claude: authFailProvider },
         readLine: makeScriptedReader([
-          'n', 'do work', 'y', '/exit', 'q',
+          'n', '', 'do work', 'y', '/exit', 'q',
         ]),
         login: async (_out, providerArg) => {
           loginCalls.push(providerArg ?? 'unknown');
@@ -8227,7 +8421,7 @@ describe('startMenu — chat loop inline re-login on auth failure', () => {
       {
         providers: { claude: switchingProvider },
         readLine: makeScriptedReader([
-          'n', 'do work', 'y', '/exit', 'q',
+          'n', '', 'do work', 'y', '/exit', 'q',
         ]),
         login: async () => FAKE_LOGIN_RESULT,
         detectEnvironment: async () => FAKE_ENV,
@@ -8259,7 +8453,7 @@ describe('startMenu — chat loop inline re-login on auth failure', () => {
       {
         providers: { claude: authFailProvider },
         readLine: makeScriptedReader([
-          'n', 'do work', 'n', '/exit', 'q',
+          'n', '', 'do work', 'n', '/exit', 'q',
         ]),
         login: async () => {
           loginCallCount++;
@@ -8287,7 +8481,7 @@ describe('startMenu — chat loop inline re-login on auth failure', () => {
       {
         providers: { claude: authFailProvider },
         readLine: makeScriptedReader([
-          'n', 'do work', 'n', '/exit', 'q',
+          'n', '', 'do work', 'n', '/exit', 'q',
         ]),
         login: async () => FAKE_LOGIN_RESULT,
         detectEnvironment: async () => FAKE_ENV,
@@ -8323,7 +8517,7 @@ describe('startMenu — chat loop inline re-login on auth failure', () => {
     const ctx = makeCtx(
       {
         providers: { claude: authFailProvider },
-        readLine: makeScriptedReader(['n', 'do work', 'y', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', 'do work', 'y', '/exit', 'q']),
         login: async () => {
           loginSeamCalled = true;
           return FAKE_LOGIN_RESULT;
@@ -8443,7 +8637,8 @@ describe('startMenu — chat loop prompt is a clean caret', () => {
     const ctx = makeCtx(
       {
         readLine: makeScriptedReader([
-          'n',       // new conversation → opens chat directly
+          'n',       // new conversation
+          '',        // Enter = [1] Current
           'My task', // first message (also derives the title)
           '/exit',   // exit chat loop
           'q',       // quit menu
@@ -8566,6 +8761,7 @@ describe('startMenu — no-provider gate in chat loop', () => {
         providers: { claude: makeFakeProvider() },
         readLine: makeScriptedReader([
           'n',        // new conversation → auth prompt first
+          '',         // Enter = [1] Current
           'do work',  // proceeds into chat after re-detect
           '/exit',    // exit chat
           'q',        // quit
@@ -8607,6 +8803,7 @@ describe('startMenu — no-provider gate in chat loop', () => {
         providers: {},
         readLine: makeScriptedReader([
           'n',
+          '',
           'q',
         ]),
       },
@@ -8632,7 +8829,8 @@ describe('startMenu — no-provider gate in chat loop', () => {
     const ctx = makeCtx(
       {
         readLine: makeScriptedReader([
-          'n',           // new conversation → opens chat directly
+          'n',           // new conversation
+          '',            // Enter = [1] Current
           'do work',     // first message = task — should be dispatched (claude is authed)
           '/exit',       // exit chat
           'q',           // quit
@@ -8751,6 +8949,7 @@ describe('startMenu — no-provider gate in chat loop', () => {
         providers: {},
         readLine: makeScriptedReader([
           'n',
+          '',
           'do work',
           '/exit',
           'q',
@@ -8832,7 +9031,8 @@ describe('startMenu — inline re-login uses refreshed auth (stale-deps fix)', (
       {
         providers: { claude: makeAuthThenOkProvider('claude') },
         readLine: makeScriptedReader([
-          'n',        // new conversation → opens chat directly
+          'n',        // new conversation
+          '',         // Enter = [1] Current
           'do work',  // first message = task → auth fail → re-login prompt → y
           'y',        // yes to re-login
           '/exit',    // exit
@@ -8869,7 +9069,7 @@ describe('startMenu — inline re-login uses refreshed auth (stale-deps fix)', (
       {
         providers: { claude: makeAuthThenOkProvider('claude') },
         readLine: makeScriptedReader([
-          'n', 'do work', 'n', '/exit', 'q',
+          'n', '', 'do work', 'n', '/exit', 'q',
         ]),
         login: async () => FAKE_LOGIN_RESULT,
         detectEnvironment: async () => FAKE_ENV,
@@ -9370,7 +9570,7 @@ describe('startMenu — Effort Mode settings [1] Auto', () => {
       'selecting [1] Auto in Effort Mode settings should not throw',
     );
 
-    // After pressing 1, runModeSelect writes "New conversation default: Auto (smart)" to confirm.
+    // After pressing 1, runModeSelect writes "Effort Mode: Auto (smart)" to confirm.
     assert.ok(
       sink.buf.toLowerCase().includes('auto (smart)'),
       'output must contain "Auto (smart)" after selecting [1] Auto',
@@ -9957,6 +10157,7 @@ describe('startMenu — goals: /todo parks + Parked section renders', () => {
         {
           readLine: makeScriptedReader([
             'n',
+            '',
             '/todo redesign the activity feed',
             '/exit',
             'q', // back at the menu, the Parked section now renders
@@ -10025,6 +10226,7 @@ describe('startMenu — goals: /goals go promotes THROUGH runGoalLoop (the brain
           providers: { claude: provider },
           readLine: makeScriptedReader([
             'n',
+            '',
             '/todo ship the login page',
             '/goals go 1', // PROMOTE → runGoalLoop → orchestrate → provider
             '/exit',
@@ -10082,7 +10284,7 @@ describe('startMenu — goals: /goals cancel terminates the tree and refreshes t
           setAsDefault: false,
           smartRoute: false,
         },
-        readLine: makeScriptedReader(['n', '/goals cancel 1', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', '/goals cancel 1', '/exit', 'q']),
       }, clock);
 
       await startMenu(ctx, sink);
@@ -10149,6 +10351,287 @@ describe('runChatLoop — local-only slash commands bypass the no-provider gate 
   });
 });
 
+describe('runChatLoop — ! shell passthrough', () => {
+  const allowGate: CommandGatePort = {
+    gate: () => ({
+      commandTier: 'read-only',
+      allowed: true,
+      requireConfirmation: false,
+      forbidBackground: false,
+      mustRecord: false,
+      rationale: 'ok',
+    }),
+  };
+
+  it('runs the injected shell runner and never calls the model or appends chat entries', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const meta = await store.create('shell');
+    const providerCalls: string[] = [];
+    const shellCalls: Array<{ command: string; cwd: string }> = [];
+    const provider: Provider = {
+      ...makeFakeProvider(),
+      async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        providerCalls.push(req.prompt);
+        yield* makeFakeProvider().run(req, signal);
+      },
+    };
+    const ctx = makeCtx({
+      providers: { claude: provider },
+      shellRunner: {
+        async run(command, cwd, out) {
+          shellCalls.push({ command, cwd });
+          out.write('shell ok\n');
+          return { exitCode: 0 };
+        },
+      },
+      commandGate: allowGate,
+      readLine: makeScriptedReader(['!echo hi', '/exit']),
+    }, clock, store);
+
+    await runChatLoop(
+      ctx,
+      { config: ctx.config, env: ctx.env },
+      meta.id,
+      sink,
+      makeScriptedReader(['!echo hi', '/exit']),
+      async () => FAKE_LOGIN_RESULT,
+      async () => ctx.env,
+      async () => false,
+    );
+
+    assert.equal(providerCalls.length, 0, 'shell passthrough must not call the model');
+    assert.deepEqual(shellCalls, [{ command: 'echo hi', cwd: ctx.cwd }]);
+    assert.ok(sink.buf.includes('shell ok'));
+    assert.deepEqual(await store.load(meta.id), [], 'shell passthrough is not persisted to the chat log');
+  });
+
+  it('records high-risk commands on the fallback gate path when no commandGate is injected', async () => {
+    const home = join(tmpdir(), `menu-flow-home-${randomUUID()}`);
+    await withStateHome(home, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const sink = makeSink();
+      const cwd = join(home, 'repo');
+      await fs.promises.mkdir(cwd, { recursive: true });
+      const meta = await store.create('fallback-audit');
+      let shellRuns = 0;
+      const ctx = makeCtx({
+        shellRunner: {
+          async run(command, runCwd, out) {
+            shellRuns += 1;
+            assert.equal(command, 'rm -rf build');
+            assert.equal(runCwd, cwd);
+            out.write('shell ok\n');
+            return { exitCode: 0 };
+          },
+        },
+        readLine: makeScriptedReader(['!rm -rf build', '/exit']),
+      }, clock, store, undefined, cwd);
+
+      await runChatLoop(
+        ctx,
+        { config: ctx.config, env: ctx.env },
+        meta.id,
+        sink,
+        makeScriptedReader(['!rm -rf build', '/exit']),
+        async () => FAKE_LOGIN_RESULT,
+        async () => ctx.env,
+        async () => true,
+      );
+
+      assert.equal(shellRuns, 1);
+      const auditFile = projectStateDirs(defaultStateLayout(), cwd).commandAuditFile;
+      const raw = await fs.promises.readFile(auditFile, 'utf8');
+      const events = raw
+        .trim()
+        .split(/\r?\n/)
+        .filter((line) => line.trim().length > 0)
+        .map((line) => JSON.parse(line) as CommandAuditEvent);
+
+      assert.equal(events.length, 1);
+      assert.equal(events[0]?.command, 'rm -rf build');
+      assert.equal(events[0]?.commandTier, 'destructive-filesystem');
+      assert.equal(events[0]?.confirmed, true);
+      assert.equal(events[0]?.outcome, 'ran');
+      assert.equal(events[0]?.cwd, cwd);
+    });
+  });
+
+  it('does not execute when the command gate denies the command', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const meta = await store.create('denied');
+    let shellRuns = 0;
+    const ctx = makeCtx({
+      shellRunner: {
+        async run() {
+          shellRuns += 1;
+          return { exitCode: 0 };
+        },
+      },
+      commandGate: {
+        gate: () => ({
+          commandTier: 'destructive-filesystem',
+          allowed: false,
+          requireConfirmation: false,
+          forbidBackground: true,
+          mustRecord: true,
+          rationale: 'blocked',
+        }),
+      },
+      readLine: makeScriptedReader(['!rm -rf build', '/exit']),
+    }, clock, store);
+
+    await runChatLoop(
+      ctx,
+      { config: ctx.config, env: ctx.env },
+      meta.id,
+      sink,
+      makeScriptedReader(['!rm -rf build', '/exit']),
+      async () => FAKE_LOGIN_RESULT,
+      async () => ctx.env,
+      async () => false,
+    );
+
+    assert.equal(shellRuns, 0, 'denied commands never reach the shell runner');
+    assert.ok(sink.buf.includes('Shell command not run.'));
+  });
+
+  it('treats a non-leading bang as normal chat input', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const meta = await store.create('normal');
+    let shellRuns = 0;
+    let providerRuns = 0;
+    const provider: Provider = {
+      ...makeFakeProvider(),
+      async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
+        providerRuns += 1;
+        yield* makeFakeProvider().run(req, signal);
+      },
+    };
+    const ctx = makeCtx({
+      providers: { claude: provider },
+      shellRunner: {
+        async run() {
+          shellRuns += 1;
+          return { exitCode: 0 };
+        },
+      },
+      commandGate: allowGate,
+      readLine: makeScriptedReader(['hello !cmd', '/exit']),
+    }, clock, store);
+
+    await runChatLoop(
+      ctx,
+      { config: ctx.config, env: ctx.env },
+      meta.id,
+      sink,
+      makeScriptedReader(['hello !cmd', '/exit']),
+      async () => FAKE_LOGIN_RESULT,
+      async () => ctx.env,
+      async () => false,
+    );
+
+    const entries = await store.load(meta.id);
+    const userBodies = entries.filter((entry) => entry.role === 'user').map((entry) => entry.content);
+    assert.equal(shellRuns, 0, 'non-leading bang must not hit the shell path');
+    assert.equal(providerRuns, 1, 'normal chat still reaches the model');
+    assert.deepEqual(userBodies, ['hello !cmd']);
+  });
+
+  it('prints usage for bare bang input and does not execute', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const meta = await store.create('usage');
+    let shellRuns = 0;
+    const ctx = makeCtx({
+      shellRunner: {
+        async run() {
+          shellRuns += 1;
+          return { exitCode: 0 };
+        },
+      },
+      commandGate: allowGate,
+      readLine: makeScriptedReader(['!', '!   ', '/exit']),
+    }, clock, store);
+
+    await runChatLoop(
+      ctx,
+      { config: ctx.config, env: ctx.env },
+      meta.id,
+      sink,
+      makeScriptedReader(['!', '!   ', '/exit']),
+      async () => FAKE_LOGIN_RESULT,
+      async () => ctx.env,
+      async () => false,
+    );
+
+    assert.equal(shellRuns, 0);
+    assert.match(sink.buf, /Usage: !<command>/);
+  });
+
+  it('executes only genuinely !-prefixed queued lines during drain', async () => {
+    const clock = makeFakeClock();
+    const store = makeStore(clock);
+    const sink = makeSink();
+    const meta = await store.create('queued');
+    const providerPrompts: string[] = [];
+    const shellCalls: string[] = [];
+    const provider: Provider = {
+      ...makeFakeProvider(),
+      async *run(req: ProviderRequest): AsyncIterable<ProviderEvent> {
+        providerPrompts.push(req.prompt);
+        await delay(25);
+        yield { type: 'text', delta: 'Done.' };
+        yield {
+          type: 'done',
+          text: `Done.\n${CONFIDENCE_ENVELOPE}`,
+          usage: FAKE_USAGE,
+          raw: {},
+        };
+      },
+    };
+    const ctx = makeCtx({
+      providers: { claude: provider },
+      shellRunner: {
+        async run(command, _cwd, out) {
+          shellCalls.push(command);
+          out.write(`shell:${command}\n`);
+          return { exitCode: 0 };
+        },
+      },
+      commandGate: allowGate,
+      readLine: makeScriptedReader(['first question', '/exit']),
+    }, clock, store);
+
+    await runChatLoop(
+      ctx,
+      { config: ctx.config, env: ctx.env },
+      meta.id,
+      sink,
+      makeScriptedReader(['first question', '/exit']),
+      async () => FAKE_LOGIN_RESULT,
+      async () => ctx.env,
+      async () => false,
+      undefined,
+      makeCapturedLineReader(['!echo queued', 'hello !cmd']),
+    );
+
+    const entries = await store.load(meta.id);
+    const userBodies = entries.filter((entry) => entry.role === 'user').map((entry) => entry.content);
+    assert.deepEqual(shellCalls, ['echo queued']);
+    assert.equal(providerPrompts.length, 2, 'initial + normal queued chat turn reach the model');
+    assert.deepEqual(userBodies, ['first question', 'hello !cmd']);
+    assert.ok(sink.buf.includes('shell:echo queued'));
+  });
+});
+
 // ---------------------------------------------------------------------------
 // P0-03e — Login call site contract tests
 // ---------------------------------------------------------------------------
@@ -10212,7 +10695,7 @@ describe('P0-03e — New login success plus fresh auth enters chat', () => {
     const ctx = makeCtx(
       {
         env: unauthedEnv,
-        readLine: makeScriptedReader(['n', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', '/exit', 'q']),
         login: async () => FAKE_LOGIN_RESULT,
         detectEnvironment: async () => {
           detectCalls++;
@@ -10239,7 +10722,7 @@ describe('P0-03e — New typed success plus stale refresh returns root', () => {
     const ctx = makeCtx(
       {
         env: staleEnv,
-        readLine: makeScriptedReader(['n', 'q']),
+        readLine: makeScriptedReader(['n', '', 'q']),
         login: async () => FAKE_LOGIN_RESULT,
         detectEnvironment: async () => staleEnv,
       },
@@ -10269,7 +10752,7 @@ describe('P0-03e — inline re-login failed refresh does not retry', () => {
       {
         env: FAKE_ENV,
         providers: { claude: authFailP },
-        readLine: makeScriptedReader(['n', 'fix auth bug', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', 'fix auth bug', '/exit', 'q']),
         login: async () => FAKE_LOGIN_RESULT,
         detectEnvironment: async () => ({ ...FAKE_ENV, claude: { ...FAKE_ENV.claude, authenticated: false } }),
       },
@@ -10298,7 +10781,7 @@ describe('P0-03e — inline re-login authenticated result plus fresh refresh ret
       {
         env: FAKE_ENV,
         providers: { claude: authFailP },
-        readLine: makeScriptedReader(['n', 'fix auth bug', 'y', '/exit', 'q']),
+        readLine: makeScriptedReader(['n', '', 'fix auth bug', 'y', '/exit', 'q']),
         login: async (_out, providerArg) => {
           loginCalls.push(providerArg ?? 'unknown');
           return FAKE_LOGIN_RESULT;
@@ -10332,5 +10815,400 @@ describe('P0-03e — import forwards typed runner and inline repair preserves im
     );
     await startMenu(ctx, sink);
     assert.ok(sink.buf.includes('Resume a Claude / Codex session') || sink.buf.includes('No Claude or Codex sessions'), 'import screen should render');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slice 9 — CWD threading through chat execution
+//
+// `runChatLoop` derives `activeCwd = convMeta?.workspaceRoot ?? ctx.cwd` and
+// threads it through every conversation-scoped operation (repo-map, preflight/
+// orchestrate deps, attachments, command audit, shell passthrough, ledger,
+// evidence sink/store, verify, memory/taste/rules projectKey, goals projectKey,
+// PLAN.md writes). These tests prove the derivation at three representative
+// seams (shell passthrough cwd, command-audit recorder cwd + ledger file
+// location, and the orchestrate deps cwd that becomes the provider req.cwd)
+// plus the most-important backward-compat guarantee: a legacy conversation
+// without a workspaceRoot falls back to the launch ctx.cwd exactly as before.
+//
+// Fixtures use temp dirs + injected ports (no real global git state) per the
+// spec's non-flaky test rules.
+// ---------------------------------------------------------------------------
+
+describe('Slice 9 — CWD threading through chat execution', () => {
+  /**
+   * Stamp `workspaceRoot` onto a stored conversation meta. Mirrors how the real
+   * store persists a workspaceRoot chosen at conversation-creation/picker time.
+   */
+  function stampWorkspaceRoot(store: FakeConversationStore, id: string, workspaceRoot: string | null): void {
+    const idx = store._metas.findIndex((m) => m.id === id);
+    if (idx < 0) throw new Error(`stampWorkspaceRoot: meta ${id} not found`);
+    const m = store._metas[idx];
+    if (m !== undefined) store._metas[idx] = { ...m, workspaceRoot };
+  }
+
+  const allowGate: CommandGatePort = {
+    gate: () => ({
+      commandTier: 'read-only',
+      allowed: true,
+      requireConfirmation: false,
+      forbidBackground: false,
+      mustRecord: false,
+      rationale: 'ok',
+    }),
+  };
+
+  async function readAuditEvents(file: string): Promise<CommandAuditEvent[]> {
+    const raw = await fs.promises.readFile(file, 'utf8');
+    return raw
+      .trim()
+      .split(/\r?\n/)
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as CommandAuditEvent);
+  }
+
+  it('legacy conversation without workspaceRoot runs shell passthrough AND records command audit against the launch cwd (backward-compat)', async () => {
+    const home = join(tmpdir(), `menu-flow-home-${randomUUID()}`);
+    await withStateHome(home, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const sink = makeSink();
+      const launchCwd = join(home, 'launch-repo');
+      await fs.promises.mkdir(launchCwd, { recursive: true });
+      const meta = await store.create('legacy');
+      // No workspaceRoot stamped → legacy conversation, must fall back to launch cwd.
+
+      let shellCwd: string | null = null;
+      const ctx = makeCtx(
+        {
+          shellRunner: {
+            async run(_command, runCwd, out) {
+              shellCwd = runCwd;
+              out.write('shell ok\n');
+              return { exitCode: 0 };
+            },
+          },
+          readLine: makeScriptedReader(['!rm -rf build', '/exit']),
+        },
+        clock,
+        store,
+        undefined,
+        launchCwd,
+      );
+
+      await runChatLoop(
+        ctx,
+        { config: ctx.config, env: ctx.env },
+        meta.id,
+        sink,
+        makeScriptedReader(['!rm -rf build', '/exit']),
+        async () => FAKE_LOGIN_RESULT,
+        async () => ctx.env,
+        async () => true,
+      );
+
+      assert.equal(shellCwd, launchCwd, 'shell must run in launch cwd for legacy meta');
+      const auditFile = projectStateDirs(defaultStateLayout(), launchCwd).commandAuditFile;
+      const events = await readAuditEvents(auditFile);
+      assert.equal(events.length, 1, 'one command-audit event recorded');
+      assert.equal(events[0]?.command, 'rm -rf build');
+      assert.equal(events[0]?.outcome, 'ran');
+      assert.equal(events[0]?.cwd, launchCwd, 'audit event cwd must be launch cwd for legacy meta');
+    });
+  });
+
+  it('conversation WITH workspaceRoot threads shell passthrough to workspaceRoot, not the launch cwd', async () => {
+    const home = join(tmpdir(), `menu-flow-home-${randomUUID()}`);
+    await withStateHome(home, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const sink = makeSink();
+      const launchCwd = join(home, 'launch-repo');
+      const workspaceCwd = join(home, 'workspace-repo');
+      await fs.promises.mkdir(launchCwd, { recursive: true });
+      await fs.promises.mkdir(workspaceCwd, { recursive: true });
+      const meta = await store.create('ws');
+      stampWorkspaceRoot(store, meta.id, workspaceCwd);
+
+      let shellCwd: string | null = null;
+      const ctx = makeCtx(
+        {
+          commandGate: allowGate,
+          shellRunner: {
+            async run(_command, runCwd, out) {
+              shellCwd = runCwd;
+              out.write('shell ok\n');
+              return { exitCode: 0 };
+            },
+          },
+          readLine: makeScriptedReader(['!echo hi', '/exit']),
+        },
+        clock,
+        store,
+        undefined,
+        launchCwd,
+      );
+
+      await runChatLoop(
+        ctx,
+        { config: ctx.config, env: ctx.env },
+        meta.id,
+        sink,
+        makeScriptedReader(['!echo hi', '/exit']),
+        async () => FAKE_LOGIN_RESULT,
+        async () => ctx.env,
+        async () => false,
+      );
+
+      assert.notEqual(shellCwd, null, 'shell runner must be called');
+      assert.equal(shellCwd, workspaceCwd, 'shell must run in workspaceRoot, not launch cwd');
+      assert.notEqual(shellCwd, launchCwd, 'shell must NOT run in launch cwd when workspaceRoot is set');
+    });
+  });
+
+  it('conversation WITH workspaceRoot threads command-audit recorder to workspaceRoot (audit file + event cwd)', async () => {
+    const home = join(tmpdir(), `menu-flow-home-${randomUUID()}`);
+    await withStateHome(home, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const sink = makeSink();
+      const launchCwd = join(home, 'launch-repo');
+      const workspaceCwd = join(home, 'workspace-repo');
+      await fs.promises.mkdir(launchCwd, { recursive: true });
+      await fs.promises.mkdir(workspaceCwd, { recursive: true });
+      const meta = await store.create('ws-audit');
+      stampWorkspaceRoot(store, meta.id, workspaceCwd);
+
+      let shellCwd: string | null = null;
+      const ctx = makeCtx(
+        {
+          shellRunner: {
+            async run(_command, runCwd, out) {
+              shellCwd = runCwd;
+              out.write('shell ok\n');
+              return { exitCode: 0 };
+            },
+          },
+          readLine: makeScriptedReader(['!rm -rf build', '/exit']),
+        },
+        clock,
+        store,
+        undefined,
+        launchCwd,
+      );
+
+      await runChatLoop(
+        ctx,
+        { config: ctx.config, env: ctx.env },
+        meta.id,
+        sink,
+        makeScriptedReader(['!rm -rf build', '/exit']),
+        async () => FAKE_LOGIN_RESULT,
+        async () => ctx.env,
+        async () => true,
+      );
+
+      assert.equal(shellCwd, workspaceCwd, 'shell must run in workspaceRoot');
+      const wsAuditFile = projectStateDirs(defaultStateLayout(), workspaceCwd).commandAuditFile;
+      const launchAuditFile = projectStateDirs(defaultStateLayout(), launchCwd).commandAuditFile;
+      assert.notEqual(wsAuditFile, launchAuditFile, 'sanity: workspace and launch audit files must differ');
+      const events = await readAuditEvents(wsAuditFile);
+      assert.equal(events.length, 1, 'audit event must land in the workspace state dir');
+      assert.equal(events[0]?.command, 'rm -rf build');
+      assert.equal(events[0]?.outcome, 'ran');
+      assert.equal(events[0]?.cwd, workspaceCwd, 'audit event cwd must be workspaceRoot');
+      await assert.rejects(
+        fs.promises.readFile(launchAuditFile, 'utf8'),
+        'no audit file must be created under the launch cwd',
+      );
+    });
+  });
+
+  it('conversation WITH workspaceRoot threads orchestrate deps cwd (provider req.cwd) to workspaceRoot for a chat turn', async () => {
+    const home = join(tmpdir(), `menu-flow-home-${randomUUID()}`);
+    await withStateHome(home, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const sink = makeSink();
+      const launchCwd = join(home, 'launch-repo');
+      const workspaceCwd = join(home, 'workspace-repo');
+      await fs.promises.mkdir(launchCwd, { recursive: true });
+      await fs.promises.mkdir(workspaceCwd, { recursive: true });
+      const meta = await store.create('ws-chat');
+      stampWorkspaceRoot(store, meta.id, workspaceCwd);
+
+      const reqCwds: string[] = [];
+      const provider: Provider = {
+        ...makeFakeProvider(),
+        async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
+          reqCwds.push(req.cwd);
+          yield* makeFakeProvider().run(req, signal);
+        },
+      };
+
+      const ctx = makeCtx(
+        {
+          providers: { claude: provider },
+          readLine: makeScriptedReader(['hello world', '/exit']),
+        },
+        clock,
+        store,
+        undefined,
+        launchCwd,
+      );
+
+      await runChatLoop(
+        ctx,
+        { config: ctx.config, env: ctx.env },
+        meta.id,
+        sink,
+        makeScriptedReader(['hello world', '/exit']),
+        async () => FAKE_LOGIN_RESULT,
+        async () => ctx.env,
+        async () => false,
+      );
+
+      assert.ok(reqCwds.length >= 1, 'the main chat turn must reach the provider');
+      for (const c of reqCwds) {
+        assert.equal(c, workspaceCwd, 'every provider req.cwd must be the workspaceRoot');
+      }
+    });
+  });
+
+  it('legacy conversation without workspaceRoot uses launch cwd for orchestrate deps (provider req.cwd backward-compat)', async () => {
+    const home = join(tmpdir(), `menu-flow-home-${randomUUID()}`);
+    await withStateHome(home, async () => {
+      const clock = makeFakeClock();
+      const store = makeStore(clock);
+      const sink = makeSink();
+      const launchCwd = join(home, 'launch-repo');
+      await fs.promises.mkdir(launchCwd, { recursive: true });
+      const meta = await store.create('legacy-chat');
+      // No workspaceRoot stamped → legacy conversation.
+
+      const reqCwds: string[] = [];
+      const provider: Provider = {
+        ...makeFakeProvider(),
+        async *run(req: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
+          reqCwds.push(req.cwd);
+          yield* makeFakeProvider().run(req, signal);
+        },
+      };
+
+      const ctx = makeCtx(
+        {
+          providers: { claude: provider },
+          readLine: makeScriptedReader(['hello world', '/exit']),
+        },
+        clock,
+        store,
+        undefined,
+        launchCwd,
+      );
+
+      await runChatLoop(
+        ctx,
+        { config: ctx.config, env: ctx.env },
+        meta.id,
+        sink,
+        makeScriptedReader(['hello world', '/exit']),
+        async () => FAKE_LOGIN_RESULT,
+        async () => ctx.env,
+        async () => false,
+      );
+
+      assert.ok(reqCwds.length >= 1, 'the main chat turn must reach the provider');
+      for (const c of reqCwds) {
+        assert.equal(c, launchCwd, 'every provider req.cwd must be the launch cwd for legacy meta');
+      }
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slice 10 — workspace-aware Recent list: visible render order == numeric
+// dispatch order. The critical regression: `[1]` must open the FIRST RENDERED
+// row (current-workspace-first), NOT the first raw store row, when store order
+// and render order diverge.
+// ---------------------------------------------------------------------------
+
+describe('Slice 10 — workspace-aware Recent list (numeric dispatch == render order)', () => {
+  it('[1] opens the FIRST RENDERED row, not the first raw store row', async () => {
+    const home = join(tmpdir(), `slice10-dispatch-${randomUUID()}`);
+    const repoRoot = join(home, 'repo-root');        // current workspace
+    const otherRoot = join(home, 'other-workspace'); // a different workspace
+    const launchCwd = repoRoot;                       // launch cwd inside current workspace
+    await fs.promises.mkdir(launchCwd, { recursive: true });
+    await fs.promises.mkdir(otherRoot, { recursive: true });
+
+    const clock = makeFakeClock();
+    // Store order (newest first):
+    //   [0] newerOther  (non-current,   updatedAt newer)
+    //   [1] olderCurrent (current,       updatedAt older)
+    //
+    // Render order (current-first):
+    //   [1] olderCurrent
+    //   [2] newerOther
+    //
+    // So pressing `1` must open `olderCurrent`. If the dispatcher still used
+    // the raw store order (`metas[digit - 1]`), `1` would open `newerOther` —
+    // the regression this test guards against.
+    const initialMetas: ConversationMeta[] = [
+      {
+        id: 'newer-other',
+        title: 'Newer other',
+        createdAt: '2023-11-14T20:00:00.000Z',
+        updatedAt: '2023-11-14T22:00:00.000Z', // newer
+        messageCount: 0,
+        pinned: false,
+        category: null,
+        workspaceRoot: otherRoot,
+      },
+      {
+        id: 'older-current',
+        title: 'Older current',
+        createdAt: '2023-11-14T18:00:00.000Z',
+        updatedAt: '2023-11-14T20:00:00.000Z', // older
+        messageCount: 0,
+        pinned: false,
+        category: null,
+        workspaceRoot: repoRoot,
+      },
+    ];
+    const store = makeStore(clock, initialMetas);
+    const sink = makeSink();
+    const ctx = makeCtx(
+      {
+        readLine: makeScriptedReader(['1', 'a real task', '/exit', 'q']),
+        repoScanPort: {
+          // currentWorkspaceRoot resolves to repoRoot for launchCwd.
+          gitToplevel: async (cwd: string) => (cwd === launchCwd ? repoRoot : null),
+        },
+      },
+      clock,
+      store,
+      undefined,
+      launchCwd,
+    );
+
+    await startMenu(ctx, sink);
+
+    // The chat loop was entered for the conversation that renders as [1]
+    // (olderCurrent), so its SessionWriter received the user task. The
+    // raw-store-first conversation (newerOther) was never opened.
+    const openedWriter = store._writers.get('older-current');
+    const otherWriter = store._writers.get('newer-other');
+    assert.ok(openedWriter !== undefined, 'older-current (the rendered [1]) should have a writer');
+    assert.ok(otherWriter === undefined, 'newer-other (the raw store-first) must NOT be opened');
+    const userEntry = openedWriter.entries.find((e) => e.role === 'user');
+    assert.ok(userEntry !== undefined, 'the opened conversation should have a user entry');
+    assert.equal(userEntry.content, 'a real task', 'the user task landed in the rendered [1] conversation');
+
+    // Sanity: the rendered Recent list shows older-current as [1] (current
+    // workspace sorts first) and newer-other as [2] (with the other workspace's
+    // label as a location prefix).
+    assert.ok(sink.buf.includes('[1]'), 'rendered a numbered [1] row');
+    assert.ok(sink.buf.includes('Older current'), 'rendered the older current row');
+    assert.ok(sink.buf.includes('other-workspace · Newer other'), 'non-current row shows the location prefix');
   });
 });

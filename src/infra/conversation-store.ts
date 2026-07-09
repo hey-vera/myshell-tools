@@ -14,6 +14,7 @@
 import type { SessionEntry, SessionWriter } from '../core/types.js';
 import type { Intensity } from '../core/capacity-allocator.js';
 import type { GoalActivationOverride } from '../core/autonomy.js';
+import type { ProviderId } from '../providers/port.js';
 
 /** Per-conversation mode — the user-facing firepower level for this conversation's turns. */
 export type ConversationMode = 'auto' | 'budget' | 'balanced' | 'high' | 'max';
@@ -48,17 +49,44 @@ export interface ConversationMeta {
    * turns. Absent (or 'auto') → inherits the global default (config.mode or Auto).
    */
   readonly mode?: ConversationMode;
+  /**
+   * The workspace (repo root, else exact cwd) this conversation is bound to —
+   * `git root else cwd` at creation time, LOCKED for the life of the
+   * conversation. `null`/absent means global/unknown: a legacy conversation
+   * created before this field existed, or one deliberately created without a
+   * workspace. Never inferred or backfilled from the CURRENT cwd on read —
+   * that would silently rebind an old conversation to wherever the process
+   * happens to be running now.
+   */
+  readonly workspaceRoot?: string | null;
+  /**
+   * The provider that handled the most recent completed turn in this
+   * conversation. Absent for legacy conversations and threads that have never
+   * completed a provider-backed turn. NEVER inferred or guessed on read —
+   * only set from a real completed turn's actual provider.
+   */
+  readonly lastProvider?: ProviderId;
+}
+
+/** Options accepted by {@link ConversationStore.create}'s object-options overload. */
+export interface CreateConversationOptions {
+  /** Stamp the conversation with this firepower mode; 'auto'/absent → inherit global. */
+  readonly mode?: ConversationMode;
+  /** Stamp the conversation with this workspace root; null/absent → global/unknown. */
+  readonly workspaceRoot?: string | null;
 }
 
 export interface ConversationStore {
   /** All conversations, pinned first then most-recently-updated first. */
   list(): Promise<ConversationMeta[]>;
   /**
-   * Create a new conversation; returns its metadata (with a fresh id).
-   * If `mode` is provided, the conversation is stamped with it; otherwise the
+   * Create a new conversation; accepts a firepower mode string or an options object.
+   * If `mode` (string) is provided, the conversation is stamped with it; otherwise the
    * caller should set the mode via {@link setMode} after creation.
+   * If `options` (object) is provided, it can include `mode` and/or `workspaceRoot`.
+   * `workspaceRoot` absent/null means global/unknown (never inferred).
    */
-  create(title: string, mode?: ConversationMode): Promise<ConversationMeta>;
+  create(title: string, modeOrOptions?: ConversationMode | CreateConversationOptions): Promise<ConversationMeta>;
   /** Read a conversation's full message history (oldest first); [] if missing. */
   load(id: string): Promise<SessionEntry[]>;
   /** Rename a conversation. No-op if the id does not exist. */
@@ -107,4 +135,6 @@ export interface ConversationStore {
    * missing. Pass `'auto'` or `undefined` to clear the override (inherit global).
    */
   setMode(id: string, mode: ConversationMode | undefined): Promise<void>;
+  /** Record the provider that handled the latest completed turn. No-op if id missing. */
+  setLastProvider(id: string, provider: ProviderId): Promise<void>;
 }

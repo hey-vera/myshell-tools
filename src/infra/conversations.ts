@@ -9,11 +9,17 @@
  */
 
 import { mkdir, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, normalize } from 'node:path';
 import type { Clock, SessionEntry, SessionWriter } from '../core/types.js';
 import type { Intensity } from '../core/capacity-allocator.js';
 import type { GoalActivationOverride } from '../core/autonomy.js';
-import type { ConversationMeta, ConversationMode, ConversationStore } from './conversation-store.js';
+import type { ProviderId } from '../providers/port.js';
+import type {
+  ConversationMeta,
+  ConversationMode,
+  ConversationStore,
+  CreateConversationOptions,
+} from './conversation-store.js';
 import { atomicAppendJSONL, atomicWrite, withLock } from './atomic.js';
 import { isConversationMessage } from './jsonl-guards.js';
 import { defaultStateLayout, resolveStateLayout, type AppStateLayout } from './state-layout.js';
@@ -72,6 +78,28 @@ function isValidConversationId(id: string): boolean {
   return typeof id === 'string' && id.length > 0 && VALID_CONV_ID_RE.test(id);
 }
 
+/**
+ * Normalize a workspaceRoot for storage/read — collapses `.`/`..` segments and
+ * redundant separators via node:path `normalize`, and strips a trailing
+ * separator (except for a bare root like `/` or `C:\`). Absent/null pass
+ * through unchanged; never resolved against cwd (that would defeat the
+ * "never infer from current cwd" rule) and never throws.
+ */
+function normalizeWorkspaceRoot(root: string | null | undefined): string | null | undefined {
+  if (root === undefined) return undefined;
+  if (root === null) return null;
+  if (typeof root !== 'string' || root.length === 0) return null;
+  let n = normalize(root);
+  if (n.length > 1 && /[\\/]$/.test(n) && !/^[\\/]$/.test(n) && !/^[A-Za-z]:[\\/]$/.test(n)) {
+    n = n.replace(/[\\/]+$/, '');
+  }
+  return n;
+}
+
+function isStoredProviderId(value: unknown): value is ProviderId {
+  return value === 'claude' || value === 'codex' || value === 'opencode' || value === 'grok';
+}
+
 // ---------------------------------------------------------------------------
 // Internal index helpers
 // ---------------------------------------------------------------------------
@@ -124,6 +152,9 @@ function normaliseMeta(raw: unknown): ConversationMeta {
   if (r['mode'] === 'auto' || r['mode'] === 'budget' || r['mode'] === 'balanced' || r['mode'] === 'high' || r['mode'] === 'max') {
     meta.mode = r['mode'];
   }
+  if (typeof r['workspaceRoot'] === 'string') meta.workspaceRoot = normalizeWorkspaceRoot(r['workspaceRoot']) ?? null;
+  else if (r['workspaceRoot'] === null) meta.workspaceRoot = null;
+  if (isStoredProviderId(r['lastProvider'])) meta.lastProvider = r['lastProvider'];
   return meta;
 }
 
@@ -161,6 +192,18 @@ function activationFields(m: ConversationMeta): Pick<ConversationMeta, 'activati
 function modeFields(m: ConversationMeta): Pick<ConversationMeta, 'mode'> {
   const out: { mode?: ConversationMode } = {};
   if (m.mode !== undefined && m.mode !== 'auto') out.mode = m.mode;
+  return out;
+}
+
+function workspaceRootFields(m: ConversationMeta): Pick<ConversationMeta, 'workspaceRoot'> {
+  const out: { workspaceRoot?: string | null } = {};
+  if (m.workspaceRoot !== undefined) out.workspaceRoot = m.workspaceRoot;
+  return out;
+}
+
+function lastProviderFields(m: ConversationMeta): Pick<ConversationMeta, 'lastProvider'> {
+  const out: { lastProvider?: ProviderId } = {};
+  if (m.lastProvider !== undefined) out.lastProvider = m.lastProvider;
   return out;
 }
 
@@ -401,10 +444,18 @@ export function createFileConversationStore(opts: {
     // -----------------------------------------------------------------------
     // create
     // -----------------------------------------------------------------------
-    async create(title: string, mode?: ConversationMode): Promise<ConversationMeta> {
+    async create(
+      title: string,
+      modeOrOptions?: ConversationMode | CreateConversationOptions,
+    ): Promise<ConversationMeta> {
       await ensureDir(l);
       const id = clock.uuid();
       const now = clock.isoNow();
+      const options: CreateConversationOptions =
+        typeof modeOrOptions === 'string'
+          ? { mode: modeOrOptions }
+          : (modeOrOptions === undefined ? {} : modeOrOptions);
+      const { mode, workspaceRoot } = options;
       const meta: ConversationMeta = {
         id,
         title,
@@ -414,6 +465,10 @@ export function createFileConversationStore(opts: {
         pinned: false,
         category: null,
         ...(mode !== undefined && mode !== 'auto' ? { mode } : {}),
+        ...(() => {
+          const normalized = normalizeWorkspaceRoot(workspaceRoot);
+          return normalized !== undefined ? { workspaceRoot: normalized } : {};
+        })(),
       };
 
       await withLock(getIndexLockPath(l), async () => {
@@ -489,6 +544,8 @@ export function createFileConversationStore(opts: {
               ...intensityFields(existing),
               ...activationFields(existing),
               ...modeFields(existing),
+              ...workspaceRootFields(existing),
+              ...lastProviderFields(existing),
             };
 
             const newIndex = [...index];
@@ -577,6 +634,8 @@ export function createFileConversationStore(opts: {
               ...intensityFields(existing),
               ...activationFields(existing),
               ...modeFields(existing),
+              ...workspaceRootFields(existing),
+              ...lastProviderFields(existing),
             };
             const newIndex = [...index];
             newIndex[idx] = updated;
@@ -611,6 +670,8 @@ export function createFileConversationStore(opts: {
           ...intensityFields(existing),
           ...activationFields(existing),
           ...modeFields(existing),
+          ...workspaceRootFields(existing),
+          ...lastProviderFields(existing),
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
@@ -666,6 +727,8 @@ export function createFileConversationStore(opts: {
           ...intensityFields(existing),
           ...activationFields(existing),
           ...modeFields(existing),
+          ...workspaceRootFields(existing),
+          ...lastProviderFields(existing),
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
@@ -697,6 +760,8 @@ export function createFileConversationStore(opts: {
           ...intensityFields(existing),
           ...activationFields(existing),
           ...modeFields(existing),
+          ...workspaceRootFields(existing),
+          ...lastProviderFields(existing),
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
@@ -730,6 +795,8 @@ export function createFileConversationStore(opts: {
           ...intensityFields(existing),
           ...activationFields(existing),
           ...modeFields(existing),
+          ...workspaceRootFields(existing),
+          ...lastProviderFields(existing),
         };
         const newIndex = [...index];
         newIndex[idx] = updated;
@@ -761,6 +828,8 @@ export function createFileConversationStore(opts: {
           ...recapFields(existing),
           ...activationFields(existing),
           ...modeFields(existing),
+          ...workspaceRootFields(existing),
+          ...lastProviderFields(existing),
           ...(intensity === undefined || intensity === 'auto' ? {} : { intensity }),
         };
         const newIndex = [...index];
@@ -796,6 +865,8 @@ export function createFileConversationStore(opts: {
           ...recapFields(existing),
           ...intensityFields(existing),
           ...modeFields(existing),
+          ...workspaceRootFields(existing),
+          ...lastProviderFields(existing),
           ...(activation === undefined || activation === 'adaptive' ? {} : { activation }),
         };
         const newIndex = [...index];
@@ -828,7 +899,43 @@ export function createFileConversationStore(opts: {
           ...recapFields(existing),
           ...intensityFields(existing),
           ...activationFields(existing),
+          ...workspaceRootFields(existing),
+          ...lastProviderFields(existing),
           ...(mode === undefined || mode === 'auto' ? {} : { mode }),
+        };
+      const newIndex = [...index];
+      newIndex[idx] = updated;
+      await writeIndex(l, newIndex);
+      });
+    },
+
+    // -----------------------------------------------------------------------
+    // setLastProvider — persist the actual provider that handled the latest
+    // completed turn for this conversation.
+    // -----------------------------------------------------------------------
+    async setLastProvider(id: string, provider: ProviderId): Promise<void> {
+      await ensureDir(l);
+      await withLock(getIndexLockPath(l), async () => {
+        const index = await readIndexLocked(l, onWarning);
+        const idx = index.findIndex((m) => m.id === id);
+        if (idx === -1) return;
+
+        const existing = index[idx];
+        if (existing === undefined) return;
+        const updated: ConversationMeta = {
+          id: existing.id,
+          title: existing.title,
+          createdAt: existing.createdAt,
+          updatedAt: existing.updatedAt,
+          messageCount: existing.messageCount,
+          pinned: existing.pinned,
+          category: existing.category,
+          ...recapFields(existing),
+          ...intensityFields(existing),
+          ...activationFields(existing),
+          ...modeFields(existing),
+          ...workspaceRootFields(existing),
+          lastProvider: provider,
         };
         const newIndex = [...index];
         newIndex[idx] = updated;

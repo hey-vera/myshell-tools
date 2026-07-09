@@ -1,7 +1,8 @@
 import type { OutputSink } from './render.js';
 import type { Confirm } from './menu-key-confirm.js';
-import { readMenuKey } from './menu-key-confirm.js';
+import { readMenuKey, NAV_ESC, NAV_LEFT, getMenuStack } from './menu-key-confirm.js';
 import { bold, yellow, green } from '../ui/theme.js';
+import { navFooterText } from './ui/nav-footer.js';
 import type { Clock } from '../core/types.js';
 import type { LoginRunner } from '../commands/login.js';
 import {
@@ -201,11 +202,13 @@ async function editAccountScreen(
   suspendStdin?: (() => () => void) | undefined,
   inkReadKey?: (() => Promise<string>) | undefined,
 ): Promise<void> {
+  getMenuStack().push();
   for (;;) {
     const expiryDisplay = account.expiresAt ? account.expiresAt.slice(0, 10) : '-';
     const planDisplay = account.plan ?? '-';
     const statusDisplay = account.enabled === false ? 'disabled'
       : account.status ?? 'unknown';
+    out.beginFrame?.();
     out.write(`\n${bold('Edit Claude Account: ' + account.label, out.color)}\n\n`);
     out.write(`  provider: claude\n`);
     out.write(`  id: ${account.id}\n`);
@@ -219,11 +222,14 @@ async function editAccountScreen(
     out.write('  [t] toggle enabled\n');
     out.write('  [r] re-auth\n');
     out.write('  [d] delete\n');
-    out.write('  [b] back\n\n');
+    out.write(`  [b] back  (${navFooterText('back-and-exit', out.color)})\n\n`);
     out.write('> ');
+    out.endFrame?.();
     const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
 
-    if (key === null || key === 'b') return;
+    if (key === null || key === 'b') { getMenuStack().pop(); return; }
+    if (key === NAV_ESC) { getMenuStack().requestExit(); return; }
+    if (key === NAV_LEFT) { getMenuStack().pop(); return; }
 
     if (key === 'p') {
       const sel = await prioritySelectScreen(out, readLine, inkReadKey);
@@ -342,6 +348,7 @@ async function prioritySelectScreen(
   readLine: () => Promise<string | null>,
   inkReadKey?: () => Promise<string>,
 ): Promise<AccountPriority | 'custom' | null> {
+  out.beginFrame?.();
   out.write('\nPriority:\n\n');
   out.write('  [l] low (25)\n');
   out.write('  [m] medium (100)\n');
@@ -350,7 +357,9 @@ async function prioritySelectScreen(
   out.write('  [d] disabled\n');
   out.write('  [b] back\n\n');
   out.write('> ');
+  out.endFrame?.();
   const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+  if (key === NAV_ESC) { getMenuStack().requestExit(); return null; }
   if (key === 'l') return 'low';
   if (key === 'm') return 'medium';
   if (key === 'h') return 'high';
@@ -363,7 +372,9 @@ async function customWeightPrompt(
   out: OutputSink,
   readLine: () => Promise<string | null>,
 ): Promise<number | null> {
+  out.beginFrame?.();
   out.write('\nCustom weight (0..1000, 0=disabled): ');
+  out.endFrame?.();
   out.flush?.();
   const raw = await readLine();
   if (raw === null || raw.trim().length === 0) return null;
@@ -382,13 +393,16 @@ async function expirySelectScreen(
   inkReadKey?: () => Promise<string>,
 ): Promise<string | undefined> {
   const currentDisplay = currentExpiry ? currentExpiry.slice(0, 10) : 'none';
+  out.beginFrame?.();
   out.write(`\nExpiry: currently ${currentDisplay}\n\n`);
   out.write('  [s] set\n');
   out.write('  [c] clear\n');
   out.write('  [b] back\n\n');
   out.write('> ');
+  out.endFrame?.();
   const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
 
+  if (key === NAV_ESC) { getMenuStack().requestExit(); return currentExpiry; }
   if (key === 'c') return undefined;
   if (key === 's') {
     out.write('\nExpiry date (YYYY-MM-DD): ');
@@ -446,6 +460,7 @@ export async function runClaudeAccountsMenu(
   },
 ): Promise<void> {
   const { login, suspendStdin, inkReadKey } = deps;
+  getMenuStack().push();
   for (;;) {
     let allAccounts: readonly SubscriptionAccount[];
     try {
@@ -456,6 +471,7 @@ export async function runClaudeAccountsMenu(
     }
     const accounts = allAccounts.filter(isClaudeAccount);
 
+    out.beginFrame?.();
     out.write('\n' + bold('Claude Accounts', out.color) + '\n');
 
     if (accounts.length === 0) {
@@ -475,11 +491,14 @@ export async function runClaudeAccountsMenu(
     if (accounts.length > 0) {
       out.write('  [e] edit\n');
     }
-    out.write('  [b] back\n\n');
+    out.write(`  [b] back  (${navFooterText('back-and-exit', out.color)})\n\n`);
     out.write('> ');
+    out.endFrame?.();
     const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
 
-    if (key === null || key === 'b') return;
+    if (key === null || key === 'b') { getMenuStack().pop(); return; }
+    if (key === NAV_ESC) { getMenuStack().requestExit(); return; }
+    if (key === NAV_LEFT) { getMenuStack().pop(); return; }
 
     if (key === 'c') {
       await createClaudeAccountFlow(

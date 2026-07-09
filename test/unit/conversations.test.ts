@@ -865,6 +865,89 @@ describe('createFileConversationStore — setMode', () => {
 });
 
 // ---------------------------------------------------------------------------
+// setLastProvider — actual-provider round-trip + preserved across other mutations
+// ---------------------------------------------------------------------------
+
+describe('createFileConversationStore — setLastProvider', () => {
+  it('persists lastProvider and list reflects it', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-last-provider-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const meta = await store.create('Provider label');
+      await store.setLastProvider(meta.id, 'codex');
+
+      const found = (await store.list()).find((m) => m.id === meta.id);
+      assert.ok(found !== undefined);
+      assert.equal(found.lastProvider, 'codex');
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('is preserved across rename/pin/category/recap/intensity/activation/mode mutations', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-last-provider-preserve-${randomUUID()}-`));
+    try {
+      const clock = makeFakeClock('2024-06-01T10:00:00.000Z');
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const meta = await store.create('Preserve provider');
+      await store.setLastProvider(meta.id, 'claude');
+      await store.rename(meta.id, 'Preserve provider renamed');
+      await store.setPinned(meta.id, true);
+      await store.setCategory(meta.id, 'refactor');
+      await store.setRecap(meta.id, 'where we were', 6);
+      await store.setIntensity(meta.id, 4);
+      await store.setActivation(meta.id, 'go-when-confident');
+      await store.setMode(meta.id, 'max');
+
+      const found = (await store.list()).find((m) => m.id === meta.id);
+      assert.ok(found !== undefined);
+      assert.equal(found.title, 'Preserve provider renamed');
+      assert.equal(found.pinned, true);
+      assert.equal(found.category, 'refactor');
+      assert.equal(found.recap, 'where we were');
+      assert.equal(found.recapAt, '2024-06-01T10:00:00.000Z');
+      assert.equal(found.recapMessageCount, 6);
+      assert.equal(found.intensity, 4);
+      assert.equal(found.activation, 'go-when-confident');
+      assert.equal(found.mode, 'max');
+      assert.equal(found.lastProvider, 'claude');
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('legacy index entries without lastProvider keep it absent and do not infer one', async () => {
+    const home2 = await mkdtemp(join(tmpdir(), `conv-last-provider-legacy-${randomUUID()}-`));
+    try {
+      const convDir = join(home2, '.myshell-tools', 'conversations');
+      await mkdir(convDir, { recursive: true });
+      await writeFile(
+        join(convDir, 'index.json'),
+        JSON.stringify([{
+          id: 'legacy-last-provider',
+          title: 'Legacy providerless conversation',
+          createdAt: '2023-01-01T00:00:00.000Z',
+          updatedAt: '2023-01-02T00:00:00.000Z',
+          messageCount: 2,
+          pinned: false,
+          category: null,
+        }]),
+        'utf8',
+      );
+
+      const clock = makeFakeClock();
+      const store = createFileConversationStore({ homeDir: home2, clock });
+      const found = (await store.list()).find((m) => m.id === 'legacy-last-provider');
+      assert.ok(found !== undefined);
+      assert.equal(found.lastProvider, undefined);
+    } finally {
+      await rm(home2, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // truncateAfter — controlled, atomic, fail-soft departure from append-only
 // (powers /retry and /edit). Round-trip, index update, recap-clear, validation,
 // atomicity, fail-soft.

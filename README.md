@@ -19,7 +19,7 @@ That's it.  `npx` fetches the package, runs the interactive setup, and:
 1. **Detects** which provider CLIs (Claude Code / Codex) are already installed.
 2. **Offers to install** any missing ones — one keypress (`Enter` to install, `n` to skip).  It never installs anything silently; consent is always required.
 3. **Offers to sign you in** to providers that are installed but not yet authenticated.
-4. Drops you into the control-panel menu, ready to use.
+4. Drops you into the home menu, ready to use.
 
 On subsequent runs `npx myshell-tools` goes straight to the menu (setup only runs once).
 
@@ -144,6 +144,21 @@ Options:
   -h, --help      Show help
   -v, --version   Print version
 ```
+
+## Home menu and workspaces
+
+The default entry screen is the home menu: an **Effort Mode** box at the top, one
+workspace-aware **Recent** list in the middle, and a compact **Session Manager**
+action list at the bottom. `m` changes the default effort mode, `n` starts a new
+conversation, `e` opens the full conversation library, and `Esc` exits from the
+root menu.
+
+Each conversation is now bound to a workspace root. On **New conversation**, press
+`Enter` to use the current repo root / cwd, or choose the workspace picker to bind
+the conversation somewhere else. When you resume that conversation later, normal
+chat turns and `!<command>` shell passthrough both run from the saved workspace
+root, and the Recent list shows cross-workspace conversations with their location
+inline.
 
 ### A real run
 

@@ -1,5 +1,5 @@
 /**
- * test/unit/preflight-deps.test.ts — unit tests for src/interface/preflight-deps.ts
+ * test/unit/preflight-deps.test.ts � unit tests for src/interface/preflight-deps.ts
  */
 
 import { describe, it } from 'vitest';
@@ -33,7 +33,7 @@ const providers = {
   claude: providerStub('claude'),
 } as const;
 
-const env = { ...process.env };
+const env: NodeJS.ProcessEnv = {};
 const config: AppConfig = { onboarded: true, setAsDefault: true };
 const policy: Policy = DEFAULT_POLICY;
 
@@ -53,12 +53,13 @@ function baseInput(overrides: Partial<BuildPreflightDepsInput> = {}) {
 }
 
 describe('buildPreflightDeps', () => {
-  it('default config builds routeClassifier, intentExtractor, and autoBrainRungTuple', () => {
+  it('default config builds route, intent, semantic preflight, completion result, and autoBrainRungTuple', () => {
     const result = buildPreflightDeps(baseInput());
     assert.ok(result.routeClassifier !== undefined, 'routeClassifier should be defined');
     assert.ok(result.intentExtractor !== undefined, 'intentExtractor should be defined');
-    assert.equal(result.semanticPreflightV1, undefined);
-    assert.ok(result.semanticPreflightExtractor === undefined, 'semanticPreflightExtractor should be undefined');
+    assert.equal(result.semanticPreflightV1, true);
+    assert.equal(result.completionResultV1, true);
+    assert.ok(result.semanticPreflightExtractor !== undefined, 'semanticPreflightExtractor should be defined');
     assert.ok(result.autoBrainRungTuple !== undefined, 'autoBrainRungTuple should be defined');
   });
 
@@ -66,8 +67,8 @@ describe('buildPreflightDeps', () => {
     const result = buildPreflightDeps(baseInput({ config: { ...config, smartRoute: false } }));
     assert.ok(result.routeClassifier === undefined, 'routeClassifier should be undefined');
     assert.ok(result.intentExtractor !== undefined, 'intentExtractor should be defined');
-    assert.equal(result.semanticPreflightV1, undefined);
-    assert.ok(result.semanticPreflightExtractor === undefined, 'semanticPreflightExtractor should be undefined');
+    assert.equal(result.semanticPreflightV1, true);
+    assert.ok(result.semanticPreflightExtractor !== undefined, 'semanticPreflightExtractor should be defined');
     assert.ok(result.autoBrainRungTuple !== undefined, 'autoBrainRungTuple should be defined');
   });
 
@@ -75,7 +76,8 @@ describe('buildPreflightDeps', () => {
     const result = buildPreflightDeps(baseInput({ config: { ...config, intentEngine: false } }));
     assert.ok(result.routeClassifier !== undefined, 'routeClassifier should be defined');
     assert.ok(result.intentExtractor === undefined, 'intentExtractor should be undefined');
-    assert.ok(result.semanticPreflightExtractor === undefined, 'semanticPreflightExtractor should be undefined');
+    assert.equal(result.semanticPreflightV1, true);
+    assert.ok(result.semanticPreflightExtractor !== undefined, 'semanticPreflightExtractor should be defined');
     assert.ok(result.autoBrainRungTuple !== undefined, 'autoBrainRungTuple should be defined');
   });
 
@@ -83,7 +85,8 @@ describe('buildPreflightDeps', () => {
     const result = buildPreflightDeps(baseInput({ intentPass: false }));
     assert.ok(result.routeClassifier !== undefined, 'routeClassifier should be defined');
     assert.ok(result.intentExtractor === undefined, 'intentExtractor should be undefined');
-    assert.ok(result.semanticPreflightExtractor === undefined, 'semanticPreflightExtractor should be undefined');
+    assert.equal(result.semanticPreflightV1, true);
+    assert.ok(result.semanticPreflightExtractor !== undefined, 'semanticPreflightExtractor should be defined');
     assert.ok(result.autoBrainRungTuple !== undefined, 'autoBrainRungTuple should be defined');
   });
 
@@ -95,10 +98,7 @@ describe('buildPreflightDeps', () => {
       reserved: { work: 1, failover: 0, verification: 0 },
     });
 
-    const result = buildPreflightDeps(baseInput({
-      config: { ...config, experimentalSemanticPreflightV1: true },
-      turnCallBudget: budget,
-    }));
+    const result = buildPreflightDeps(baseInput({ turnCallBudget: budget }));
 
     assert.ok(result.routeClassifier !== undefined, 'routeClassifier should be defined');
     assert.ok(result.intentExtractor !== undefined, 'intentExtractor should be defined');
@@ -106,9 +106,6 @@ describe('buildPreflightDeps', () => {
     assert.ok(semanticExtractor !== undefined, 'semanticPreflightExtractor should be defined');
     assert.equal(result.semanticPreflightV1, true);
 
-    // Both classifiers/extractors were built with the SAME budget object —
-    // verify by calling both and checking they record to the same ledger.
-    // We do this by checking the budget's begun count increments across both.
     const initialSnap = budget.snapshot();
     assert.strictEqual(initialSnap.begun, 0);
 
@@ -123,10 +120,8 @@ describe('buildPreflightDeps', () => {
     );
   });
 
-  it('preflight deps retain legacy closures for rollback while exposing semantic closure', () => {
-    const result = buildPreflightDeps(baseInput({
-      config: { ...config, experimentalSemanticPreflightV1: true },
-    }));
+  it('preflight deps retain legacy closures while exposing semantic closure by default', () => {
+    const result = buildPreflightDeps(baseInput());
 
     assert.equal(typeof result.routeClassifier, 'function');
     assert.equal(typeof result.intentExtractor, 'function');
@@ -134,7 +129,24 @@ describe('buildPreflightDeps', () => {
     assert.equal(typeof result.semanticPreflightExtractor, 'function');
   });
 
-  it('unset flag rollback restores legacy route and intent closures', () => {
+  it('completion result is default-on and explicitly opt-out capable', () => {
+    const defaultOn = buildPreflightDeps(baseInput({ env: {}, config }));
+    assert.equal(defaultOn.completionResultV1, true);
+
+    const envOff = buildPreflightDeps(baseInput({
+      env: { MYSHELL_COMPLETION_RESULT_V1: '0' },
+      config: { ...config, experimentalCompletionResultV1: true },
+    }));
+    assert.equal(envOff.completionResultV1, undefined);
+
+    const configOff = buildPreflightDeps(baseInput({
+      env: {},
+      config: { ...config, experimentalCompletionResultV1: false },
+    }));
+    assert.equal(configOff.completionResultV1, undefined);
+  });
+
+  it('semantic preflight explicit opt-out restores legacy route and intent closures', () => {
     const result = buildPreflightDeps(baseInput({
       env: { MYSHELL_UNIFY_PREFLIGHT: '1', MYSHELL_RISK_SIGNALS: '1' },
       config: { ...config, experimentalSemanticPreflightV1: false },

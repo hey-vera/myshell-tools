@@ -17,7 +17,7 @@
  * Slice 2 — Slice 1 ships the locked skeleton copy as-is.
  */
 
-import { basename } from 'node:path';
+// See docs/menu-build-spec-final.md (locked slices + Slice 3 doctor de-advertise) + kern-spec.md
 
 import type { AppConfig } from '../infra/config.js';
 import type { ConversationMeta, ConversationMode } from '../infra/conversation-store.js';
@@ -35,6 +35,7 @@ import {
   conversationModeLabel,
   type ProviderAccountSummary,
 } from './menu-display.js';
+import { workspaceLabel, normalizeWorkspacePath } from './workspace.js';
 
 // ---------------------------------------------------------------------------
 // Effort Mode box — locked Slice 1 copy (verbatim from the mockup).
@@ -73,34 +74,95 @@ function compactAge(thenMs: number, nowMs: number): string {
 }
 
 /**
- * Workspace label for the `Recent (<label>):` header. Slice 1 uses the current
- * cwd basename — a real, non-fabricated value. True workspace-root resolution
- * (git root else cwd) and workspace-labelled rows are later slices.
+ * Recent-list render order: current-workspace rows first, then the rest,
+ * preserving the store's pinned-then-recency order WITHIN each tier (stable
+ * partition — `filter` preserves input order, and the input is already
+ * pinned-then-recency-sorted by `ConversationStore.list()`). PURE.
+ *
+ * `currentWorkspaceRoot` is the resolved workspace root of the current launch
+ * (git toplevel else cwd — Slice 7's `resolveWorkspaceRoot`). A row is
+ * "current" when its own `workspaceRoot` normalizes (Slice 7's
+ * `normalizeWorkspacePath`, case-insensitive on win32/darwin) to the same path
+ * as the current root. Rows with a null/absent `workspaceRoot` (global/
+ * unknown, e.g. a legacy conversation created before Slice 6) are NEVER
+ * "current" — they sort into the non-current tier but render with NO location
+ * prefix (there is no location to fabricate, per the no-fabricated-data rule).
+ *
+ * This single function is the ONE place the visible Recent-list order is
+ * decided. BOTH the renderer (`renderRecentRows`) and the numeric-open
+ * dispatcher in `menu.ts` (`[1]`-`[9]`) call it, so the rendered `[n]` index
+ * and the conversation `[n]` opens always refer to the same row — the
+ * "visible render order must match numeric dispatch order" invariant.
  */
-function workspaceLabel(cwd: string): string {
-  if (!cwd || cwd.length === 0) return 'workspace';
-  const base = basename(cwd);
-  return base.length > 0 ? base : cwd;
+export function orderRecentForRender(
+  metas: readonly ConversationMeta[],
+  currentWorkspaceRoot: string | null | undefined,
+): ConversationMeta[] {
+  if (metas.length === 0) return [];
+  const normCurrent =
+    typeof currentWorkspaceRoot === 'string' && currentWorkspaceRoot.length > 0
+      ? normalizeWorkspacePath(currentWorkspaceRoot)
+      : '';
+  const isCurrent = (m: ConversationMeta): boolean => {
+    if (normCurrent.length === 0) return false;
+    if (typeof m.workspaceRoot !== 'string' || m.workspaceRoot.length === 0) return false;
+    return normalizeWorkspacePath(m.workspaceRoot) === normCurrent;
+  };
+  const current = metas.filter(isCurrent);
+  const other = metas.filter((m) => !isCurrent(m));
+  return [...current, ...other];
 }
 
 /**
  * Build the Recent list body lines (one row per conversation). Row format:
- *   `[n] <age>  <title>  · <effort>`
- * The locked `engine · effort` column is reduced to `· effort` for Slice 1
- * because ConversationMeta carries no provider/engine field and fabricating one
- * would violate the "no fabricated data" rule. The location column is omitted
- * for the same reason (workspace-root resolution is a later slice).
+ *   `[n] <age>  <title-column>  <provider> · <effort>`
+ * Legacy / never-run conversations keep the effort-only fallback (`· <effort>`)
+ * because provider labels are shown only when a real completed turn recorded
+ * `lastProvider`; they are never inferred or fabricated.
+ *
+ * Slice 10 — workspace-aware rows. The list is ordered by
+ * {@link orderRecentForRender} (current-workspace rows first). The title column
+ * carries the location prefix for NON-current rows only, matching the locked
+ * `Home - Populated` mockup's mixed rows:
+ *   - current-workspace row:  `<title>`           (location is redundant — the
+ *                                                header already names this workspace)
+ *   - non-current row:         `<location> · <title>` (`<location>` = Slice 7's
+ *                                                `workspaceLabel` of THAT row's own
+ *                                                `workspaceRoot`, never the current one)
+ *   - row with no/empty `workspaceRoot` (global/unknown): renders as `<title>`
+ *     with no prefix — there is no location to fabricate. It still sorts into the
+ *     non-current tier.
  */
 function renderRecentRows(
   metas: readonly ConversationMeta[],
   nowMs: number,
+  currentWorkspaceRoot: string | null | undefined,
 ): string[] {
-  return metas.slice(0, 7).map((m, i) => {
+  const ordered = orderRecentForRender(metas, currentWorkspaceRoot);
+  const normCurrent =
+    typeof currentWorkspaceRoot === 'string' && currentWorkspaceRoot.length > 0
+      ? normalizeWorkspacePath(currentWorkspaceRoot)
+      : '';
+  return ordered.slice(0, 7).map((m, i) => {
     const thenMs = new Date(m.updatedAt).getTime();
     const age = compactAge(thenMs, nowMs);
     const idx = i + 1;
     const effort = conversationModeLabel(m.mode as ConversationMode | undefined);
-    return `[${idx}] ${age}  ${m.title}  · ${effort}`;
+    const providerEffort =
+      m.lastProvider !== undefined
+        ? `${m.lastProvider} · ${effort}`
+        : `· ${effort}`;
+    const isCurrent =
+      normCurrent.length > 0 &&
+      typeof m.workspaceRoot === 'string' &&
+      m.workspaceRoot.length > 0 &&
+      normalizeWorkspacePath(m.workspaceRoot) === normCurrent;
+    const hasLocation =
+      typeof m.workspaceRoot === 'string' && m.workspaceRoot.length > 0;
+    const titleColumn = !isCurrent && hasLocation
+      ? `${workspaceLabel(m.workspaceRoot as string)} · ${m.title}`
+      : m.title;
+    return `[${idx}] ${age}  ${titleColumn}  ${providerEffort}`;
   });
 }
 
@@ -114,19 +176,24 @@ function renderControls(
   metas: readonly ConversationMeta[],
   nowMs: number,
   authed: boolean,
+  currentWorkspaceRoot: string | null | undefined,
 ): string {
   const lines: string[] = [];
-  const hasConversations = metas.length > 0;
+  const ordered = orderRecentForRender(metas, currentWorkspaceRoot);
+  const hasConversations = ordered.length > 0;
   const accountsLabel = authed ? 'Accounts' : 'Accounts / Sign in';
 
   if (hasConversations) {
-    const latest = metas[0];
+    const latest = ordered[0];
     if (latest !== undefined) {
       lines.push('[c] Continue last');
-      // Sub-line: locked `└─ engine · title · age`; engine column omitted for
-      // Slice 1 (no provider data on ConversationMeta — judgment call).
       const thenMs = new Date(latest.updatedAt).getTime();
-      lines.push(`    └─ ${latest.title} · ${compactAge(thenMs, nowMs)}`);
+      const age = compactAge(thenMs, nowMs);
+      lines.push(
+        latest.lastProvider !== undefined
+          ? `    └─ ${latest.lastProvider} · ${latest.title} · ${age}`
+          : `    └─ ${latest.title} · ${age}`,
+      );
       lines.push('[1-9] Open numbered above');
     }
     lines.push('[n] New conversation');
@@ -163,6 +230,7 @@ export async function renderMainScreen(
   _accountStates?: Record<string, ProviderAccountSummary>,
   _spendLoading = false,
   listsLoading = false,
+  currentWorkspaceRoot?: string,
 ): Promise<void> {
   out.write('\n');
 
@@ -173,9 +241,17 @@ export async function renderMainScreen(
   );
   out.write(effortBox + '\n\n');
 
-  // 2. Recent (<workspace label>): — one list, no workspace split.
+  // 2. Recent (<current workspace label>): — one list, no workspace split.
+  //
+  // Slice 10 — the label comes from Slice 7's `workspaceLabel(currentRoot)`,
+  // where `currentRoot` is the resolved workspace root (git toplevel else cwd)
+  // supplied by `startMenu` (which resolves it once via `resolveWorkspaceRoot`).
+  // When omitted (e.g. unit tests driving `renderMainScreen` directly), it
+  // falls back to `ctx.cwd` — the cwd basename, matching the pre-Slice-10
+  // behavior so locked-Slice-1 render assertions stay byte-identical.
   const authed = hasAnyAuthenticatedProvider(mutableCtx.env);
-  const label = workspaceLabel(ctx.cwd);
+  const currentRoot = currentWorkspaceRoot ?? ctx.cwd;
+  const label = workspaceLabel(currentRoot);
   out.write(`Recent (${label}):\n`);
 
   const nowMs = ctx.clock.now();
@@ -184,7 +260,7 @@ export async function renderMainScreen(
   } else if (metas.length === 0) {
     out.write(authed ? 'No conversations yet.\n' : 'Sign in to start conversations.\n');
   } else {
-    const rows = renderRecentRows(metas, nowMs);
+    const rows = renderRecentRows(metas, nowMs, currentRoot);
     for (const row of rows) out.write(`  ${row}\n`);
   }
   out.write('\n');
@@ -192,8 +268,12 @@ export async function renderMainScreen(
   // 3. Session Manager centered titleBox (sized to text).
   out.write(titleBox('Session Manager', { padding: 6, color: out.color }) + '\n\n');
 
-  // 4. Flat controls (state-dependent).
-  out.write(renderControls(metas, nowMs, authed) + '\n\n');
+  // 4. Flat controls (state-dependent). The [c] Continue-last sub-line names the
+  // FIRST RENDERED row (current-workspace-first order), so it always matches
+  // the `[1]` row above it — the locked mockup shows `[c]`'s sub-line equal to
+  // row `[1]`, and the render/dispatch invariant says visible order == dispatch
+  // order ([c] is the conceptual `[0]`).
+  out.write(renderControls(metas, nowMs, authed, currentRoot) + '\n\n');
 
   // 5. Choice prompt. 6. Root footer (only `ESC to exit`).
   out.write('Choice: ▌\n');

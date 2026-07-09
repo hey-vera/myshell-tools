@@ -68,7 +68,7 @@ export async function runRawProviderSession(
   }
 
   if (choices.length === 0) {
-    out.write('\nNo provider CLI is installed yet. Install one from the Auth section or run: myshell-tools doctor --fix\n');
+    out.write('\nNo provider CLI is installed yet. Install one from the Auth section.\n');
     return;
   }
 

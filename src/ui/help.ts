@@ -83,6 +83,7 @@ export function commandHelpText(command: string): string | null {
     case 'status':
     case 'check':
     case 'doctor':
+      // Slice 3: doctor kept for support/CI only (no user-facing menu/home advertising); self-heal in control panel (menu-build-spec-final.md:23,301,320-334 "Delete user-facing Doctor/Health" "Keep hidden `doctor/status/check`"; kern-spec.md)
       return [
         `myshell-tools ${command}`,
         '',
@@ -90,8 +91,7 @@ export function commandHelpText(command: string): string | null {
         'directory writability, pricing freshness, and per-provider install/auth.',
         '',
         'You normally never need this — the control panel surfaces any problem on',
-        'its own. It exists for support threads and CI. (`status`, `check`, and the',
-        'legacy `doctor` are aliases.)',
+        'its own. It exists for support threads and CI. (`status` and `check` are aliases.)',
         '',
         'Options:',
         '  --fix        Interactively install missing providers, sign in, and',

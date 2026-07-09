@@ -26,6 +26,7 @@ import type { GoalCeilings } from '../core/goal.js';
 import { appendCheckpointFromContinue, capContract } from '../core/work-contract.js';
 import type { RoadmapItem, RoadmapItemVerdict } from '../core/work-contract.js';
 import { managerCycleEnabled } from './ui/manager-flag.js';
+import { completionResultV1Enabled } from './ui/completion-result-flag.js';
 import {
   pickNextTodo,
   buildTodoTask,
@@ -38,7 +39,7 @@ import { isKeepGoingOffer } from '../core/questions.js';
 import { assessGoalConfidence, decideGoalActivation, detectActivationOverride } from '../core/autonomy.js';
 import { classify, hasWorkIntent } from '../core/classify.js';
 import { resolveMemoryContextDetailed } from '../core/memory-injection.js';
-import { buildEnvironmentContext } from '../core/repo-map.js';
+import { buildEnvironmentContext, type RepoScanPort } from '../core/repo-map.js';
 import { repoCacheKey, type RepoFingerprint } from '../core/repo-identity.js';
 import {
   buildToolStateContext,
@@ -121,7 +122,7 @@ import { readLedger } from '../infra/ledger.js';
 import { summarizeSessionProviderTokens, summarizeSpend } from '../infra/insights.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
 import { detectEnvironment } from '../providers/detect.js';
-import { installProvider, installCommandFor } from '../providers/install.js';
+import { installProvider } from '../providers/install.js';
 import type { Provider, ProviderId, ProviderRequest, SandboxLevel } from '../providers/port.js';
 import { route } from '../core/route.js';
 import {
@@ -156,6 +157,7 @@ import { defaultLoginRunner, type LoginRunner } from '../commands/login.js';
 import { resolveMenuLoginDestination, type MenuLoginOrigin, type MenuLoginDestination } from './menu-login-navigation.js';
 import { runCost } from '../commands/cost.js';
 import { dim, bold, formatRecapLine } from '../ui/theme.js';
+import { navFooterText } from './ui/nav-footer.js';
 import { makeRecapGenerator } from '../core/recap-generator.js';
 import { makeGoalObjectiveGenerator } from '../core/goal-objective-generator.js';
 import { makeGoalPlanner, makeGoalPlannerAttempt } from '../core/goal-plan-generator.js';
@@ -216,6 +218,18 @@ import { inkEnabled } from './ui/flag.js';
 import { semanticPreflightV1Enabled } from './ui/semantic-preflight-flag.js';
 import type { StartupInputBuffer } from './startup-input.js';
 import { STARTUP_INPUT_CARRIER_ENV } from './startup-input.js';
+import {
+  readActiveConversation,
+  writeActiveConversation,
+  clearActiveConversation,
+} from '../infra/active-conversation.js';
+import {
+  readRelaunchRecoveryState,
+  checkRelaunchGuard,
+  recordRelaunchAttempt,
+  buildRecoveryEnv,
+} from '../infra/relaunch-recovery.js';
+import type { WatchdogSnapshot } from './ui/mount.js';
 
 import { itemParkingEnabled } from './ui/item-park-flag.js';
 
@@ -225,7 +239,7 @@ import { tribunalEnabled } from './ui/tribunal-flag.js';
 
 
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
-import { subscriptionsEnabled } from './ui/subscriptions-flag.js';
+
 import { accountParallelismEnabled } from './ui/account-parallelism-flag.js';
 import { readSubscriptions, type SubscriptionAccount, type SubscriptionProvider, type SubscriptionsFileV1 } from '../infra/subscriptions.js';
 
@@ -249,10 +263,14 @@ import {
   attachChatTurnKeyListener,
   readMenuKey,
   makeConfirm,
+  NAV_ESC,
+  NAV_LEFT,
+  getMenuStack,
+  resetMenuStack,
 } from './menu-key-confirm.js';
-import { renderMainScreen } from './menu-render.js';
+import { renderMainScreen, orderRecentForRender } from './menu-render.js';
+import { resolveWorkspaceRoot } from './workspace.js';
 import {
-  parseYesNo,
   yesNoHint,
 } from './menu-questions.js';
 import { reviewConversationGoals } from './menu-goal-review-wiring.js';
@@ -260,7 +278,13 @@ import { runQuestionSelector } from './menu-question-flow.js';
 import { renderDecisionPrompt } from './decision-prompt.js';
 import { runRawProviderSession } from './menu-raw-session.js';
 import { runManage, runImportNative, runManageGoals } from './menu-conversations.js';
+import { runNewConversationScreen } from './menu-new-conversation.js';
 import { runWelcome } from './menu-welcome.js';
+import {
+  createNodeShellRunner,
+  runShellPassthrough,
+  type ShellRunnerPort,
+} from './shell-passthrough.js';
 import {
   runModeSelect,
   runStyleSelect,
@@ -270,6 +294,9 @@ import {
   toggleDefaultShell,
 } from './menu-settings.js';
 import { runOpencodeAccountsMenu } from './menu-opencode-accounts.js';
+import { createAiCheckpointStore } from '../infra/ai-checkpoint-store.js';
+import { localRepoOps } from '../infra/repo-ops.js';
+import { handleRepoChatIntent } from './repo-chat-handler.js';
 import { runClaudeAccountsMenu } from './menu-claude-accounts.js';
 import { runCodexAccountsMenu } from './menu-codex-accounts.js';
 import { runGrokAccountsMenu } from './menu-grok-accounts.js';
@@ -385,6 +412,8 @@ export interface MenuContext {
   readonly relaunch?: (env?: NodeJS.ProcessEnv) => Promise<number>;
   readonly verifyPort?: VerifyPort;
   readonly worktreePort?: WorktreePort;
+  readonly commandGate?: CommandGatePort;
+  readonly shellRunner?: ShellRunnerPort;
   readonly startupInput?: StartupInputBuffer;
   /**
    * Optional pre-computed Claude token lifetime status for testing. When provided,
@@ -419,6 +448,16 @@ export interface MenuContext {
    * Defaults to the real check: `() => isHookInstalled(process.env, process.platform)`.
    */
   readonly isHookInstalled?: () => Promise<boolean>;
+  /**
+   * Optional injected repo-scan port (`gitToplevel`) for deterministic
+   * workspace-root resolution in the New Conversation / workspace picker flow
+   * (Slice 8). When absent, the real {@link nodeRepoScanPort} is used. Only
+   * `gitToplevel` is consumed (via {@link resolveWorkspaceRoot}); other
+   * repo-scan call sites in `startMenu` keep using `nodeRepoScanPort` directly.
+   * Tests inject a fake so git-root-vs-cwd behavior is hermetic (no real git
+   * binary, no filesystem-dependent flakiness).
+   */
+  readonly repoScanPort?: Pick<RepoScanPort, 'gitToplevel'>;
 }
 
 /** Timeout continuation obeys the same oversight level as an explicit /goal. */
@@ -692,15 +731,33 @@ export async function runChatLoop(
   // (often quality-first/Max).
   const allMetas = await ctx.store.list();
   const convMeta = allMetas.find((m) => m.id === convId);
+  // Slice 9: every conversation-scoped operation runs against the conversation's
+  // own `workspaceRoot` (Slice 6) when set, falling back to the launch `ctx.cwd`
+  // for legacy conversations that never stamped one — byte-identical to before.
+  // App/global operations (menu nav, account menus, capability refresh) stay on
+  // `ctx.cwd`; only `ctx.cwd` references *inside* runChatLoop are converted below.
+  const activeCwd = convMeta?.workspaceRoot ?? ctx.cwd;
   const convExplicitMode = convMeta?.mode !== undefined && convMeta.mode !== 'auto';
   const effectiveMode: Mode = convExplicitMode
     ? (levelToMode(convMeta.mode) ?? resolveAutoMode(mutableCtx.env))
     : (mutableCtx.config.mode ?? 'balanced');
+  const shellCommandGate: CommandGatePort = ctx.commandGate ?? (() => {
+    const commandAudit = createCommandAuditRecorder({ cwd: activeCwd });
+    return {
+      gate: gateCommand,
+      confirm: async (message: string): Promise<boolean> => {
+        out.write(`\n${message}\nRun this command? ${yesNoHint('no', out.color)} `);
+        return confirm(false, { requireExplicit: true });
+      },
+      record: (event) => commandAudit.record(event),
+    };
+  })();
 
   // -------------------------------------------------------------------------
   // RECAP (Phase 7, docs/recap-feature-5.5.md) — a ※ orientation line on resume
   // and on /recap, replacing the old raw-tail-echo. The recap is conversation-
-  // scoped orientation (DISTINCT from durable user memory), cached on the meta,
+  // scoped orientation (DISTINCT from durable user memory, using CompletionResultV1 + ReconstructedContext from durable map for one-chat), cached on the meta,
+  // uses durable-context and completion for NL intent, board, adjustments (10/10 phases)
   // and regenerated only when stale. Generation is a single gated, cheap, read-
   // only worker-tier pass behind the injected generator port; fail-soft so a
   // missing/failed/timed-out recap NEVER blocks resume.
@@ -740,7 +797,7 @@ export async function runChatLoop(
     return makeRecapGenerator({
       providers: ctx.providers,
       policy,
-      cwd: ctx.cwd,
+      cwd: activeCwd,
       timeoutMs: Math.min(ctx.timeoutMs, RECAP_TIMEOUT_MS),
       sandbox: helperSandbox(ctx.sandbox),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
@@ -793,7 +850,7 @@ export async function runChatLoop(
     return makeGoalObjectiveGenerator({
       providers: ctx.providers,
       policy,
-      cwd: ctx.cwd,
+      cwd: activeCwd,
       timeoutMs: Math.min(ctx.timeoutMs, GOAL_OBJECTIVE_TIMEOUT_MS),
       sandbox: helperSandbox(ctx.sandbox),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
@@ -845,7 +902,7 @@ export async function runChatLoop(
     return makeGoalPlanner({
       providers: ctx.providers,
       policy,
-      cwd: ctx.cwd,
+      cwd: activeCwd,
       timeoutMs: Math.min(ctx.timeoutMs, GOAL_PLAN_TIMEOUT_MS),
       sandbox: helperSandbox(ctx.sandbox),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
@@ -892,7 +949,7 @@ export async function runChatLoop(
     return makeGoalPlannerAttempt({
       providers: ctx.providers,
       policy,
-      cwd: ctx.cwd,
+      cwd: activeCwd,
       timeoutMs: Math.min(ctx.timeoutMs, 8_000),
       sandbox: helperSandbox(ctx.sandbox),
       tier,
@@ -950,7 +1007,7 @@ export async function runChatLoop(
     return makeReplanner({
       providers: ctx.providers,
       policy,
-      cwd: ctx.cwd,
+      cwd: activeCwd,
       timeoutMs: Math.min(ctx.timeoutMs, GOAL_REPLAN_TIMEOUT_MS),
       sandbox: helperSandbox(ctx.sandbox),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
@@ -1006,7 +1063,7 @@ export async function runChatLoop(
     return makeUnderstandingPass({
       providers: ctx.providers,
       policy,
-      cwd: ctx.cwd,
+      cwd: activeCwd,
       timeoutMs: Math.min(ctx.timeoutMs, UNDERSTANDING_TIMEOUT_MS),
       sandbox: helperSandbox(ctx.sandbox),
       ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
@@ -1339,11 +1396,11 @@ export async function runChatLoop(
       }
     },
   };
-  const intentStore = createIntentStore({ cwd: ctx.cwd });
+  const intentStore = createIntentStore({ cwd: activeCwd });
       void (async () => {
 
     try {
-      const allEntries = await readLedger(ctx.cwd);
+      const allEntries = await readLedger(activeCwd);
       const initial = summarizeSessionProviderTokens(allEntries, convId);
       for (const [k, v] of Object.entries(initial)) {
         if (typeof v === 'number') sessionConsumption[k as ProviderId] = v;
@@ -1438,10 +1495,8 @@ export async function runChatLoop(
     const detachEsc =
       turnKeyStdin !== undefined
         ? attachChatTurnKeyListener(out, turnKeyStdin, () => {
-            // ESC: interrupt THIS turn and stay at the chat prompt. It never
-            // touches the Ctrl+C window and never returns to the menu.
-            interruptedByEsc = true;
-            currentAc?.abort();
+            // ESC now cancels the turn AND exits the app (Slice 4).
+            chatEscHandler();
           }, () => {
             if (lineReader !== undefined && lineReader !== null) {
               turnInput?.setValue(lineReader.currentLine());
@@ -1449,15 +1504,13 @@ export async function runChatLoop(
           })
         : (): void => {};
     // Ink-path interrupt: install a handler the InputBox routes a bare ESC to. It
-    // mirrors the legacy ESC semantics exactly — mark the turn interrupted-by-ESC
-    // (so decidePostTurn discards the typed-ahead queue) and abort THIS turn's
-    // AbortController, staying at the chat prompt (never the Ctrl+C window, never
-    // back to the menu). Cleared in `finally` so an idle-prompt ESC is a no-op.
+    // now delegates to chatEscHandler which cancels the turn AND exits the app
+    // (Slice 4 — not just "stay at the chat prompt" like pre-Slice-4).
+    // Cleared in `finally` so an idle-prompt ESC is a no-op.
     // No-op off the Ink path (inkSetInterrupt undefined).
     if (inkSetInterrupt !== undefined) {
       inkSetInterrupt(() => {
-        interruptedByEsc = true;
-        currentAc?.abort();
+        chatEscHandler();
       });
     }
     try {
@@ -1573,9 +1626,10 @@ export async function runChatLoop(
     if (action === 'cancel-task') {
       currentAc?.abort();
       currentAc = null;
-      out.write('\n[warn] Task cancelled. (Ctrl+C again → menu, ×3 → exit)\n');
+      out.write('\n[warn] Task cancelled.\n');
     } else if (action === 'hint') {
-      out.write('\n[info] Ctrl+C again → back to menu, ×3 → exit to shell.\n');
+      // No user-facing hint — we no longer teach the Ctrl+C multi-press model.
+      // The internal press-count logic in interpretInterrupt is unchanged.
     } else if (action === 'to-menu') {
       // Abort any running task, then tell the main loop to break back to menu.
       if (currentAc !== null) {
@@ -1601,6 +1655,21 @@ export async function runChatLoop(
   // loopBreaker lets the SIGINT handler resolve the loop-level promise so the
   // `while (true)` can break immediately even when awaiting readLine().
   let loopBreaker: ((result: 'menu' | 'exit') => void) | null = null;
+
+  // Slice 4 — ESC exits the app from the chat subflow (idle AND mid-turn). One
+  // persistent handler installed for the whole chat-loop lifetime (Ink path) and
+  // reused by the legacy bare-ESC listener mid-turn. It marks the nav stack,
+  // mirrors the SIGINT exit-app branch (control.exit + loopBreaker('exit')), and
+  // aborts any in-flight turn. On a mid-turn ESC the outer loop sees control.exit
+  // in the post-turn slot and returns 'exit'; on an idle ESC loopBreaker('exit')
+  // resolves the readLine race directly.
+  const chatEscHandler = (): void => {
+    interruptedByEsc = true;
+    getMenuStack().requestExit();
+    control.exit = true;
+    currentAc?.abort();
+    loopBreaker?.('exit');
+  };
 
   // Record rate-limit cooldowns from a completed turn. Cools down EVERY provider
   // that hit a 429 during the run (result.rateLimitedProviders) — including one
@@ -1780,6 +1849,26 @@ export async function runChatLoop(
   // it closes over the loop's mutable state (currentAc, control.exit/menu, queue).
   // -------------------------------------------------------------------------
   async function runOneChatInput(line: string): Promise<'continue' | 'menu' | 'exit'> {
+    // Slice 5 foundation: `!` prefix detection (menu-build-spec-final.md:382; kern-spec.md:45) — safe guard in input path; no exec/chat behavior touched here.
+    if (line.length > 0 && line[0] === '!') {
+      const command = line.slice(1).trim();
+      if (command === '' || command.trim().length === 0) {
+        out.write(
+          dim('  Usage: !<command> — run a shell command (e.g. !ls, !git status). ! alone shows this.\n', out.color),
+        );
+        return 'continue';
+      }
+      await runShellPassthrough(
+        command,
+        activeCwd,
+        out,
+        shellCommandGate,
+        ctx.shellRunner ?? createNodeShellRunner(),
+      );
+      // ! passthrough early-return path: does NOT send to model, does NOT persist to conversation log (initially) (menu-build-spec-final.md:719 " ! shell passthrough: - first-char only - no model call - ... Do not persist to conversation log initially."; Slice 5 menu-build-spec-final.md:382; kern-spec.md:45)
+      return 'continue';
+    }
+
     if (line === '/exit' || line === '/back') {
       return 'menu';
     }
@@ -1790,6 +1879,7 @@ export async function runChatLoop(
       // one place (memory, recap, intent reflection, the parallel-models panel).
       out.write(
         dim('  Just type to chat — I pick the right model for each message.\n', out.color) +
+        '  !<command>    — run a shell command directly (e.g. !ls, !git status); ! alone shows usage\n' +
         '  /retry        — regenerate my last answer\n' +
         '  /edit         — edit one of your recent messages and re-run from there\n' +
         '  /goal <text>  — build + show a detailed plan (with approach/rationale + todos), write PLAN.md, then get your approval before autonomous execution (Ctrl+C to stop)\n' +
@@ -1884,7 +1974,7 @@ export async function runChatLoop(
       } catch {
         meta = undefined;
       }
-      const exportDir = join(resolveStateHome(process.env, ctx.cwd), '.myshell-tools', 'exports');
+      const exportDir = join(resolveStateHome(process.env, activeCwd), '.myshell-tools', 'exports');
       const exportPath = join(exportDir, `myshell-${exportFileSlug(meta?.title)}-${convId}.md`);
       const writeFile = async (p: string, data: string): Promise<void> => {
         await fs.promises.mkdir(exportDir, { recursive: true });
@@ -2022,6 +2112,35 @@ export async function runChatLoop(
       return runOneChatInput(newText);
     }
 
+    // Native repo-chat intents: ordinary language, local-only.
+    // verify_only now invokes gated verifyPort.runTests (commandGate + oversight).
+    // commit summarizes, gates via oversight (confirm unless autonomous), calls commitChanges.
+    // Use exact same commandGate/verifyPort/oversight seams as the rest of menu + cli verify paths.
+    // Undo remains preview-only.
+    try {
+      const oversight = resolveOversight(mutableCtx.config);
+      const repoHandled = await handleRepoChatIntent(line, {
+        cwd: activeCwd,
+        repoOps: localRepoOps,
+        checkpointStore: createAiCheckpointStore({ cwd: activeCwd }),
+        readFileText: async (relativePath) => {
+          try {
+            return await fs.promises.readFile(join(activeCwd, relativePath), 'utf8');
+          } catch {
+            return null;
+          }
+        },
+        commandGate: shellCommandGate,
+        oversight,
+        ...(ctx.verifyPort ? { verifyPort: ctx.verifyPort } : {}),
+      });
+      if (repoHandled !== null) {
+        out.write('\n' + repoHandled.message + '\n');
+        return 'continue';
+      }
+    } catch {
+      out.write(dim('  Repo helper was unavailable; continuing through normal chat.\n', out.color));
+    }
     // Effective mode: the user's explicit choice, else auto-detected from their
     // subscription plan (Max → top of the knob, etc.) — no interrogation.
       // Concurrency (panel / hedge) is now owned by the mode preset: Balanced and
@@ -2138,6 +2257,7 @@ export async function runChatLoop(
       // but called AFTER; this mutable variable lets correctionFork deps access
       // listGoals() and markGoalsSuperseded() at call time.
       let mutableGoalStore: ReturnType<typeof createFileGoalStore> | null = null;
+      let completedTurnProvider: ProviderId | undefined;
 
       const buildDeps = (
         hist: readonly SessionEntry[],
@@ -2326,7 +2446,7 @@ export async function runChatLoop(
         const preflightDeps = buildPreflightDeps({
           providers: ctx.providers,
           policy,
-          cwd: ctx.cwd,
+          cwd: activeCwd,
           timeoutMs: ctx.timeoutMs,
           sandbox: ctx.sandbox,
           ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
@@ -2348,7 +2468,18 @@ export async function runChatLoop(
 
         return {
           clock: ctx.clock,
-          session: ctx.store.writer(convId),
+          session: (() => {
+            const base = ctx.store.writer(convId);
+            return {
+              id: base.id,
+              async append(entry: SessionEntry): Promise<void> {
+                if (entry.role === 'assistant' && entry.provider !== undefined) {
+                  completedTurnProvider = entry.provider;
+                }
+                await base.append(entry);
+              },
+            };
+          })(),
           ledger: turnLedger,
           cacheAccountingV2: true,
           accountAux: true,
@@ -2356,7 +2487,7 @@ export async function runChatLoop(
           ...(intentStore !== undefined ? { intentStore } : {}),
           policy,
           providers: ctx.providers,
-          cwd: ctx.cwd,
+          cwd: activeCwd,
           sandbox: ctx.sandbox,
           timeoutMs: ctx.timeoutMs,
           ...(hist.length > 0 ? { history: hist } : {}),
@@ -2526,10 +2657,10 @@ export async function runChatLoop(
                 verifyLevel: 'tests' as const,
                 verifyTestTimeoutMs: Math.min(ctx.timeoutMs, 120_000),
                 evidenceSink: createEvidenceSink({
-                  cwd: ctx.cwd,
+                  cwd: activeCwd,
                 }),
                 evidenceSnapshotBuilder: createEvidenceSnapshotBuilder({
-                  cwd: ctx.cwd,
+                  cwd: activeCwd,
                   now: ctx.clock.now,
                 }),
                 evidenceTaskId: convId,
@@ -2608,6 +2739,17 @@ export async function runChatLoop(
         };
       };
 
+      const persistCompletedTurnProvider = async (
+        finalEvent: Extract<CoreEvent, { type: 'final' }> | undefined,
+      ): Promise<void> => {
+        if (finalEvent?.success !== true || completedTurnProvider === undefined) return;
+        try {
+          await ctx.store.setLastProvider(convId, completedTurnProvider);
+        } catch {
+          // Additive metadata only — a bookkeeping miss must not break the turn.
+        }
+      };
+
       // Account-aware deps enrichment — adds account fields when subscriptions
       // are enabled and accounts exist. Best-effort; failures → global path
       // unchanged. Defined after buildDeps so it has access to the account
@@ -2615,7 +2757,6 @@ export async function runChatLoop(
       const enrichDepsWithAccounts = async (
         base: OrchestrateDeps,
       ): Promise<OrchestrateDeps> => {
-        if (!subscriptionsEnabled(process.env, mutableCtx.config)) return base;
         try {
           const subs = await readSubscriptions();
           const allAccounts = subs.accounts;
@@ -2714,7 +2855,7 @@ export async function runChatLoop(
       const loadedThisSession: UserMemoryFact[] = [];
       const resolveProjectKeyOnce = async (): Promise<string | null> => {
         if (memoryProjectKey === undefined) {
-          memoryProjectKey = await resolveProjectKey(ctx.cwd).catch(() => null);
+          memoryProjectKey = await resolveProjectKey(activeCwd).catch(() => null);
         }
         return memoryProjectKey;
       };
@@ -2731,7 +2872,7 @@ export async function runChatLoop(
       const resolveRepoFingerprintOnce = async (): Promise<RepoFingerprint> => {
         if (repoFingerprint === undefined) {
           repoFingerprint = await nodeRepoScanPort
-            .readRepoFingerprint(ctx.cwd)
+            .readRepoFingerprint(activeCwd)
             .catch(() => ({ headSha: '', treeHash: '' }));
         }
         return repoFingerprint;
@@ -3062,7 +3203,7 @@ export async function runChatLoop(
             tier: 'worker',
             port: ctx.verifyPort ?? nodeVerifyPort,
             level: 'tests', // tests-first only — the honest free signal (no critic call)
-            cwd: ctx.cwd,
+            cwd: activeCwd,
             testTimeoutMs: VERIFY_TEST_TIMEOUT_MS, // bound the test runner itself
             ...(acceptance !== undefined && acceptance.length > 0 ? { task: acceptance } : {}),
             available: authed,
@@ -3233,7 +3374,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
         const req: ProviderRequest = {
           model: pick.model,
           prompt: metaPrompt,
-          cwd: ctx.cwd,
+          cwd: activeCwd,
           sandbox: 'workspace-write',
           timeoutMs: 45000,
           reasoningEffort: pick.effort,  // Proper high effort launch via the chosen CLI (claude --effort, codex model_reasoning_effort, opencode --variant)
@@ -3405,7 +3546,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // Persistent decision-audit ledger. Lean JSONL in the state dir. The log is
       // read back into buildFullContext so the model sees its own recent decisions
       // (meta-awareness, avoids repetitive mistakes) and failures are surfaced.
-      const decisionAuditPath = (): string => join(getStateDir(ctx.cwd), 'decisions.jsonl');
+      const decisionAuditPath = (): string => join(getStateDir(activeCwd), 'decisions.jsonl');
       const auditDecision = async (
         decision: MetaDecision | null,
         error?: string,
@@ -3453,7 +3594,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
       };
       const updatePlanMdAfterAdjust = async (goal: Goal, note?: string): Promise<void> => {
         try {
-          const pth = join(ctx.cwd, 'PLAN.md');
+          const pth = join(activeCwd, 'PLAN.md');
           const existing = await fs.promises.readFile(pth, 'utf8').catch(() => null);
           const stamp = ctx.clock.isoNow().slice(0, 10);
           const block =
@@ -3674,7 +3815,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
 
           const doneWhen = plan.plan?.goals[0]?.doneWhen;
           const hasDoneWhen = typeof doneWhen === 'string' && doneWhen.trim().length > 0;
-          const verificationAvailable = await verificationAvailableForCwd(ctx.cwd);
+          const verificationAvailable = await verificationAvailableForCwd(activeCwd);
           const confidence = assessGoalConfidence({
             hasWorkIntent: true,
             plannerStaged: true,
@@ -3958,7 +4099,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
             model: decision.model,
             prompt:
               `Search the web for current, authoritative information on the following and reply with a SHORT plain-text summary of what you found, with sources. Do not restate the question.\n\n${query}`,
-            cwd: ctx.cwd,
+            cwd: activeCwd,
             sandbox: helperSandbox(ctx.sandbox),
             timeoutMs: Math.min(ctx.timeoutMs, 90_000),
             webSearch: true,
@@ -4054,7 +4195,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
           environmentContext = '';
           return environmentContext;
         }
-        environmentContext = await buildEnvironmentContext(ctx.cwd, nodeRepoScanPort).catch(
+        environmentContext = await buildEnvironmentContext(activeCwd, nodeRepoScanPort).catch(
           () => '',
         );
         return environmentContext;
@@ -4229,7 +4370,14 @@ Output ONLY valid JSON (no prose, no markdown).`;
         tasteOn,
         ROADMAP_LIMIT,
         UNDERSTANDING_REFRESH_TURNS,
-        ctx,
+        // Slice 9: auto-stage is conversation-scoped (runs only during a goal turn
+        // inside runChatLoop), and auto-stage.ts probes verifiability via
+        // `deps.verificationAvailableForCwd(deps.ctx.cwd)`. Override `cwd` on the
+        // context handed to the engine so that probe — and any future `deps.ctx.cwd`
+        // read in auto-stage.ts — runs against `activeCwd`, not the launch cwd. The
+        // engine file itself is out of this slice's allowed file set, so this is the
+        // surgical fix-point. All other MenuContext fields are passed through intact.
+        ctx: { ...ctx, cwd: activeCwd },
         mutableCtx,
         out,
         convId,
@@ -4356,7 +4504,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
         // would only fail. Returns false (don't break the chat loop) after a notice.
         if (!hasAuthenticatedProvider(mutableCtx.env)) {
           goalOut.write(
-            '\n[info] No signed-in provider yet — type /back or press Ctrl+C twice to return, then [j] Claude / [k] Codex / [o] opencode to sign in.\n',
+            '\n[info] No signed-in provider yet — press ESC or type /back to return, then [j] Claude / [k] Codex / [o] opencode to sign in.\n',
           );
           return false;
         }
@@ -4530,7 +4678,12 @@ Output ONLY valid JSON (no prose, no markdown).`;
               mutableCtx.config.verbosity ?? 'normal',
               runSchedule(
                 goalSpecs,
-                { runGoal, authedProviders, maxActive },
+                {
+                  runGoal,
+                  authedProviders,
+                  maxActive,
+                  ...(completionResultV1Enabled(process.env, mutableCtx.config) ? { completionResultV1: true as const, isoNow: ctx.clock.isoNow } : {}),
+                },
                 schedAc.signal,
               ),
             );
@@ -4995,11 +5148,11 @@ Output ONLY valid JSON (no prose, no markdown).`;
         // token total before this run, so each turn can show REAL turn/elapsed/
         // tokens-this-goal (never an estimate).
         const goalStartMs = ctx.clock.now();
-        const baseTokens = summarizeSpend(await readLedger(ctx.cwd), ctx.clock.isoNow()).totalTokens;
+        const baseTokens = summarizeSpend(await readLedger(activeCwd), ctx.clock.isoNow()).totalTokens;
         let completed = 0;
         for (let i = 0; i < ceilings.maxIterations; i++) {
           const tokensThisRun =
-            summarizeSpend(await readLedger(ctx.cwd), ctx.clock.isoNow()).totalTokens - baseTokens;
+            summarizeSpend(await readLedger(activeCwd), ctx.clock.isoNow()).totalTokens - baseTokens;
           goalOut.write(
             dim(
               `  ▸ ${formatGoalProgress({
@@ -5187,7 +5340,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
         } else if (arg === 'loaded') {
           runMemoryLoaded({ out, loaded: loadedThisSession });
         } else if (arg === 'export') {
-          const exportPath = join(ctx.cwd, 'myshell-memory.md');
+          const exportPath = join(activeCwd, 'myshell-memory.md');
           out.write(
             `${await runMemoryExport({
               store: memoryStore,
@@ -5227,7 +5380,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
           return 'continue';
         }
         try {
-          const pk = await resolveProjectKey(ctx.cwd).catch(() => null);
+          const pk = await resolveProjectKey(activeCwd).catch(() => null);
           const tl = createFileTasteLedger({ clock: ctx.clock });
           const pb = await tl.recall(pk);
           out.write('\n  Learned taste / prefs (observed only):\n');
@@ -5257,7 +5410,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
         if (!hasAuthenticatedProvider(mutableCtx.env)) return 'continue';
         out.write(dim('  Pure planning...\n', out.color));
         try {
-          const pk = await resolveProjectKey(ctx.cwd).catch(() => null);
+          const pk = await resolveProjectKey(activeCwd).catch(() => null);
           const plan = await judgeGoal(planText);
           if (plan.judgment !== 'stage' || !plan.plan || !(plan.plan.goals || []).length) {
             out.write(dim('  No plan.\n', out.color));
@@ -5311,7 +5464,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
               }
             }
             try {
-              const pth = join(ctx.cwd, 'PLAN.md');
+              const pth = join(activeCwd, 'PLAN.md');
               const planDoc =
                 `# Proposed Plan - ${new Date().toISOString().slice(0, 10)}\n\n` +
                 proposal +
@@ -5522,7 +5675,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
               // share it, or diff it — exactly like Claude/GPT/Replit "make a plan doc".
               // Best-effort (never blocks the flow or approval selector).
               try {
-                const planPath = join(ctx.cwd, 'PLAN.md');
+                const planPath = join(activeCwd, 'PLAN.md');
                 const planDoc =
                   `# Proposed Plan — ${new Date().toISOString().slice(0, 10)}\n\n` +
                   proposal +
@@ -5946,7 +6099,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // without a provider; only the model-needing chat turn is gated.
       if (!hasAuthenticatedProvider(mutableCtx.env)) {
         out.write(
-          '\n[info] No signed-in provider yet — type /back or press Ctrl+C twice to return, then [j] Claude / [k] Codex / [o] opencode to sign in.\n',
+          '\n[info] No signed-in provider yet — press ESC or type /back to return, then [j] Claude / [k] Codex / [o] opencode to sign in.\n',
         );
         return 'continue';
       }
@@ -5993,7 +6146,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // thread them onto deps so orchestrate sets needsVision + routes the turn to a
       // vision-capable provider (codex `-i` / opencode `-f`). No real image → empty
       // → field omitted → behaviour byte-for-byte unchanged.
-      turnAttachments = resolveImageAttachments(line, { cwd: ctx.cwd });
+      turnAttachments = resolveImageAttachments(line, { cwd: activeCwd });
       deps =
         turnAttachments.length > 0 ? { ...depsBase, attachments: turnAttachments } : depsBase;
       if (deps === null) {
@@ -6031,6 +6184,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
       currentAc = null;
       noteRateLimit(result);
       await syncCapacity();
+      await persistCompletedTurnProvider(result.final);
 
       // P1-09j-b: foreground settlement — snapshot and invoke receipt callback.
       // Do NOT destroy the budget while owned background calls remain.
@@ -6121,6 +6275,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
           currentAc = retryAc;
           const retryResult = await runTaskWithInputHooks(line, retryDeps, retryAc.signal, mutableCtx.config.verbosity ?? 'normal');
           currentAc = null;
+          await persistCompletedTurnProvider(retryResult.final);
           if (interruptedByEsc) {
             if (queuedTurns.length > 0) {
               renderDiscardedQueue(out, queuedTurns.length, 'interrupt');
@@ -6257,6 +6412,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
           while (queuedTurns.length > 0 && !control.exit && !control.menu) {
             const next = queuedTurns.shift();
             if (next === undefined) break;
+            // Slice 5: queued drain re-uses runOneChatInput for ! passthrough (menu-build-spec-final.md:416 "Queued-turn drain does not accidentally run..."; kern-spec.md:45)
             const drainSignal = await runOneChatInput(next);
             if (drainSignal === 'menu') { control.menu = true; control.result = 'menu'; break; }
             if (drainSignal === 'exit') { control.exit = true; control.result = 'exit'; break; }
@@ -6474,21 +6630,26 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   // stays null and EVERY Ink-gated branch below is a single false test — the
   // legacy path runs byte-identically.
   let inkHandle: import('./ui/mount.js').InkMountHandle | null = null;
-  // The Ink turn renderer, adapted to the runTask TurnRenderer shape (the Ink
-  // handle's renderTurn takes `(events, opts)`; runTask passes
-  // `(events, out, verbosity, turnInput)`). Null off the Ink path → runChatLoop
-  // takes the legacy renderStream turn path unchanged.
   let inkRenderTurn: import('./run.js').TurnRenderer | undefined;
-  // TTY guard (critical for default-ON safety): Ink must mount ONLY when stdout is
-  // a terminal AND legacy raw-key input can read from the same raw stream it would
-  // use for single-key menus. In Replit shells process.stdin may not be a raw TTY,
-  // but /dev/tty is; resolveRawKeyInput mirrors rawKeyInputs() exactly.
-  // Tests inject ctx.readLine, so they bypass this whole branch regardless.
   const inkRawInput = ctx.readLine === undefined ? resolveRawKeyInput(out) : null;
   let startupReadKey = ctx.startupInput?.handoff();
+
+  let watchdogRecoveryHandler: ((snapshot: WatchdogSnapshot) => void) | null = null;
+  const onWatchdogUnresponsive = (snapshot: WatchdogSnapshot): void => {
+    if (watchdogRecoveryHandler !== null) {
+      watchdogRecoveryHandler(snapshot);
+    }
+  };
+
   if (ctx.readLine === undefined && out.isTty === true && inkRawInput !== null && inkEnabled(process.env, ctx.config)) {
     const { mountInk } = await import('./ui/mount.js');
-    inkHandle = mountInk({ color: out.color, isTty: out.isTty, stdin: inkRawInput, env: process.env });
+    inkHandle = mountInk({
+      color: out.color,
+      isTty: out.isTty,
+      stdin: inkRawInput,
+      env: process.env,
+      onUnresponsive: onWatchdogUnresponsive,
+    });
     // Render the menu/chat OUTPUT and read INPUT through the Ink adapters by
     // reassigning the seam bindings the shared loop below already uses.
     out = inkHandle.out;
@@ -6651,7 +6812,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     execInWorktree: (wt, command, args, timeoutMs) =>
       nodeWorktreePort.execInWorktree(wt, command, args, timeoutMs, commandGate),
   };
-  ctx = { ...ctx, verifyPort: gatedVerifyPort, worktreePort: gatedWorktreePort };
+  ctx = { ...ctx, verifyPort: gatedVerifyPort, worktreePort: gatedWorktreePort, commandGate };
   // Lets the login flow release stdin while an inherited-stdio child (e.g.
   // `claude auth login`) owns the terminal, then take it back. Returns the
   // resume callback. Only wired for the real reader — the injected/test path
@@ -6661,9 +6822,93 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     readerForSuspend !== null
       ? () => {
           readerForSuspend.suspend();
-          return () => readerForSuspend.resume();
+          inkHandle?.setWatchdogSuspended(true);
+          return () => {
+            readerForSuspend.resume();
+            inkHandle?.setWatchdogSuspended(false);
+          };
         }
       : undefined;
+
+  let watchdogDisabled = false;
+  let activeConversationId: string | null = null;
+
+  let recoveryHandoffInProgress = false;
+  if (inkHandle !== null && relaunchFn !== undefined) {
+    const handle = inkHandle;
+    watchdogRecoveryHandler = (_snapshot: WatchdogSnapshot): void => {
+      if (watchdogDisabled || activeConversationId === null) return;
+      watchdogDisabled = true;
+      handle.stopWatchdog();
+      void (async () => {
+        const convId = activeConversationId;
+        if (convId === null) return;
+        const state = await readRelaunchRecoveryState();
+        const guard = checkRelaunchGuard(state, convId);
+        if (!guard.allowed) {
+          out.write(
+            '\n[error] interface recovery was attempted repeatedly and is disabled for now; ' +
+            'start myshell-tools again manually.\n',
+          );
+          return;
+        }
+        try {
+          await recordRelaunchAttempt(convId, 'watchdog-unresponsive');
+        } catch {
+          out.write('\n[error] interface recovery could not safely record its relaunch attempt.\n');
+          return;
+        }
+        try {
+          await writeActiveConversation({ conversationId: convId, reason: 'auto-recovered' });
+        } catch {
+          out.write('\n[error] interface recovery could not preserve the active conversation.\n');
+          return;
+        }
+        // Unmounting resolves the chat's pending read. Preserve the marker while
+        // the parent chat unwinds so the relaunched child can consume it.
+        recoveryHandoffInProgress = true;
+        const resumeStdin = suspendStdin?.();
+        try {
+          handle.unmount();
+        } catch {
+          /* best-effort */
+        }
+        const recoveryEnv = buildRecoveryEnv(convId, 'watchdog-unresponsive');
+        const relaunchEnv = { ...process.env, ...recoveryEnv };
+        const code = await relaunchFn(relaunchEnv).catch(() => 1);
+        if (code === 0) return;
+        recoveryHandoffInProgress = false;
+        await clearActiveConversation();
+        resumeStdin?.();
+        out.write('\n[error] interface recovery relaunch failed.\n');
+      })();
+    };
+  }
+
+  const runChatLoopWithMarker = async (
+    ...args: Parameters<typeof runChatLoop>
+  ): Promise<'menu' | 'exit'> => {
+    const convId = args[2];
+    const allMetas = await ctx.store.list();
+    const convMeta = allMetas.find((m) => m.id === convId);
+    activeConversationId = convId;
+    try {
+      await writeActiveConversation({
+        conversationId: convId,
+        workspaceRoot: convMeta?.workspaceRoot ?? null,
+      });
+    } catch {
+      /* best-effort */
+    }
+    try {
+      return await runChatLoop(...args);
+    } finally {
+      activeConversationId = null;
+      if (!recoveryHandoffInProgress) {
+        await clearActiveConversation();
+      }
+    }
+  };
 
   // Mutable local copy of config & env — updated as the user changes settings /
   // re-authenticates without mutating the immutable ctx parameter.
@@ -6925,6 +7170,45 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       envDetectedAt = ctx.clock.now();
     }
 
+    // Reset the nav-stack depth to 1 for this menu session (Slice 4).
+    resetMenuStack();
+
+    // ---- Watchdog recovery auto-resume ------------------------------------
+    // If a prior process wrote an active-conversation marker (watchdog relaunch
+    // or normal exit-with-marker), attempt to auto-resume that conversation.
+    // Fail-soft: any validation failure clears the marker and falls through to
+    // the normal menu.
+    {
+      const marker = await readActiveConversation();
+      if (marker !== null && out.isTty) {
+        const allMetas = await ctx.store.list();
+        const targetConv = allMetas.find((m) => m.id === marker.conversationId);
+        if (targetConv !== undefined) {
+          // The parent already checked and recorded the attempt before launch.
+          // Rechecking here would reject the second permitted attempt.
+          if (hasAuthenticatedProvider(mutableCtx.env)) {
+            out.write('[recovered] restarted after the terminal UI stopped responding; reopened this conversation.\n');
+            activeConversationId = marker.conversationId;
+            try {
+              const chatResult = await runChatLoopWithMarker(
+                ctx, mutableCtx, marker.conversationId, out, readLine,
+                loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader,
+                inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo,
+                inkSetChatActive, inkBeginTurn, inkResetTurn,
+              );
+              if (chatResult === 'exit') return;
+            } catch {
+              /* best-effort: fall through to normal menu */
+            }
+          } else {
+            await clearActiveConversation();
+          }
+        } else {
+          await clearActiveConversation();
+        }
+      }
+    }
+
     // ---- B. Main screen loop -------------------------------------------------
     // PAINT FIRST, FILL ASYNC. The first frame used to block behind three serial
     // disk reads — the Claude token capture date, the UNBOUNDED ledger.jsonl sum
@@ -6953,6 +7237,16 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     let spendLoading = true;
     let listsLoading = true;
     let accountStates: Record<string, ProviderAccountSummary> | undefined;
+
+    // Slice 10 — the current workspace root (git toplevel else cwd, resolved via
+    // Slice 7's `resolveWorkspaceRoot`) drives both the `Recent (<label>):`
+    // header and the current-workspace-first row ordering. Resolved ONCE before
+    // the first paint (fail-soft; `resolveWorkspaceRoot` never throws) so the
+    // title does not flicker from the cwd-basename fallback to the git-root
+    // basename on a later repaint, and so the renderer (`renderMainScreen`) and
+    // the numeric-open dispatcher (`[1]`-`[9]`) share the SAME root → the
+    // rendered `[n]` index and the conversation `[n]` opens always agree.
+    let currentWorkspaceRoot: string = ctx.cwd;
 
     // Tests (and any caller) may inject the token status to skip the disk read.
     if (ctx.claudeTokenInfo !== undefined) {
@@ -6984,6 +7278,14 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       await Promise.all([fillToken(), fillSpend(), fillLists()]);
     }
 
+    // Slice 10 — resolve the current workspace root once, before the first paint
+    // (both paths), so the `Recent (<label>):` header does not flip from the cwd
+    // basename to the git-root basename on a later repaint. `resolveWorkspaceRoot`
+    // is fail-soft (git failures degrade to the normalized cwd). The same value
+    // is passed to `renderMainScreen` (title + row ordering) AND used by the
+    // numeric-open dispatcher below, so visible render order == dispatch order.
+    currentWorkspaceRoot = await resolveWorkspaceRoot(ctx.cwd, ctx.repoScanPort ?? nodeRepoScanPort);
+
     // `inMainMenu` gates async-fill repaints: a fill that lands while we're inside a
     // sub-flow (chat, settings, …) must NOT paint the menu over it. Toggled around
     // every sub-flow below.
@@ -7004,7 +7306,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       await renderMainScreen(
         ctx, mutableCtx, metas, spend, out, updateInfo, claudeTokenInfo,
         runningUnderNpx, ctx.healthIssues ?? [], allGoals, accountStates,
-        spendLoading, listsLoading,
+        spendLoading, listsLoading, currentWorkspaceRoot,
       );
       out.endFrame?.();
     };
@@ -7026,6 +7328,10 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     };
 
     while (true) {
+      // Exit propagation: if any submenu requested an app exit via ESC,
+      // surface it here so the loop returns (Slice 4).
+      if (getMenuStack().exitRequested) break;
+
       // We're sitting on the menu again — late async fills may repaint here.
       inMainMenu = true;
 
@@ -7116,6 +7422,16 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         continue;
       }
 
+      // Slice 4 — root: ESC exits the app; left-arrow is a no-op at root (no back).
+      if (key === NAV_ESC) {
+        getMenuStack().requestExit();
+        break;
+      }
+      if (key === NAV_LEFT) {
+        getMenuStack().pop(); // no-op at root depth (depth === 1)
+        continue;
+      }
+
       // A real action key was pressed: PROMOTE the just-shown menu frame into the
       // permanent transcript so it lingers in scrollback above the sub-flow / chat
       // output (legacy scrolling-TTY parity), then the sub-flow's own out.write
@@ -7130,6 +7446,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [q] Quit -----------------------------------------------------------
       if (key === 'q') {
+        await clearActiveConversation();
         break;
       }
 
@@ -7141,19 +7458,25 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           if (newDest.kind === 'return') out.write('No provider is signed in yet. Returning to menu.\n');
           continue;
         }
-        // No up-front "name your chat" prompt — a real chat shell just opens and
-        // lets you type. The title is derived silently from the first user message
-        // (conversations.ts append()), so create an untitled conversation and drop
-        // straight into it.
+        // Slice 8 — New Conversation screen: pick a workspace root (current
+        // resolved root, or via the fuzzy picker) before creating. The screen
+        // handles its own nav (← back to home, ESC exit, m Effort Mode switch)
+        // and returns the chosen root; creation + goal review + chat entry stay
+        // here so the [n]/[c]/[1-9] auth-gate sequencing stays shared.
+        const newConvResult = await runNewConversationScreen(ctx, mutableCtx, out, readLine, inkReadKey, syncSettings);
+        if (newConvResult.kind === 'exit') break;
+        if (newConvResult.kind === 'back') continue;
+        // newConvResult.kind === 'create' — compute the mode AFTER any `m`
+        // switch the user did inside the screen.
         const convMode = migrateMode(mutableCtx.config.mode);
-        const meta = await ctx.store.create('', convMode);
+        const meta = await ctx.store.create('', { mode: convMode, workspaceRoot: newConvResult.workspaceRoot });
         if (!(await reviewConversationGoals(
           { goalStore: menuGoalStore, clock: ctx.clock, out, readLine, readMenuKey, inkReadKey, env: process.env, config: mutableCtx.config },
           meta.id,
         ))) break;
-        const chatResult = await runChatLoop(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
-        spendDirty = true; // a task may have run — refresh the spend summary
-        listDirty = true; // a new conversation was created (and goals may be parked)
+        const chatResult = await runChatLoopWithMarker(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
+        spendDirty = true;
+        listDirty = true;
         if (chatResult === 'exit') break;
         continue;
       }
@@ -7161,7 +7484,11 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // ---- [c] Continue most-recent conversation ------------------------------
       if (key === 'c') {
         const all = await ctx.store.list();
-        const latest = all[0];
+        // Slice 10 — continue the FIRST RENDERED row (current-workspace-first
+        // order), matching the `[1]` row the user sees and the `[c]` sub-line
+        // printed by `renderControls`. Reusing `orderRecentForRender` (the SAME
+        // function the renderer uses) keeps visible order == dispatch order.
+        const latest = orderRecentForRender(all, currentWorkspaceRoot)[0];
         if (latest !== undefined) {
           const continueOrigin: MenuLoginOrigin = { kind: 'chat-entry', conversationId: latest.id, provider: 'claude' };
           const continueDest = await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, continueOrigin, confirm, suspendStdin, inkReadKey);
@@ -7173,7 +7500,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
             { goalStore: menuGoalStore, clock: ctx.clock, out, readLine, readMenuKey, inkReadKey, env: process.env, config: mutableCtx.config },
             latest.id,
           ))) break;
-          const chatResult = await runChatLoop(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
+          const chatResult = await runChatLoopWithMarker(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
           spendDirty = true; // a task may have run — refresh the spend summary
           listDirty = true; // conversation order/goals may have changed
           if (chatResult === 'exit') break;
@@ -7186,7 +7513,15 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       // ---- [1-9] Resume numbered conversation ---------------------------------
       const digit = parseInt(key, 10);
       if (!Number.isNaN(digit) && digit >= 1 && digit <= 9) {
-        const target = metas[digit - 1];
+        // Slice 10 — `[n]` opens the n-th RENDERED row, not the n-th raw store
+        // row. The renderer reorders the list current-workspace-first (via
+        // `orderRecentForRender`), so the raw store order and the visible order
+        // diverge whenever an older current-workspace conversation sorts above a
+        // newer non-current one. Resolve the target through the SAME
+        // `orderRecentForRender` the renderer uses → `[1]` always opens the row
+        // the user sees as `[1]`. This is the slice's highest-risk fix.
+        const ordered = orderRecentForRender(metas, currentWorkspaceRoot);
+        const target = ordered[digit - 1];
         if (target !== undefined) {
           const numberedOrigin: MenuLoginOrigin = { kind: 'chat-entry', conversationId: target.id, provider: 'claude' };
           const numberedDest = await promptForAuthBeforeChat(out, readLine, mutableCtx, loginFn, detectEnvironmentFn, numberedOrigin, confirm, suspendStdin, inkReadKey);
@@ -7198,7 +7533,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
             { goalStore: menuGoalStore, clock: ctx.clock, out, readLine, readMenuKey, inkReadKey, env: process.env, config: mutableCtx.config },
             target.id,
           ))) break;
-          const chatResult = await runChatLoop(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
+          const chatResult = await runChatLoopWithMarker(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn);
           spendDirty = true; // a task may have run — refresh the spend summary
           listDirty = true; // conversation order/goals may have changed
           if (chatResult === 'exit') break;
@@ -7212,15 +7547,27 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       if (key === 'e') {
         // Library submenu: Manage conversations, Import native session, Raw session.
         // inMainMenu is already false from the dispatch preamble.
+        getMenuStack().push();
         let keepRunning = true;
         while (keepRunning) {
           out.write('\n  Library\n');
           out.write('    [m] Manage conversations\n');
           out.write('    [i] Import a Claude/Codex session\n');
           out.write('    [r] Raw provider session\n');
-          out.write('    [b] Back\n\n> ');
+          out.write(`    [b] Back  (${navFooterText('back-and-exit', out.color)})\n\n> `);
           const libKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+          if (libKey === NAV_ESC) {
+            getMenuStack().requestExit();
+            keepRunning = false;
+            continue;
+          }
+          if (libKey === NAV_LEFT) {
+            getMenuStack().pop();
+            keepRunning = false;
+            continue;
+          }
           if (libKey === 'b' || libKey === null) {
+            getMenuStack().pop();
             keepRunning = false;
             continue;
           }
@@ -7236,6 +7583,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
             await runRawProviderSession(out, readLine, mutableCtx.env, suspendStdin, inkReadKey, commandGate);
           }
         }
+        if (getMenuStack().exitRequested) break;
         continue;
       }
 
@@ -7244,146 +7592,65 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         // Unified while loop: re-reads subscriptions at the TOP of every
         // iteration so that child mutations (add/delete/disable/re-auth) are
         // visible in the next repaint without re-entering the submenu.
+        getMenuStack().push();
         let keepRunning = true;
         while (keepRunning) {
           const acctStates = await loadProviderAccountStates();
-          const subsOn = subscriptionsEnabled(process.env, mutableCtx.config);
-          const hasAccounts = Object.values(acctStates).some((s) => s.total > 0);
-          if (subsOn && hasAccounts) {
-            // Provider selection submenu for Accounts management.
-            const activeTotal = Object.values(acctStates).reduce((sum, s) => sum + s.active, 0);
-            out.write('\n  Accounts\n');
-            out.write(`    ${activeTotal} active\n`);
-            for (const provider of ['claude', 'codex', 'opencode', 'grok'] as const) {
-              const s = acctStates[provider];
-              if (s === undefined) continue;
-              const provKey = provider === 'claude' ? 'j' : provider === 'codex' ? 'k' : provider === 'opencode' ? 'o' : 'p';
-              const statusLine = s.total > 0
-                ? `${s.active} active${s.total !== s.active ? `, ${s.total - s.active} disabled` : ''}`
-                : 'no accounts';
-              out.write(`    [${provKey}] ${provider}  ${statusLine}\n`);
-            }
-            out.write('    [b] Back\n\n> ');
-            const accKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
-            if (accKey === 'b' || accKey === null) {
-              keepRunning = false;
-              continue;
-            }
-            if (accKey === 'j') {
-              await runClaudeAccountsMenu(out, readLine, confirm, ctx.clock, {
-                login: loginFn, suspendStdin, inkReadKey, cwd: ctx.cwd,
-              });
-              await refreshEnvironmentIfStale(true);
-            } else if (accKey === 'k') {
-              await runCodexAccountsMenu(out, readLine, confirm, ctx.clock, {
-                login: loginFn, suspendStdin, inkReadKey, cwd: ctx.cwd,
-              });
-              await refreshEnvironmentIfStale(true);
-            } else if (accKey === 'o') {
-              await runOpencodeAccountsMenu(out, readLine, readlineEcho, confirm, ctx.clock, inkReadKey);
-              await refreshEnvironmentIfStale(true);
-            } else if (accKey === 'p') {
-              await runGrokAccountsMenu(out, readLine, confirm, ctx.clock, {
-                login: loginFn, suspendStdin, inkReadKey, cwd: ctx.cwd,
-              });
-              await refreshEnvironmentIfStale(true);
-            }
-          } else {
-            // Subscriptions off or no accounts: provider sign-in submenu.
-            out.write('\n  Accounts / Sign in\n');
-            out.write('    [j] Claude\n');
-            out.write('    [k] Codex\n');
-            out.write('    [o] OpenCode\n');
-            out.write('    [p] Grok\n');
-            out.write('    [b] Back\n\n> ');
-            const accKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
-            if (accKey === 'b' || accKey === null) {
-              keepRunning = false;
-              continue;
-            }
-            if (accKey === 'j') {
-              const claudeRootResult = await loginFn(out, 'claude', {
-                readLine, confirm,
-                ...(suspendStdin !== undefined ? { suspendStdin } : {}),
-              });
-              await refreshEnvironmentIfStale(true);
-              resolveMenuLoginDestination({ kind: 'root' }, claudeRootResult, mutableCtx.env.claude.authenticated);
-            } else if (accKey === 'k') {
-              const codexRootResult = await loginFn(out, 'codex', {
-                readLine, confirm,
-                ...(suspendStdin !== undefined ? { suspendStdin } : {}),
-              });
-              await refreshEnvironmentIfStale(true);
-              resolveMenuLoginDestination({ kind: 'root' }, codexRootResult, mutableCtx.env.codex.authenticated);
-            } else if (accKey === 'o') {
-              if (!mutableCtx.env.opencode.installed) {
-                out.write(`Install opencode (${installCommandFor('opencode').replace('npm install -g ', '')})? ${yesNoHint('yes', out.color)} `);
-                const canRawConfirm =
-                  out.isTty &&
-                  process.stdin.isTTY === true &&
-                  typeof process.stdin.setRawMode === 'function';
-                const shouldInstall = canRawConfirm
-                  ? await confirm(true)
-                  : (() => readLine().then((ans) => ans !== null && parseYesNo(ans, true)))();
-                if (!(await shouldInstall)) {
-                  out.write(`\x1b[2mSkipped. You can install it later: ${installCommandFor('opencode')}\x1b[0m\n`);
-                  continue;
-                }
-                const resumeStdin = suspendStdin?.();
-                let ok = false;
-                try {
-                  ok = await installProviderFn('opencode', out);
-                } finally {
-                  resumeStdin?.();
-                }
-                await refreshEnvironmentIfStale(true);
-                if (!ok || !mutableCtx.env.opencode.installed) {
-                  out.write(`Install failed. Run it yourself: ${installCommandFor('opencode')}\n`);
-                  continue;
-                }
-              }
-              const opencodeRootResult = await loginFn(out, 'opencode', {
-                readLine, confirm,
-                ...(suspendStdin !== undefined ? { suspendStdin } : {}),
-              });
-              await refreshEnvironmentIfStale(true);
-              resolveMenuLoginDestination({ kind: 'root' }, opencodeRootResult, mutableCtx.env.opencode.authenticated);
-            } else if (accKey === 'p') {
-              if (!mutableCtx.env.grok.installed) {
-                out.write(`Install grok (${installCommandFor('grok').replace('npm install -g ', '')})? ${yesNoHint('yes', out.color)} `);
-                const canRawConfirm =
-                  out.isTty &&
-                  process.stdin.isTTY === true &&
-                  typeof process.stdin.setRawMode === 'function';
-                const shouldInstall = canRawConfirm
-                  ? await confirm(true)
-                  : (() => readLine().then((ans) => ans !== null && parseYesNo(ans, true)))();
-                if (!(await shouldInstall)) {
-                  out.write(`\x1b[2mSkipped. You can install it later: ${installCommandFor('grok')}\x1b[0m\n`);
-                  continue;
-                }
-                const resumeStdin = suspendStdin?.();
-                let ok = false;
-                try {
-                  ok = await installProviderFn('grok', out);
-                } finally {
-                  resumeStdin?.();
-                }
-                await refreshEnvironmentIfStale(true);
-                if (!ok || !mutableCtx.env.grok.installed) {
-                  out.write(`Install failed. Run it yourself: ${installCommandFor('grok')}\n`);
-                  continue;
-                }
-              }
-              const grokRootResult = await loginFn(out, 'grok', {
-                readLine, confirm,
-                ...(suspendStdin !== undefined ? { suspendStdin } : {}),
-              });
-              await refreshEnvironmentIfStale(true);
-              resolveMenuLoginDestination({ kind: 'root' }, grokRootResult, mutableCtx.env.grok.authenticated);
-            }
+          // Provider selection submenu for Accounts management.
+          const activeTotal = Object.values(acctStates).reduce((sum, s) => sum + s.active, 0);
+          out.write('\n  Accounts\n');
+          out.write(`    ${activeTotal} active\n`);
+          for (const provider of ['claude', 'codex', 'opencode', 'grok'] as const) {
+            const s = acctStates[provider];
+            if (s === undefined) continue;
+            const provKey = provider === 'claude' ? 'j' : provider === 'codex' ? 'k' : provider === 'opencode' ? 'o' : 'p';
+            const statusLine = s.total > 0
+              ? `${s.active} active${s.total !== s.active ? `, ${s.total - s.active} disabled` : ''}`
+              : 'no accounts';
+            out.write(`    [${provKey}] ${provider}  ${statusLine}\n`);
+          }
+          out.write(`    [b] Back  (${navFooterText('back-and-exit', out.color)})\n\n> `);
+          const accKey = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+          if (accKey === NAV_ESC) {
+            getMenuStack().requestExit();
+            keepRunning = false;
+            continue;
+          }
+          if (accKey === NAV_LEFT) {
+            getMenuStack().pop();
+            keepRunning = false;
+            continue;
+          }
+          if (accKey === 'b' || accKey === null) {
+            getMenuStack().pop();
+            keepRunning = false;
+            continue;
+          }
+          if (accKey === 'j') {
+            await runClaudeAccountsMenu(out, readLine, confirm, ctx.clock, {
+              login: loginFn, suspendStdin, inkReadKey, cwd: ctx.cwd,
+            });
+            await refreshEnvironmentIfStale(true);
+            if (getMenuStack().exitRequested) { keepRunning = false; continue; }
+          } else if (accKey === 'k') {
+            await runCodexAccountsMenu(out, readLine, confirm, ctx.clock, {
+              login: loginFn, suspendStdin, inkReadKey, cwd: ctx.cwd,
+            });
+            await refreshEnvironmentIfStale(true);
+            if (getMenuStack().exitRequested) { keepRunning = false; continue; }
+          } else if (accKey === 'o') {
+            await runOpencodeAccountsMenu(out, readLine, readlineEcho, confirm, ctx.clock, inkReadKey);
+            await refreshEnvironmentIfStale(true);
+            if (getMenuStack().exitRequested) { keepRunning = false; continue; }
+          } else if (accKey === 'p') {
+            await runGrokAccountsMenu(out, readLine, confirm, ctx.clock, {
+              login: loginFn, suspendStdin, inkReadKey, cwd: ctx.cwd,
+            });
+            await refreshEnvironmentIfStale(true);
+            if (getMenuStack().exitRequested) { keepRunning = false; continue; }
           }
         }
+        if (getMenuStack().exitRequested) break;
         listDirty = true;
         acctsDirty = true;
         continue;
@@ -7413,155 +7680,46 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         continue;
       }
 
-      // ---- [j] Claude Accounts / Login Claude --------------------------------
-      // When the experimental subscriptions flag is on, opens the Claude
-      // Accounts management screen. When off, runs the existing single-login flow.
+      // ---- [j] Claude Accounts -----------------------------------------------
       if (key === 'j') {
-        if (subscriptionsEnabled(process.env, mutableCtx.config)) {
-          await runClaudeAccountsMenu(out, readLine, confirm, ctx.clock, {
-            login: loginFn,
-            suspendStdin,
-            inkReadKey,
-            cwd: ctx.cwd,
-          });
-          await refreshEnvironmentIfStale(true);
-          acctsDirty = true;
-          continue;
-        }
-        await loginFn(out, 'claude', {
-          readLine,
-          confirm,
-          ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+        await runClaudeAccountsMenu(out, readLine, confirm, ctx.clock, {
+          login: loginFn,
+          suspendStdin,
+          inkReadKey,
+          cwd: ctx.cwd,
         });
         await refreshEnvironmentIfStale(true);
         acctsDirty = true;
         continue;
       }
 
-      // ---- [k] Codex Accounts / Login Codex ----------------------------------
-      // When the experimental subscriptions flag is on, opens the Codex
-      // Accounts management screen. When off, runs the existing single-login flow.
+      // ---- [k] Codex Accounts ------------------------------------------------
       if (key === 'k') {
-        if (subscriptionsEnabled(process.env, mutableCtx.config)) {
-          await runCodexAccountsMenu(out, readLine, confirm, ctx.clock, {
-            login: loginFn,
-            suspendStdin,
-            inkReadKey,
-            cwd: ctx.cwd,
-          });
-          await refreshEnvironmentIfStale(true);
-          acctsDirty = true;
-          continue;
-        }
-        await loginFn(out, 'codex', {
-          readLine,
-          confirm,
-          ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+        await runCodexAccountsMenu(out, readLine, confirm, ctx.clock, {
+          login: loginFn,
+          suspendStdin,
+          inkReadKey,
+          cwd: ctx.cwd,
         });
         await refreshEnvironmentIfStale(true);
         acctsDirty = true;
         continue;
       }
 
-      // ---- [o] Connect / Login opencode ---------------------------------------
-      // Always handles the key. When the experimental subscriptions flag is on,
-      // opens the OpenCode Accounts management screen. When off, runs the existing
-      // single-login flow: if opencode is not yet installed, asks for consent then
-      // installs it; if install succeeds, proceeds to sign in.
+      // ---- [o] OpenCode Accounts ---------------------------------------------
       if (key === 'o') {
-        if (subscriptionsEnabled(process.env, mutableCtx.config)) {
-          await runOpencodeAccountsMenu(out, readLine, readlineEcho, confirm, ctx.clock, inkReadKey);
-          acctsDirty = true;
-          continue;
-        }
-        if (!mutableCtx.env.opencode.installed) {
-          out.write(`Install opencode (${installCommandFor('opencode').replace('npm install -g ', '')})? ${yesNoHint('yes', out.color)} `);
-          // Preserve the install-safety rule from the line-mode path: EOF means
-          // there is no interactive user, so never auto-install on a closed pipe.
-          const canRawConfirm =
-            out.isTty &&
-            process.stdin.isTTY === true &&
-            typeof process.stdin.setRawMode === 'function';
-          const shouldInstall = canRawConfirm
-            ? await confirm(true)
-            : (() => readLine().then((ans) => ans !== null && parseYesNo(ans, true)))();
-          if (!(await shouldInstall)) {
-            out.write(`[2mSkipped. You can install it later: ${installCommandFor('opencode')}[0m\n`);
-            continue;
-          }
-          const resumeStdin = suspendStdin?.();
-          let ok = false;
-          try {
-            ok = await installProviderFn('opencode', out);
-          } finally {
-            resumeStdin?.();
-          }
-          await refreshEnvironmentIfStale(true);
-          if (!ok || !mutableCtx.env.opencode.installed) {
-            out.write(`Install failed. Run it yourself: ${installCommandFor('opencode')}\n`);
-            continue;
-          }
-        }
-        // opencode is (now) installed — proceed to sign in
-        await loginFn(out, 'opencode', {
-          readLine,
-          confirm,
-          ...(suspendStdin !== undefined ? { suspendStdin } : {}),
-        });
-        await refreshEnvironmentIfStale(true);
+        await runOpencodeAccountsMenu(out, readLine, readlineEcho, confirm, ctx.clock, inkReadKey);
         acctsDirty = true;
         continue;
       }
 
-      // ---- [p] Grok Accounts / Login grok ------------------------------------
-      // When the experimental subscriptions flag is on, opens the Grok
-      // Accounts management screen. When off, runs the existing single-login flow
-      // (including install-if-needed).
+      // ---- [p] Grok Accounts -------------------------------------------------
       if (key === 'p') {
-        if (subscriptionsEnabled(process.env, mutableCtx.config)) {
-          await runGrokAccountsMenu(out, readLine, confirm, ctx.clock, {
-            login: loginFn,
-            suspendStdin,
-            inkReadKey,
-            cwd: ctx.cwd,
-          });
-          await refreshEnvironmentIfStale(true);
-          acctsDirty = true;
-          continue;
-        }
-        if (!mutableCtx.env.grok.installed) {
-          out.write(`Install grok (${installCommandFor('grok').replace('npm install -g ', '')})? ${yesNoHint('yes', out.color)} `);
-          // Preserve the install-safety rule from the line-mode path: EOF means
-          // there is no interactive user, so never auto-install on a closed pipe.
-          const canRawConfirm =
-            out.isTty &&
-            process.stdin.isTTY === true &&
-            typeof process.stdin.setRawMode === 'function';
-          const shouldInstall = canRawConfirm
-            ? await confirm(true)
-            : (() => readLine().then((ans) => ans !== null && parseYesNo(ans, true)))();
-          if (!(await shouldInstall)) {
-            out.write(`\x1b[2mSkipped. You can install it later: ${installCommandFor('grok')}\x1b[0m\n`);
-            continue;
-          }
-          const resumeStdin = suspendStdin?.();
-          let ok = false;
-          try {
-            ok = await installProviderFn('grok', out);
-          } finally {
-            resumeStdin?.();
-          }
-          await refreshEnvironmentIfStale(true);
-          if (!ok || !mutableCtx.env.grok.installed) {
-            out.write(`Install failed. Run it yourself: ${installCommandFor('grok')}\n`);
-            continue;
-          }
-        }
-        // grok is (now) installed — proceed to sign in
-        await loginFn(out, 'grok', {
-          readLine,
-          confirm,
-          ...(suspendStdin !== undefined ? { suspendStdin } : {}),
+        await runGrokAccountsMenu(out, readLine, confirm, ctx.clock, {
+          login: loginFn,
+          suspendStdin,
+          inkReadKey,
+          cwd: ctx.cwd,
         });
         await refreshEnvironmentIfStale(true);
         acctsDirty = true;
@@ -7615,9 +7773,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       }
     }
   } finally {
-    // On the Ink path the reader is `inkHandle.reader`; unmount() closes it AND
-    // tears down the Ink render, so don't also call lineReader.close() (it would
-    // be redundant). Off the Ink path, close the legacy reader as before.
+    await clearActiveConversation();
     if (inkHandle !== null) {
       inkHandle.unmount();
     } else {

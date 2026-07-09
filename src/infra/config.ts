@@ -291,13 +291,20 @@ export interface AppConfig {
    */
   experimentalPreflightGuard?: boolean;
   /**
-   * DARK SEMANTIC PREFLIGHT V1 (default off). When true (or with
-   * `MYSHELL_SEMANTIC_PREFLIGHT_V1` in {1,true,on,yes}), entry points compose the
-   * complete Item-8 semantic/evidence path and set OrchestrateDeps
-   * semanticPreflightV1 for that turn. Absent/false preserves the legacy
-   * route/intent preflight path exactly.
+   * SEMANTIC PREFLIGHT V1 (default on). Entry points compose the complete Item-8
+   * semantic/evidence path and set OrchestrateDeps.semanticPreflightV1 for that
+   * turn unless explicitly disabled with config false or MYSHELL_SEMANTIC_PREFLIGHT_V1
+   * in {0,false,off,no}. Explicit true/on values remain accepted for compatibility.
    */
   experimentalSemanticPreflightV1?: boolean;
+  /**
+   * CompletionResultV1 terminal-truth wiring (default on). Entry points set
+   * OrchestrateDeps.completionResultV1 so terminal finals receive the additive
+   * CompletionResultV1 payload unless explicitly disabled with config false or
+   * MYSHELL_COMPLETION_RESULT_V1 in {0,false,off,no}. Explicit true/on values
+   * remain accepted for compatibility.
+   */
+  experimentalCompletionResultV1?: boolean;
   /**
    * EXPERIMENTAL RIVAL TRIBUNAL (default off; master-plan PHASE 9). When true (or with
    * `MYSHELL_TRIBUNAL` truthy in the environment), a genuine load-bearing IMPLEMENTATION
@@ -370,19 +377,10 @@ export interface AppConfig {
    */
   experimentalProviderEffort?: boolean;
   /**
-   * EXPERIMENTAL OpenCode account subscriptions (default off).
-   * When true, and/or MYSHELL_SUBSCRIPTIONS is truthy, myshell may read
-   * subscriptions.json, show the OpenCode Accounts menu, and route OpenCode
-   * model calls through account-scoped XDG_DATA_HOME.
-   */
-  experimentalSubscriptions?: boolean;
-  /**
    * EXPERIMENTAL Account-Aware Parallelism for hedged escalation (default off).
-   * When true, and/or MYSHELL_ACCOUNT_PARALLELISM is truthy (AND the base
-   * experimentalSubscriptions / MYSHELL_SUBSCRIPTIONS flag is also on), the hedge
-   * path may use a distinct same-provider subscription account for its speculative
-   * sibling arm in quality-first mode. Gated behind the base subscriptions flag;
-   * default OFF. Absent means off.
+   * When true, and/or MYSHELL_ACCOUNT_PARALLELISM is truthy, the hedge path may
+   * use a distinct same-provider subscription account for its speculative sibling
+   * arm in quality-first mode. Default OFF. Absent means off.
    */
   experimentalAccountParallelism?: boolean;
   /**

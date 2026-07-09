@@ -182,6 +182,11 @@ export interface VerifyOutcome {
   readonly verified: VerifiedState;
   /** The test command that ran (label), when one was detected and executed. */
   readonly testCommand?: string;
+  /**
+   * Optional repo/map facts captured for CompletionResultV1 worktree + durable orientation.
+   * Present only when completion binding enriches; does not affect 4 states or receipts.
+   */
+  readonly mapOrientationRef?: { rankedCount?: number; symbolsSample?: readonly string[] };
   /** The test run, when tests executed (any outcome). */
   readonly testRun?: TestRunResult;
   /**

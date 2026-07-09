@@ -658,6 +658,7 @@ describe('runHedged — abort', () => {
     const claude = makeProvider('claude', adequate('A'));
     const codex = makeProvider('codex', adequate('B'));
     const { deps } = hedgeDeps({ claude, codex }, () => Promise.resolve(), SPLIT_ORDER);
+    deps.completionResultV1 = true;
 
     const events = await collect(runHedged('hard task', deps, PLAN, ac.signal));
 
@@ -668,6 +669,8 @@ describe('runHedged — abort', () => {
     assert.ok(finals[0]?.type === 'final' && finals[0].success === false);
     if (finals[0]?.type === 'final') {
       assert.equal(finals[0].canceled, true);
+      assert.equal(finals[0].completionResult?.terminal, 'cancelled');
+      assert.equal(finals[0].completionResult?.replayPolicy.replay, 'needs-user');
     }
   });
 
@@ -687,6 +690,7 @@ describe('runHedged — abort', () => {
       return Promise.resolve();
     };
     const { deps } = hedgeDeps({ claude, codex }, sleep, SPLIT_ORDER);
+    deps.completionResultV1 = true;
 
     const events = await collect(runHedged('hard task', deps, PLAN, ac.signal));
 
@@ -695,6 +699,8 @@ describe('runHedged — abort', () => {
     assert.ok(finals[0]?.type === 'final' && finals[0].success === false);
     if (finals[0]?.type === 'final') {
       assert.equal(finals[0].canceled, true);
+      assert.equal(finals[0].completionResult?.terminal, 'cancelled');
+      assert.equal(finals[0].completionResult?.replayPolicy.replay, 'needs-user');
     }
     assert.ok(
       events.some((e) => e.type === 'notice' && e.level === 'warn' && /cancel/i.test(e.message)),
@@ -977,6 +983,7 @@ describe('runHedged — Candidate Quality Gate', () => {
     const codex = makeProvider('codex', adequate('Y'));
     const neverSleep = (): Promise<void> => new Promise<void>(() => {});
     const { deps, session } = hedgeDeps({ claude, codex }, neverSleep, SPLIT_ORDER);
+    deps.completionResultV1 = true;
     const port = makeVerifyPort([redRun()]);
     const ac = new AbortController();
     ac.abort();
@@ -987,6 +994,8 @@ describe('runHedged — Candidate Quality Gate', () => {
     assert.ok(final !== undefined && final.type === 'final');
     assert.equal(final.success, false);
     assert.equal(final.canceled, true);
+    assert.equal(final.completionResult?.terminal, 'cancelled');
+    assert.equal(final.completionResult?.replayPolicy.replay, 'needs-user');
     assert.equal(session.entries.filter((e) => e.role === 'assistant').length, 0);
     assert.equal(events.filter((e) => e.type === 'final').length, 1);
   });

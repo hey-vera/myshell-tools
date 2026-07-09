@@ -371,9 +371,40 @@ describe('orchestrate — no providers path', () => {
       assert.equal(finalEv.success, false);
       assert.equal(finalEv.totalCostUsd, 0);
       assert.equal(finalEv.attempts, 0);
+      assert.equal(finalEv.completionResult, undefined);
     }
   });
 
+  it('attaches CompletionResultV1 on no-provider final when explicitly enabled', async () => {
+    const clock = makeFakeClock();
+    const session = makeFakeSession();
+    const ledger = makeFakeLedger();
+    const deps: OrchestrateDeps = {
+      providers: {},
+      clock,
+      session,
+      ledger,
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+      completionResultV1: true,
+    };
+
+    const events = await collectEvents(
+      orchestrate('refactor X', deps, new AbortController().signal),
+    );
+
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.success, false);
+      assert.ok(finalEv.completionResult !== undefined);
+      assert.equal(finalEv.completionResult.terminal, 'failed');
+      assert.equal(finalEv.completionResult.output, 'No providers available.');
+      assert.equal(finalEv.completionResult.replayPolicy.replay, 'unknown');
+    }
+  });
   it('does not write to ledger when no providers', async () => {
     const clock = makeFakeClock();
     const session = makeFakeSession();
@@ -394,6 +425,54 @@ describe('orchestrate — no providers path', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Cancellation terminal path
+// ---------------------------------------------------------------------------
+
+describe('orchestrate � cancellation terminal path', () => {
+  function cancelledDeps(completionResultV1?: true): OrchestrateDeps {
+    const base: OrchestrateDeps = {
+      providers: { claude: makeFakeProvider('claude') },
+      clock: makeFakeClock(),
+      session: makeFakeSession(),
+      ledger: makeFakeLedger(),
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      sandbox: 'workspace-write',
+      timeoutMs: 30_000,
+    };
+    return completionResultV1 === true ? { ...base, completionResultV1: true } : base;
+  }
+
+  it('aborted signal omits CompletionResultV1 by default', async () => {
+    const ac = new AbortController();
+    ac.abort();
+
+    const events = await collectEvents(orchestrate('refactor X', cancelledDeps(), ac.signal));
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.canceled, true);
+      assert.equal(finalEv.completionResult, undefined);
+    }
+  });
+
+  it('aborted signal attaches cancelled CompletionResultV1 when explicitly enabled', async () => {
+    const ac = new AbortController();
+    ac.abort();
+
+    const events = await collectEvents(orchestrate('refactor X', cancelledDeps(true), ac.signal));
+    const finalEv = events.find((e) => e.type === 'final');
+    assert.ok(finalEv !== undefined);
+    if (finalEv.type === 'final') {
+      assert.equal(finalEv.canceled, true);
+      assert.ok(finalEv.completionResult !== undefined);
+      assert.equal(finalEv.completionResult.terminal, 'cancelled');
+      assert.equal(finalEv.completionResult.replayPolicy.replay, 'needs-user');
+      assert.equal(finalEv.completionResult.goalSettlement.state, 'needs-user');
+    }
+  });
+});
 // ---------------------------------------------------------------------------
 // Codex provider path
 // ---------------------------------------------------------------------------
@@ -3656,6 +3735,7 @@ describe('orchestrate — ask_user short-circuit', () => {
 
   it('yields a successful final carrying the parsed questions', async () => {
     const { deps } = makeAskDeps();
+    deps.completionResultV1 = true;
     const events = await collectEvents(
       orchestrate('set up tests', deps, new AbortController().signal),
     );
@@ -3666,6 +3746,9 @@ describe('orchestrate — ask_user short-circuit', () => {
       assert.ok(final.questions !== undefined, 'final must carry questions');
       assert.equal(final.questions.questions.length, 1);
       assert.equal(final.questions.questions[0]!.id, 'framework');
+      assert.equal(final.completionResult?.terminal, 'needs-user');
+      assert.equal(final.completionResult?.success, false);
+      assert.equal(final.completionResult?.replayPolicy.replay, 'needs-user');
     }
   });
 

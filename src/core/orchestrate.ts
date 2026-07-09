@@ -87,6 +87,7 @@ import {
 import { autoModeForPlanInfos, type PlanInfo } from './policy.js';
 import { pressureFromSignals, preflightAdmits } from './capability-budget.js';
 import { ENVIRONMENT_BLOCK_CHAR_CAP } from './repo-map.js';
+import { attachTerminalCompletionIfFlag } from './accept-stage.js';
 import { buildRetrievalContext, buildWebContext } from './research.js';
 import { collectLocalEvidence, collectWebEvidence } from './research.js';
 import {
@@ -346,9 +347,11 @@ export async function* orchestrate(
   // byte-identical to 3.134.0 on BOTH axes (risk + web-research) — see the two
   // helpers below and the OFF-strip in `frameForDownstream`.
   const riskSignalsOn = depsArg.riskSignals === true;
-  // Item 8 semantic preflight V1 is a dark, explicitly injected test seam in this
-  // slice. When on, it owns route/intent/risk preflight and suppresses the legacy
-  // preflight branches and re-extraction loop.
+  // Item 8 semantic preflight V1 is owned by the composition layer. Product
+  // entrypoints default it ON unless explicitly disabled; this core remains
+  // dependency-injected so direct tests and rollback paths can omit it. When on,
+  // it owns route/intent/risk preflight and suppresses the legacy preflight
+  // branches and re-extraction loop.
   const semanticPreflightOn = depsArg.semanticPreflightV1 === true;
   // rank-9 (default-OFF). When the requiredInvestigation flag is ON, an
   // INVESTIGATE_CONTEXT turn that the confidence brain did NOT already ground runs
@@ -375,6 +378,25 @@ export async function* orchestrate(
   // Reuse the SAME QuotaPressure signal the caller already computes from live
   // cooldown state (menu.ts governorPressure / decideShed). NO new probe.
   const pressure = depsArg.governorPressure ?? pressureFromSignals({});
+  const cancelledFinal = (
+    tier: Tier,
+    output = '',
+  ): Extract<CoreEvent, { readonly type: 'final' }> =>
+    attachTerminalCompletionIfFlag({
+      deps: depsArg,
+      final: {
+        type: 'final',
+        success: false,
+        output,
+        tier,
+        totalCostUsd: 0,
+        sessionId: depsArg.session.id,
+        attempts: 0,
+        canceled: true,
+      },
+      task,
+      terminal: 'cancelled',
+    });
   // Raise the deterministic risk via the frame's hints, but ONLY when the flag is ON
   // and a frame exists. OFF or no frame → returns `base` unchanged (combineRisk is
   // never even called) → `classification.risk` stays exactly `det.risk`.
@@ -450,16 +472,7 @@ export async function* orchestrate(
       }
       if (signal.aborted) {
         yield { type: 'notice', level: 'warn', message: 'Cancelled.' };
-        yield {
-          type: 'final',
-          success: false,
-          output: '',
-          tier: detClassification.tier,
-          totalCostUsd: 0,
-          sessionId: depsArg.session.id,
-          attempts: 0,
-          canceled: true,
-        };
+        yield cancelledFinal(detClassification.tier);
         return;
       }
     }
@@ -696,16 +709,7 @@ export async function* orchestrate(
       // ESC mid-loop: a user abort between rounds ends the turn with a cancel final.
       if (signal.aborted) {
         yield { type: 'notice', level: 'warn', message: 'Cancelled.' };
-        yield {
-          type: 'final',
-          success: false,
-          output: '',
-          tier: classification.tier,
-          totalCostUsd: 0,
-          sessionId: depsArg.session.id,
-          attempts: 0,
-          canceled: true,
-        };
+        yield cancelledFinal(classification.tier);
         return;
       }
 
@@ -787,16 +791,7 @@ export async function* orchestrate(
         const webFindings = await buildWebContext(webPort, intentFrame?.goal ?? task, signal);
         if (signal.aborted) {
           yield { type: 'notice', level: 'warn', message: 'Cancelled.' };
-          yield {
-            type: 'final',
-            success: false,
-            output: '',
-            tier: classification.tier,
-            totalCostUsd: 0,
-            sessionId: depsArg.session.id,
-            attempts: 0,
-            canceled: true,
-          };
+          yield cancelledFinal(classification.tier);
           return;
         }
         let webReExtracted: IntentFrame | null = null;
@@ -933,16 +928,7 @@ export async function* orchestrate(
         );
         if (signal.aborted) {
           yield { type: 'notice', level: 'warn', message: 'Cancelled.' };
-          yield {
-            type: 'final',
-            success: false,
-            output: '',
-            tier: classification.tier,
-            totalCostUsd: 0,
-            sessionId: depsArg.session.id,
-            attempts: 0,
-            canceled: true,
-          };
+          yield cancelledFinal(classification.tier);
           return;
         }
       }
@@ -975,16 +961,7 @@ export async function* orchestrate(
       // dangling "done" goal card or mutate any state.
       if (signal.aborted) {
         yield { type: 'notice', level: 'warn', message: 'Cancelled.' };
-        yield {
-          type: 'final',
-          success: false,
-          output: '',
-          tier: classification.tier,
-          totalCostUsd: 0,
-          sessionId: depsArg.session.id,
-          attempts: 0,
-          canceled: true,
-        };
+        yield cancelledFinal(classification.tier);
         return;
       }
 
@@ -1231,16 +1208,7 @@ export async function* orchestrate(
 
     if (signal.aborted || semanticEvidenceReceipts.some((receipt) => receipt.status === 'cancelled')) {
       yield { type: 'notice', level: 'warn', message: 'Cancelled.' };
-      yield {
-        type: 'final',
-        success: false,
-        output: 'Task was cancelled.',
-        tier: classification.tier,
-        totalCostUsd: 0,
-        sessionId: depsArg.session.id,
-        attempts: 0,
-        canceled: true,
-      };
+      yield cancelledFinal(classification.tier, 'Task was cancelled.');
       return;
     }
 
@@ -1263,7 +1231,7 @@ export async function* orchestrate(
     }
 
     if (evidenceDecision.beforeWork !== 'cannot-ground' && !evidenceDecision.mayStartWork) {
-      yield {
+      const evidenceBlockedFinal: Extract<CoreEvent, { readonly type: 'final' }> = {
         type: 'final',
         success: true,
         output: unverifiedEvidenceOutput(evidenceDecision, semanticEvidenceReceipts),
@@ -1272,6 +1240,12 @@ export async function* orchestrate(
         sessionId: depsArg.session.id,
         attempts: 0,
       };
+      yield attachTerminalCompletionIfFlag({
+        deps: depsArg,
+        final: evidenceBlockedFinal,
+        task,
+        terminal: 'blocked',
+      });
       return;
     }
   }
@@ -1332,16 +1306,7 @@ export async function* orchestrate(
     );
     if (signal.aborted) {
       yield { type: 'notice', level: 'warn', message: 'Cancelled.' };
-      yield {
-        type: 'final',
-        success: false,
-        output: '',
-        tier: classification.tier,
-        totalCostUsd: 0,
-        sessionId: depsArg.session.id,
-        attempts: 0,
-        canceled: true,
-      };
+      yield cancelledFinal(classification.tier);
       return;
     }
     if (findings.length > 0) {
@@ -1868,7 +1833,7 @@ export async function* orchestrate(
       // quarantine this terminal-ask turn on the version axis (AP2-F §3).
       engineBehaviorVersion: ENGINE_BEHAVIOR_VERSION,
     });
-    yield {
+    const needsUserFinal: Extract<CoreEvent, { readonly type: 'final' }> = {
       type: 'final',
       success: true,
       output: '',
@@ -1881,6 +1846,12 @@ export async function* orchestrate(
       attempts: 0,
       questions: terminalQuestion,
     };
+    yield attachTerminalCompletionIfFlag({
+      deps,
+      final: needsUserFinal,
+      task,
+      terminal: 'needs-user',
+    });
     return;
   }
 
@@ -1902,7 +1873,7 @@ export async function* orchestrate(
         'No providers are available. Install and authenticate at least one provider ' +
         '(claude, codex, opencode, or grok) and try again.',
     };
-    yield {
+    const noProviderFinal: Extract<CoreEvent, { readonly type: 'final' }> = {
       type: 'final',
       success: false,
       output: 'No providers available.',
@@ -1911,6 +1882,12 @@ export async function* orchestrate(
       sessionId: deps.session.id,
       attempts: 0,
     };
+    yield attachTerminalCompletionIfFlag({
+      deps,
+      final: noProviderFinal,
+      task,
+      terminal: 'failed',
+    });
     return;
   }
 

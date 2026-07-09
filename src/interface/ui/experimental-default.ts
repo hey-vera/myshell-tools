@@ -3,8 +3,9 @@
  * myshell-tools' full intelligence ON BY DEFAULT at the CLI entry point, so the tool is
  * automatic and frictionless with NO env-var flipping.
  *
- * This is the inverse of the pure per-feature flag helpers (governor-flag.ts,
- * verify-flag.ts, taste-flag.ts, judgment-flag.ts, trust-flag.ts, tribunal-flag.ts):
+ * This is the inverse of the remaining pure per-feature opt-in helpers
+ * (governor-flag.ts, verify-flag.ts, taste-flag.ts, judgment-flag.ts,
+ * trust-flag.ts, tribunal-flag.ts):
  * those return true ONLY on explicit opt-IN (default false) and are kept intact —
  * they remain the single source of truth exercised by the unit tests + the flag-off
  * neutrality suites (the off-path = today's behavior). This module flips the SOURCE of
