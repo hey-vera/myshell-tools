@@ -201,7 +201,11 @@ export interface StreamView {
   readonly panelists: readonly AgentView[];
   /** Non-null once the synthesizer starts (render.ts `synthesizing`). */
   readonly synthesizing: { readonly count: number } | null;
-  /** render.ts `workLabel` — the spinner verb ("Thinking" / verbose tier label). */
+  /**
+   * render.ts `workLabel` — the spinner verb for the honest turn-phase machine:
+   * "Preparing" (turn/start / preflight) → "Thinking" (tier-start / model
+   * composing) → "Responding" (first text tokens) / verbose tier label.
+   */
   readonly workLabel: string;
   /**
    * The LIVE action the agent is currently performing, derived SOLELY from the
@@ -412,7 +416,7 @@ export const initialStreamView: StreamView = {
   streamedChars: 0,
   panelists: [],
   synthesizing: null,
-  workLabel: 'Thinking',
+  workLabel: 'Preparing',
   toolSinceProse: false,
   breakBeforeNextProse: false,
   proseStarted: false,

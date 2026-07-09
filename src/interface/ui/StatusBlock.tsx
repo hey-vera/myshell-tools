@@ -140,8 +140,9 @@ export interface AgentRowProps {
    *  Date.now). Omitted/0 → no suffix. */
   readonly elapsedSecs?: number;
   /** "What it's doing" for a RUNNING agent — the live stream.workLabel (e.g.
-   *  "Thinking"), shown in place of the bare "running" word. Omitted/non-running →
-   *  the run-state word. Never fabricated; it is the real current work label. */
+   *  "Preparing" / "Thinking" / "Responding"), shown in place of the bare
+   *  "running" word. Omitted/non-running → the run-state word. Never fabricated;
+   *  it is the real current work label. */
   readonly workLabel?: string;
   /** The LIVE action label ("editing src/auth/mw.ts" / "running") from the real
    *  most-recent tool event, preferred over {@link workLabel} for a RUNNING agent.
@@ -599,8 +600,9 @@ export function StatusLine({ state, frame, elapsedSecs, color = true }: StatusLi
   }
   // Non-panel: LEAD with the live ACTION — the single most informative real-time
   // signal — i.e. the real tool verb + target ("editing src/auth/mw.ts") from the
-  // most recent tool event; fall back to the real workLabel ("Thinking") when no
-  // tool is active. Then the demoted, DIM detail: a strictly derived work summary
+  // most recent tool event; fall back to the real workLabel ("Preparing" /
+  // "Thinking" / "Responding") when no tool is active. Then the demoted, DIM
+  // detail: a strictly derived work summary
   // (running agents, completed agents, visible multi-goal count, elapsed). NO
   // token figure is shown here: mid-run there is no honest token count for the
   // Claude subscription provider, so we never render the old fabricated
@@ -741,7 +743,8 @@ export function StatusBlock({
   }
 
   // The live "what it's doing" label rides onto the RUNNING agent row (real
-  // stream.workLabel — "Thinking" in normal mode, the verbose tier label in
+  // stream.workLabel — phase verb (Preparing/Thinking/Responding) in normal mode,
+  // the verbose tier label in
   // verbose). Only meaningful while the non-panel stream is active.
   const liveWorkLabel = state.stream.workLabel;
   // The live ACTION (real tool verb + optional target) leads the RUNNING agent row
