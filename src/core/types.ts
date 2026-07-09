@@ -1301,6 +1301,13 @@ export type CoreEvent =
        * non-account (global) paths and on all non-OpenCode providers.
        */
       readonly accountId?: string;
+      /**
+       * End-of-turn visible-dispatch line (provider · model · effort · account? · why)
+       * from actual run fields. Pre-formatted by pure
+       * {@link import('./turn-routing-receipt.js').formatTurnRoutingReceipt}; absent
+       * when no truthful who/what is known. Never invents costs or quota.
+       */
+      readonly routingReceipt?: string;
       /** OPTIONAL multi-goal seam — see `tier-start.goalId`. Marks which goal's
        *  phase finished when several run concurrently. Absent on today's single-
        *  goal path. Purely additive. */
