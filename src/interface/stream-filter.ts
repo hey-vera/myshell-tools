@@ -78,6 +78,13 @@ export interface OutputSink {
    * dispatches a `settings/sync` action into the reducer store.
    */
   syncSettings?(settings: UiSettingsSnapshot): void;
+  /**
+   * OPTIONAL: set or clear the bottom-docked ※ recap orientation text (resume /
+   * `/recap`). Only the Ink sink implements it — dispatches `recap/set`. Legacy
+   * stdout sinks leave it undefined; callers fall back to writing a transcript
+   * line. Pass `null` to clear the dock on conversation exit.
+   */
+  setRecap?(text: string | null): void;
 }
 
 // ---------------------------------------------------------------------------
