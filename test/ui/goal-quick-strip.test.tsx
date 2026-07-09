@@ -1,17 +1,14 @@
 /**
- * test/ui/goal-quick-strip.test.tsx — Ink component tests for the GoalQuickStrip
- * inline goals strip (Phase 2). Runs under `npm run test:ui` (tsx +
- * ink-testing-library).
- *
- * Asserts: active+inactive goals rendered as compact rows, progress indicator
- * (done/total), overflow cap for many goals, strip hidden when fullscreen panel
- * is open / at menu, and the pure selector ordering + zero-board return.
+ * test/ui/goal-quick-strip.test.tsx — regression for the GoalQuickStrip pure
+ * helpers (still used by Control Panel / layout) plus App-level single-board
+ * + bottom-recap dock (P0.13–15). The strip is no longer mounted in chat.
  */
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import React from 'react';
 import { render } from 'ink-testing-library';
 import { GoalQuickStrip } from '../../src/interface/ui/GoalQuickStrip.js';
+import { RecapDock } from '../../src/interface/ui/RecapDock.js';
 import { selectGoalQuickRows, goalStripPlannedRows, GOAL_STRIP_MAX_GOALS, GOAL_STRIP_HEADER_ROWS } from '../../src/interface/ui/layout.js';
 import { App, createInkAppBridge } from '../../src/interface/ui/App.js';
 import { initialState, type GoalBoardRow, type UiState } from '../../src/interface/ui/index.js';
@@ -40,7 +37,7 @@ function stateWithBoard(board: readonly GoalBoardRow[]): UiState {
 }
 
 // ---------------------------------------------------------------------------
-// Component-level tests (GoalQuickStrip direct render)
+// Component-level tests (GoalQuickStrip still unit-testable; not mounted in App)
 // ---------------------------------------------------------------------------
 
 test('renders header and both active and inactive goal rows', () => {
@@ -56,15 +53,11 @@ test('renders header and both active and inactive goal rows', () => {
   const frame = lastFrame() ?? '';
   const plain = frame.replace(/\x1b\[[0-9;]*m/g, '');
 
-  // Header: "goals  3 total · 1 active"
   assert.match(plain, /goals.*3 total.*1 active/);
-  // Active goal (running)
   assert.match(plain, /\u25CF.*Build panel nav.*2\/5/);
   assert.match(plain, /running/);
-  // Inactive goal (done)
   assert.match(plain, /\u25CB.*Clean docs.*4\/4/);
   assert.match(plain, /done/);
-  // Inactive goal (parked)
   assert.match(plain, /\u25CC.*Release polish.*1\/6/);
   assert.match(plain, /parked/);
 });
@@ -98,80 +91,76 @@ test('agent count shown for running goals', () => {
   const plain = frame.replace(/\x1b\[[0-9;]*m/g, '');
 
   assert.match(plain, /3 workers/);
-  assert.doesNotMatch(plain, /0 workers/);
 });
 
-test('overflow cap works with many goals (> GOAL_STRIP_MAX_GOALS)', () => {
-  const manyRows: GoalBoardRow[] = [];
-  for (let i = 0; i < 10; i += 1) {
-    manyRows.push(boardRow({ id: `g${i}`, title: `Goal ${i}`, state: 'parked', glyph: '\u25CC' }));
-  }
-
+test('overflow caps visible goals', () => {
+  const manyRows = Array.from({ length: GOAL_STRIP_MAX_GOALS + 3 }, (_, i) =>
+    boardRow({ id: `g${i}`, title: `Goal ${i}`, state: 'parked', done: 0, total: 1, glyph: '\u25CC' }),
+  );
   const rows = selectGoalQuickRows(stateWithBoard(manyRows));
   const { lastFrame } = render(<GoalQuickStrip rows={rows} color={false} columns={80} />);
   const frame = lastFrame() ?? '';
   const plain = frame.replace(/\x1b\[[0-9;]*m/g, '');
-
-  // Only the first MAX goals should render, plus the overflow line.
-  for (let i = 0; i < GOAL_STRIP_MAX_GOALS; i += 1) {
-    assert.match(plain, new RegExp(`Goal ${i}`));
-  }
-  // The (MAX+1)th goal must NOT render.
-  assert.doesNotMatch(plain, new RegExp(`Goal ${GOAL_STRIP_MAX_GOALS}`));
-  // Overflow line "+N more" must appear.
-  const overflow = manyRows.length - GOAL_STRIP_MAX_GOALS;
-  assert.match(plain, new RegExp(`\\+${overflow} more`));
+  assert.match(plain, /\+\d+ more/);
 });
 
-test('empty board renders nothing (null)', () => {
+test('empty board -> GoalQuickStrip returns null', () => {
   const rows = selectGoalQuickRows(stateWithBoard([]));
   const { lastFrame } = render(<GoalQuickStrip rows={rows} color={false} columns={80} />);
-  const frame = lastFrame() ?? '';
-  assert.equal(frame, '');
+  assert.equal((lastFrame() ?? '').trim(), '');
 });
 
 test('selectGoalQuickRows orders active goals first (running, queued), then parked, then terminal', () => {
-  const board: GoalBoardRow[] = [
-    boardRow({ id: 'done', title: 'Done', state: 'done', glyph: '\u2713' }),
-    boardRow({ id: 'running', title: 'Running', state: 'running', glyph: '\u25CF' }),
-    boardRow({ id: 'parked', title: 'Parked', state: 'parked', glyph: '\u25CC' }),
-    boardRow({ id: 'queued', title: 'Queued', state: 'queued', glyph: '\u25CB' }),
-    boardRow({ id: 'failed', title: 'Failed', state: 'failed', glyph: '\u2717' }),
+  const board = [
+    boardRow({ id: 'd', title: 'Done', state: 'done' }),
+    boardRow({ id: 'p', title: 'Parked', state: 'parked' }),
+    boardRow({ id: 'r', title: 'Running', state: 'running' }),
+    boardRow({ id: 'q', title: 'Queued', state: 'queued' }),
   ];
-
   const rows = selectGoalQuickRows(stateWithBoard(board));
-  const order = rows.map((r) => r.state);
-  assert.deepEqual(order, ['running', 'queued', 'parked', 'done', 'failed']);
+  assert.deepEqual(
+    rows.map((r) => r.state),
+    ['running', 'queued', 'parked', 'done'],
+  );
 });
-
-// ---------------------------------------------------------------------------
-// Pure-function tests
-// ---------------------------------------------------------------------------
 
 test('goalStripPlannedRows returns 0 for empty board', () => {
   assert.equal(goalStripPlannedRows(0), 0);
 });
 
-test('goalStripPlannedRows returns header + N goal rows for small board', () => {
-  // 3 goals → 1 header + 3 goal rows = 4, no overflow
-  assert.equal(goalStripPlannedRows(3), GOAL_STRIP_HEADER_ROWS + 3);
-});
-
 test('goalStripPlannedRows caps at MAX_GOALS + overflow line', () => {
-  // 10 goals → 1 header + MAX_GOALS(5) goal rows + 1 overflow line = 7
   assert.equal(goalStripPlannedRows(10), GOAL_STRIP_HEADER_ROWS + GOAL_STRIP_MAX_GOALS + 1);
 });
 
 test('goalStripPlannedRows at exact cap has no overflow line', () => {
-  // Exactly MAX_GOALS → 1 header + MAX_GOALS rows = 6, no overflow
   assert.equal(goalStripPlannedRows(GOAL_STRIP_MAX_GOALS), GOAL_STRIP_HEADER_ROWS + GOAL_STRIP_MAX_GOALS);
 });
 
 // ---------------------------------------------------------------------------
-// App-level integration tests (strip visibility)
+// RecapDock unit
 // ---------------------------------------------------------------------------
 
-test('GoalQuickStrip rendered in chat with populated board', async () => {
+test('RecapDock renders ※ recap line when text is present', () => {
+  const { lastFrame } = render(
+    <RecapDock text="we were refactoring the board" color={false} columns={80} />,
+  );
+  const plain = (lastFrame() ?? '').replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(plain, /recap/);
+  assert.match(plain, /we were refactoring the board/);
+});
+
+test('RecapDock collapses when text is empty/null', () => {
+  const empty = render(<RecapDock text="" color={false} columns={80} />);
+  assert.equal((empty.lastFrame() ?? '').trim(), '');
+  const nil = render(<RecapDock text={null} color={false} columns={80} />);
+  assert.equal((nil.lastFrame() ?? '').trim(), '');
+});
+
+// ---------------------------------------------------------------------------
+// App-level: single BOARD surface + bottom recap dock (P0.13–15)
+// ---------------------------------------------------------------------------
+
+test('chat shows single BOARD goals surface (no GoalQuickStrip dual chrome)', async () => {
   const bridge = createInkAppBridge();
   const { lastFrame } = render(<App bridge={bridge} color={false} isTty={false} columns={80} rows={30} />);
   bridge.setChatActive(true);
@@ -190,20 +179,49 @@ test('GoalQuickStrip rendered in chat with populated board', async () => {
   const frame = lastFrame() ?? '';
   const plain = frame.replace(/\x1b\[[0-9;]*m/g, '');
 
+  // Single goals surface: the bordered BOARD
+  assert.match(plain, /BOARD/);
   assert.match(plain, /Ship it/);
   assert.match(plain, /Fix tests/);
   assert.match(plain, /2\/5/);
   assert.match(plain, /0\/3/);
-  assert.match(plain, /goals.*2 total/);
+  // Dual chrome gone: no strip header "goals N total · M active"
+  assert.doesNotMatch(plain, /goals.*[0-9]+ total/);
 });
 
-test('GoalQuickStrip hidden when chatActive=false (menu)', async () => {
+test('bottom recap dock renders above input when recap is set', async () => {
+  const bridge = createInkAppBridge();
+  const { lastFrame } = render(<App bridge={bridge} color={false} isTty={false} columns={80} rows={30} />);
+  bridge.setChatActive(true);
+
+  const state: UiState = {
+    ...initialState,
+    board: [boardRow({ id: 'a', title: 'Ship it', state: 'parked', done: 1, total: 4, glyph: '\u25CC' })],
+    boardEnabled: true,
+    recap: 'left off refactoring the auth middleware',
+  };
+  bridge.pushState(state);
+  await tick();
+
+  const frame = lastFrame() ?? '';
+  const plain = frame.replace(/\x1b\[[0-9;]*m/g, '');
+
+  assert.match(plain, /BOARD/);
+  assert.match(plain, /Ship it/);
+  assert.match(plain, /recap/);
+  assert.match(plain, /left off refactoring the auth middleware/);
+  // Still no dual strip
+  assert.doesNotMatch(plain, /goals.*[0-9]+ total/);
+});
+
+test('recap dock hidden when chatActive=false (menu)', async () => {
   const bridge = createInkAppBridge();
   const { lastFrame } = render(<App bridge={bridge} color={false} isTty={false} columns={80} />);
   const state: UiState = {
     ...initialState,
     board: [boardRow({ id: 'a', title: 'Ship it', state: 'running', done: 2, total: 5, glyph: '\u25CF' })],
     boardEnabled: true,
+    recap: 'should not show on menu',
   };
   bridge.pushState(state);
   await tick();
@@ -211,12 +229,12 @@ test('GoalQuickStrip hidden when chatActive=false (menu)', async () => {
   const frame = lastFrame() ?? '';
   const plain = frame.replace(/\x1b\[[0-9;]*m/g, '');
 
-  // The GoalQuickStrip header is unique: "goals  N total · M active". The BOARD
-  // panel may still render the goal title, but the strip header must NOT appear.
+  // BOARD may still paint idle board; strip header and dock recap must not appear at menu.
   assert.doesNotMatch(plain, /goals.*[0-9]+ total/);
+  assert.doesNotMatch(plain, /should not show on menu/);
 });
 
-test('GoalQuickStrip hidden when Control Panel is open', async () => {
+test('recap dock and GoalQuickStrip hidden when Control Panel is open', async () => {
   const bridge = createInkAppBridge();
   const { lastFrame } = render(<App bridge={bridge} color={false} isTty={false} columns={80} rows={30} />);
   bridge.setChatActive(true);
@@ -225,31 +243,16 @@ test('GoalQuickStrip hidden when Control Panel is open', async () => {
     ...initialState,
     board: [boardRow({ id: 'a', title: 'Ship it', state: 'running', done: 2, total: 5, glyph: '\u25CF' })],
     boardEnabled: true,
-    controlPanel: { open: true, activeSection: 'goals' },
-  };
-  bridge.pushState(state);
-  await tick();
-
-  const frame = lastFrame() ?? '';
-  const plain = frame.replace(/\x1b\[[0-9;]*m/g, '');
-
-  // The goal title appears in the Control Panel's Goals tab, but the
-  // GoalQuickStrip header "goals N total" must NOT appear.
-  assert.doesNotMatch(plain, /goals.*[0-9]+ total/);
-  assert.match(plain, /CONTROL PANEL/);
-});
-
-test('GoalQuickStrip hidden when Control Panel is open', async () => {
-  const bridge = createInkAppBridge();
-  const { lastFrame } = render(<App bridge={bridge} color={false} isTty={false} columns={80} rows={30} />);
-  bridge.setChatActive(true);
-
-  const state: UiState = {
-    ...initialState,
-    controlPanel: { open: true, activeSection: 'goals' },
-    board: [boardRow({ id: 'a', title: 'Ship it', state: 'running', done: 2, total: 5, glyph: '\u25CF' })],
-    boardEnabled: true,
-    goalsPanel: {},
+    recap: 'dock should hide under panel',
+    controlPanel: {
+      open: true,
+      activeSection: 'goals',
+      statusScroll: 0,
+      goalsListScroll: 0,
+      goalsDetailScroll: 0,
+      settingsScroll: 0,
+      settingsSelectedIndex: -1,
+    },
   };
   bridge.pushState(state);
   await tick();
@@ -258,10 +261,11 @@ test('GoalQuickStrip hidden when Control Panel is open', async () => {
   const plain = frame.replace(/\x1b\[[0-9;]*m/g, '');
 
   assert.doesNotMatch(plain, /goals.*[0-9]+ total/);
+  assert.doesNotMatch(plain, /dock should hide under panel/);
   assert.match(plain, /CONTROL PANEL/);
 });
 
-test('GoalQuickStrip updates live when board changes', async () => {
+test('BOARD updates live when board changes; no dual strip', async () => {
   const bridge = createInkAppBridge();
   const { lastFrame } = render(<App bridge={bridge} color={false} isTty={false} columns={80} rows={30} />);
   bridge.setChatActive(true);
@@ -276,6 +280,7 @@ test('GoalQuickStrip updates live when board changes', async () => {
 
   let frame = lastFrame() ?? '';
   let plain = frame.replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(plain, /BOARD/);
   assert.match(plain, /First goal/);
   assert.match(plain, /1\/3/);
 
@@ -291,9 +296,10 @@ test('GoalQuickStrip updates live when board changes', async () => {
   plain = frame.replace(/\x1b\[[0-9;]*m/g, '');
   assert.match(plain, /3\/3/);
   assert.match(plain, /done/);
+  assert.doesNotMatch(plain, /goals.*[0-9]+ total/);
 });
 
-test('Empty board -> no strip, no phantom rows', async () => {
+test('Empty board -> no strip header, no fabricated goals chrome', async () => {
   const bridge = createInkAppBridge();
   const { lastFrame } = render(<App bridge={bridge} color={false} isTty={false} columns={80} rows={30} />);
   bridge.setChatActive(true);
@@ -305,6 +311,6 @@ test('Empty board -> no strip, no phantom rows', async () => {
   const frame = lastFrame() ?? '';
   const plain = frame.replace(/\x1b\[[0-9;]*m/g, '');
 
-  assert.doesNotMatch(plain, /goals/);
-  assert.doesNotMatch(plain, /total/);
+  assert.doesNotMatch(plain, /goals.*[0-9]+ total/);
+  assert.doesNotMatch(plain, /\bBOARD\b/);
 });

@@ -205,6 +205,11 @@ export function createInkOutputSink(
     syncSettings(settings: UiSettingsSnapshot): void {
       store.dispatch({ type: 'settings/sync', settings });
     },
+    // Dock (or clear) the bottom ※ recap orientation line. Resume / `/recap`
+    // set text; conversation exit passes null so the dock collapses.
+    setRecap(text: string | null): void {
+      store.dispatch({ type: 'recap/set', text });
+    },
     // Commit any buffered partial line (a prompt written WITHOUT a trailing
     // newline) as its own committed `<Static>` item so it becomes visible before
     // we block on input; a no-op when nothing is pending. Without this, trailing-

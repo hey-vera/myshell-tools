@@ -393,6 +393,12 @@ export interface UiState {
   readonly capacity?: UiCapacityState;
   /** Phase 4D: settings snapshot from AppConfig (absent until first sync). */
   readonly settings?: UiSettingsSnapshot;
+  /**
+   * Bottom-docked conversation recap orientation text (※ recap). Set by the menu
+   * on resume / `/recap` via `recap/set`; cleared on conversation exit. Null when
+   * no recap is available — the dock collapses to zero rows (never fabricates).
+   */
+  readonly recap: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +451,7 @@ export const initialState: UiState = {
     settingsScroll: 0,
     settingsSelectedIndex: -1,
   },
+  recap: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -605,6 +612,14 @@ export type Action =
       readonly type: 'board/sync';
       readonly rows: readonly GoalBoardRow[];
       readonly enabled: boolean;
+    }
+  // --- recap/set: set or clear the bottom-docked ※ recap orientation text. The
+  //     menu calls this on resume / `/recap` (set) and on conversation exit
+  //     (clear → null). Empty/whitespace text is stored as null so the dock
+  //     collapses. Never fabricates content. ---
+  | {
+      readonly type: 'recap/set';
+      readonly text: string | null;
     }
   // --- escalation to a stronger tier ---
   | {
