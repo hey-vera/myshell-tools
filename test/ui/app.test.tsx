@@ -189,6 +189,9 @@ test('BottomLegend hidden while Control Panel is open', async () => {
   assert.ok(!plainFrame.includes('\u2190 menu'), `legend must NOT show when CP is open, got:\n${plainFrame}`);
   assert.ok(!plainFrame.includes('\u2192 panel'), `legend must NOT show when CP is open, got:\n${plainFrame}`);
   assert.ok(plainFrame.includes('CONTROL PANEL'), `CP must render, got:\n${plainFrame}`);
+  // Panel chrome footer replaces chat legend — always teaches Esc close (P0.10).
+  assert.ok(plainFrame.includes('Esc close'), `CP footer must show Esc close, got:\n${plainFrame}`);
+  assert.ok(plainFrame.includes('Tab sections') || plainFrame.includes('Tab'), `CP footer must show Tab, got:\n${plainFrame}`);
 });
 
 test('BottomLegend narrow terminal keeps back + panel only', async () => {

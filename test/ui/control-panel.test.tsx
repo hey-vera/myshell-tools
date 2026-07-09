@@ -2,7 +2,7 @@ import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { render } from 'ink-testing-library';
-import { ControlPanel } from '../../src/interface/ui/ControlPanel.js';
+import { ControlPanel, buildControlPanelFooterText } from '../../src/interface/ui/ControlPanel.js';
 import type {
   GoalBoardRow,
   GoalView,
@@ -173,7 +173,7 @@ test('Tab calls onSetSection forward; Shift+Tab calls backward', async () => {
   assert.equal(onSetSection.mock.calls[0]?.[0], 'status');
 });
 
-test('Left/Right arrows do nothing', async () => {
+test('Left closes panel; Right is a no-op', async () => {
   const onSetSection = vi.fn();
   const onHighlightGoal = vi.fn();
   const onClose = vi.fn();
@@ -188,13 +188,46 @@ test('Left/Right arrows do nothing', async () => {
     />,
   );
   await act(async () => {
-    stdin.write('\x1b[D');
-    stdin.write('\x1b[C');
+    stdin.write('\x1b[D'); // Left → close (always escapable)
     await tick();
   });
-  assert.equal(onSetSection.mock.calls.length, 0, 'Left/Right should not call onSetSection');
-  assert.equal(onHighlightGoal.mock.calls.length, 0, 'Left/Right should not call onHighlightGoal');
-  assert.equal(onClose.mock.calls.length, 0, 'Left/Right should not call onClose');
+  assert.equal(onClose.mock.calls.length, 1, 'Left should call onClose once');
+  assert.equal(onSetSection.mock.calls.length, 0, 'Left should not call onSetSection');
+  assert.equal(onHighlightGoal.mock.calls.length, 0, 'Left should not call onHighlightGoal');
+
+  onClose.mockClear();
+  await act(async () => {
+    stdin.write('\x1b[C'); // Right → no-op (no nested panel)
+    await tick();
+  });
+  assert.equal(onClose.mock.calls.length, 0, 'Right should not call onClose');
+  assert.equal(onSetSection.mock.calls.length, 0, 'Right should not call onSetSection');
+  assert.equal(onHighlightGoal.mock.calls.length, 0, 'Right should not call onHighlightGoal');
+});
+
+test('visible chrome footer always shows Esc close (wide + narrow)', () => {
+  assert.match(buildControlPanelFooterText(80), /Esc close/);
+  assert.match(buildControlPanelFooterText(80), /Tab sections/);
+  assert.match(buildControlPanelFooterText(80), /\u2190 chat/);
+  assert.match(buildControlPanelFooterText(50), /Esc close/);
+  assert.match(buildControlPanelFooterText(50), /\u2190 chat/);
+  assert.doesNotMatch(buildControlPanelFooterText(50), /Tab sections/);
+
+  const state = baseState();
+  const { lastFrame } = render(
+    <ControlPanel
+      state={state}
+      columns={80}
+      onSetSection={() => {}}
+      onHighlightGoal={() => {}}
+      onScroll={() => {}}
+      onClose={() => {}}
+    />,
+  );
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /Esc close/, 'panel frame must teach Esc close');
+  assert.match(frame, /Tab sections/, 'panel frame must teach Tab sections');
+  assert.match(frame, /\u2190 chat/, 'panel frame must teach Left → chat');
 });
 
 test('Arrows/j/k navigate only on Goals section', async () => {
@@ -497,8 +530,8 @@ test('GoalsTab with short viewport renders bounded content', () => {
   // 7 content rows. 20 todos in detail → must show overflow or scroll.
   // The detail should NOT render all 20 items — it should be bounded.
   const lines = frame.split('\n');
-  // Footer should always be present
-  assert.match(frame, /PgUp\/PgDn scroll/);
+  // Footer should always be present (reserved chrome; Esc always discoverable)
+  assert.match(frame, /Esc close/);
   // Should not have 20+ detail lines
   assert.ok(lines.length < 25);
 });

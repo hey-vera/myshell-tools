@@ -533,11 +533,15 @@ export function InputBox({
       return;
     }
 
-    // --- Empty-buffer arrow nav -------------------------------------------------
-    // When the edit buffer is EMPTY, bare Left returns to menu and bare Right
-    // opens the Control Panel. Word-movement chords (Ctrl/Meta+arrow) pass through
-    // to the existing handler (a no-op on empty). When the buffer is NON-EMPTY,
-    // Left/Right keep moving the cursor exactly as before (handled below).
+    // --- Empty-buffer arrow nav (focus-sensitive route keys) ---------------------
+    // Focus model (PANEL-NAV-SPEC / P0.9–P0.10):
+    // - Composer focused + empty buffer: bare Left → menu (onEmptyLeft), bare
+    //   Right → open Control Panel (onEmptyRight). Safe: no cursor to preserve.
+    // - Composer focused + non-empty buffer: Left/Right stay cursor movement
+    //   (handled below). Nav is deferred until the draft is submitted or cleared.
+    // - Control Panel open: App sets this InputBox `active=false` so this handler
+    //   is inert; the panel owns Esc/Left/Ctrl+G close (never a black hole).
+    // Word-movement chords (Ctrl/Meta+arrow) pass through (no-op on empty).
     if (value === '' && !key.meta && !key.ctrl) {
       if (key.leftArrow) {
         onEmptyLeft?.();
