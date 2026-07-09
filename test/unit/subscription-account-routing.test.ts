@@ -391,6 +391,69 @@ describe('selectSubscriptionAccount', () => {
     assert.ok(result !== null);
     assert.equal(result!.id, 'high');
   });
+
+  // --- priorityWeight honesty: proportional within-provider load (PR-C) ---
+
+  it('spread: higher priorityWeight absorbs more tokens before sibling wins', () => {
+    // weight 200 vs 100 → high stays preferred until it carries ~2× tokens.
+    const high = makeClaude({ id: 'high', priority: 'high', priorityWeight: 200 });
+    const med = makeClaude({ id: 'med', priority: 'medium', priorityWeight: 100 });
+    // high: 150/200=0.75, med: 80/100=0.80 → high still wins despite more absolute tokens
+    const stillHigh = selectSubscriptionAccount({
+      accounts: [high, med],
+      provider: 'claude',
+      strategy: 'spread',
+      nowMs,
+      cooldownUntil: new Map(),
+      sessionTokensByAccount: { high: 150, med: 80 },
+    });
+    assert.ok(stillHigh !== null);
+    assert.equal(stillHigh!.id, 'high');
+    // high: 200/200=1.0, med: 80/100=0.80 → med wins once high catches up
+    const thenMed = selectSubscriptionAccount({
+      accounts: [high, med],
+      provider: 'claude',
+      strategy: 'spread',
+      nowMs,
+      cooldownUntil: new Map(),
+      sessionTokensByAccount: { high: 200, med: 80 },
+    });
+    assert.ok(thenMed !== null);
+    assert.equal(thenMed!.id, 'med');
+  });
+
+  it('sticky: prefers higher priorityWeight even when it has more absolute tokens', () => {
+    const high = makeClaude({ id: 'high', priority: 'high', priorityWeight: 200 });
+    const low = makeClaude({ id: 'low', priority: 'low', priorityWeight: 25 });
+    // high has far more tokens; sticky still sticks to highest weight group
+    const result = selectSubscriptionAccount({
+      accounts: [high, low],
+      provider: 'claude',
+      strategy: 'sticky',
+      nowMs,
+      cooldownUntil: new Map(),
+      sessionTokensByAccount: { high: 10_000, low: 0 },
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.id, 'high');
+  });
+
+  it('weights are within-provider only: other providers are never selected', () => {
+    const claudeHigh = makeClaude({ id: 'claude-high', priority: 'high', priorityWeight: 200 });
+    const ocLow = makeOpencode({ id: 'oc-low', priority: 'low', priorityWeight: 25 });
+    const result = selectSubscriptionAccount({
+      accounts: [claudeHigh, ocLow],
+      provider: 'claude',
+      strategy: 'spread',
+      nowMs,
+      cooldownUntil: new Map(),
+      // Even if opencode is idle, provider filter keeps selection on claude seats
+      sessionTokensByAccount: { 'claude-high': 50_000, 'oc-low': 0 },
+    });
+    assert.ok(result !== null);
+    assert.equal(result!.provider, 'claude');
+    assert.equal(result!.id, 'claude-high');
+  });
 });
 
 // ---------------------------------------------------------------------------
