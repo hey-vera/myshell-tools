@@ -94,6 +94,7 @@ import {
   parseRuleCommand,
 } from '../commands/rules.js';
 import { goalGlyph, roadmapProgress, goalVerdictTag, goalVerdictFromOutcome, isGoalVerifiedDone, isDuplicateGoalTitle, formatGoalsForContext, ROADMAP_LIMIT, goalDepth } from '../core/goal-todo.js';
+import { buildResumeGoalOrientation } from '../core/resume-goal-orientation.js';
 import { buildVerifyReceipt } from '../core/verify.js';
 import type { Goal, GoalState } from '../core/goal-todo.js';
 
@@ -1396,14 +1397,19 @@ export async function runChatLoop(
       });
   }
 
-  // Recap on resume: replace the weak tail-echo with a real ※ recap line when one
-  // is available; otherwise stay silent (prior behaviour with no recap). Resolved
+  // Recap on resume: dock a real ※ recap orientation line at the bottom (near
+  // the composer) when one is available; otherwise stay silent. Resolved
   // CONCURRENTLY (NOT awaited here) so a stale-cache recap's MANAGER-tier model call
   // can't stall input — the composer is already live (above). resolveRecap's side
   // effects (storing the fresh recap + the smart title) still happen. Fail-soft: any
-  // error is swallowed, never thrown, never blocks. The write is gated on the
+  // error is swallowed, never thrown, never blocks. The dock update is gated on the
   // conversation still being live (`conversationLive`, cleared in the loop's finally)
   // so a late recap that resolves AFTER the user has left can't corrupt the menu.
+  //
+  // P0.16 — resume partnering: when parked/inactive goals exist for this
+  // conversation/workspace, the SAME once-per-resume orientation briefly addresses
+  // them (status + next action or resume/drop/adjust). Natural prose line — not a
+  // second board. Loaded from the real goal store only (never invented).
   const recapResolved: Promise<void> = (async (): Promise<void> => {
     let recapText: string | null = null;
     try {
@@ -1411,12 +1417,42 @@ export async function runChatLoop(
     } catch {
       recapText = null; // fail-soft: a recap failure must never block resume
     }
-    if (recapText !== null && conversationLive) {
-      // First-touch explainer for the ※ glyph, once ever, printed ABOVE the recap.
+    // Partner goal orientation (once per resume session — this async block runs once).
+    let goalOrient: string | null = null;
+    try {
+      const resumeGoalStore = createFileGoalStore({ clock: ctx.clock });
+      const allGoals = await resumeGoalStore.list().catch(() => [] as Goal[]);
+      const projectKey = await resolveProjectKey(activeCwd).catch(() => null);
+      goalOrient = buildResumeGoalOrientation(allGoals, {
+        conversationId: convId,
+        projectKey,
+      });
+    } catch {
+      goalOrient = null; // fail-soft: missing/broken goal store never blocks resume
+    }
+
+    if (!conversationLive) return;
+
+    if (recapText !== null) {
+      // First-touch explainer for the ※ glyph, once ever (transcript chrome).
       await showFirstTouch('recap');
       if (conversationLive) {
-        out.write('\n  ' + formatRecapLine(recapText, out.color) + '\n\n');
+        // Prefer the bottom dock (Ink). Fall back to a transcript line on legacy
+        // sinks that have no setRecap seam.
+        if (typeof out.setRecap === 'function') {
+          out.setRecap(recapText);
+        } else {
+          out.write('\n  ' + formatRecapLine(recapText, out.color) + '\n\n');
+        }
       }
+    }
+    // Natural partner line about open goals — after recap when both exist, alone
+    // when there is no recap. Once per resume (this promise); not a board.
+    if (goalOrient !== null && conversationLive) {
+      const pad = recapText !== null ? '' : '\n';
+      out.write(pad + dim(`  ${goalOrient}\n\n`, out.color));
+    } else if (recapText !== null && conversationLive) {
+      out.write('\n');
     }
   })();
   // Surface (and swallow) any rejection so the floating promise never trips an
@@ -1877,10 +1913,12 @@ export async function runChatLoop(
     for (const ac of backgroundGoals) ac.abort();
     backgroundGoals.clear();
     // Mark the conversation no longer live FIRST so a still-pending concurrent recap
-    // (fired on resume) sees the gate closed and skips its write into the menu.
+    // (fired on resume) sees the gate closed and skips its dock/write into the menu.
     conversationLive = false;
+    // Clear the bottom recap dock so it never lingers on the menu surface.
+    if (typeof out.setRecap === 'function') out.setRecap(null);
     // Let the concurrent recap settle so its side effects (storing the fresh recap +
-    // the smart title) complete; the write itself is already gated out above. Never
+    // the smart title) complete; the dock/write itself is already gated out above. Never
     // throws (the promise swallows its own errors).
     await recapResolved;
     // Hide the chat composer on exit (back to the menu / app exit) so it never
@@ -1978,7 +2016,12 @@ export async function runChatLoop(
         recapText = null;
       }
       if (recapText !== null) {
-        out.write('\n  ' + formatRecapLine(recapText, out.color) + '\n\n');
+        // Dock at the bottom (Ink); fall back to a transcript line on legacy sinks.
+        if (typeof out.setRecap === 'function') {
+          out.setRecap(recapText);
+        } else {
+          out.write('\n  ' + formatRecapLine(recapText, out.color) + '\n\n');
+        }
       } else {
         out.write(
           dim('  Not enough yet to recap — keep going and I\'ll have one for you.\n', out.color),

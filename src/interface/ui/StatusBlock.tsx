@@ -446,26 +446,45 @@ export interface BoardRowProps {
 }
 
 /**
+ * First real next step on a board row (active todo preferred, else first pending).
+ * Returns undefined when no honest next item exists — never fabricated.
+ */
+export function boardNextAction(row: GoalBoardRow): string | undefined {
+  if (row.todos === undefined || row.todos.length === 0) return undefined;
+  const active = row.todos.find((t) => t.status === 'active');
+  if (active !== undefined) return active.text;
+  const pending = row.todos.find((t) => t.status === 'pending');
+  if (pending !== undefined) return pending.text;
+  return undefined;
+}
+
+/**
  * One persistent board row, rendered goal-first from the persisted row plus the
  * reducer's live goal snapshot keyed by row.id. In board mode this is the primary
  * per-goal line for both idle and active turns.
+ *
+ * Header shape (scannable, no dual chrome):
+ *   `{glyph} {title}  {done}/{total} · {state}[ · N workers][ · N tools]`
+ * Optional real secondary lines: Approach, next-action (when the todo checklist
+ * is not expanded), running checklist.
  */
 export function BoardRow({ row, state, color = true }: BoardRowProps): React.ReactElement {
   const liveGoal = state.goals.find((goal) => goal.id === row.id);
   const liveAgents = liveGoal?.agents.length ?? 0;
   const liveTools = liveGoal?.toolCount ?? 0;
-  const active = liveAgents > 0 || row.state === 'running';
-  const parts = ['goal', row.title, '—', active ? 'active' : 'inactive'];
-  if (active) {
-    parts.push(
-      '·',
-      pluralize(liveAgents, 'worker'),
-      '·',
-      pluralize(row.total, 'task'),
-    );
-    if (liveTools > 0) parts.push('·', pluralize(liveTools, 'tool'));
-  }
+  // Prefer the live agent count when present; fall back to the synced row count.
+  const agents = liveAgents > 0 ? liveAgents : row.agents;
+  const progress = row.total > 0 ? `${row.done}/${row.total}` : '';
+  const parts: string[] = [row.glyph, row.title];
+  if (progress.length > 0) parts.push(progress);
+  parts.push('·', row.state);
+  if (agents > 0) parts.push('·', pluralize(agents, 'worker'));
+  if (liveTools > 0) parts.push('·', pluralize(liveTools, 'tool'));
+  if (row.verdict !== undefined && row.verdict.length > 0) parts.push('·', row.verdict);
   const indent = '  '.repeat(row.depth ?? 0);
+  // Running goals expand the checklist, so a separate "next:" line would duplicate
+  // the active todo. For parked/queued/etc., surface the next real step when known.
+  const nextHint = row.state === 'running' ? undefined : boardNextAction(row);
   return (
     <Box flexDirection="column">
       <Text dimColor={color}>{`${indent}${parts.join(' ')}`}</Text>
@@ -473,6 +492,9 @@ export function BoardRow({ row, state, color = true }: BoardRowProps): React.Rea
         <Text dimColor={color}>
           {`${indent}   Approach: ${truncateToWidth(row.approach.chosen, 48)}${row.approach.rationale ? ' - ' + truncateToWidth(row.approach.rationale, 40) : ''}`}
         </Text>
+      ) : null}
+      {nextHint !== undefined ? (
+        <Text dimColor={color}>{`${indent}   next: ${truncateToWidth(nextHint, 56)}`}</Text>
       ) : null}
       {row.state === 'running'
         ? row.todos?.map((todo) => (

@@ -460,19 +460,19 @@ test('Panels renders a coalesced-queued line for many queued goals', () => {
 // Elite-partner Phase 1 — the persistent BOARD + fake-card suppression
 // ---------------------------------------------------------------------------
 
-test('BoardRow renders the goal-centric inactive format', () => {
+test('BoardRow renders glyph, progress, and state for inactive goals', () => {
   const { lastFrame } = render(
     <BoardRow
-      row={boardRow({ title: 'Redesign feed', done: 3, total: 8, scope: 'project' })}
+      row={boardRow({ title: 'Redesign feed', done: 3, total: 8, scope: 'project', glyph: '◷' })}
       state={initialState}
       color={false}
     />,
   );
   const frame = lastFrame() ?? '';
-  assert.match(frame, /goal Redesign feed — inactive/);
+  assert.match(frame, /◷ Redesign feed 3\/8 · parked/);
 });
 
-test('BoardRow renders a running goal as active with worker, task, and tool counts', () => {
+test('BoardRow renders a running goal with progress, state, worker, and tool counts', () => {
   const state = active([
     goal({
       id: 'goal_a',
@@ -486,16 +486,16 @@ test('BoardRow renders a running goal as active with worker, task, and tool coun
   ]);
   const running = render(
     <BoardRow
-      row={boardRow({ id: 'goal_a', title: 'Ship it', state: 'running', total: 3 })}
+      row={boardRow({ id: 'goal_a', title: 'Ship it', state: 'running', done: 0, total: 3, glyph: '●' })}
       state={state}
       color={false}
     />,
   );
-  assert.match(running.lastFrame() ?? '', /goal Ship it — active · 2 workers · 3 tasks · 2 tools/);
+  assert.match(running.lastFrame() ?? '', /● Ship it 0\/3 · running · 2 workers · 2 tools/);
   const idle = render(
-    <BoardRow row={boardRow({ id: 'goal_b', title: 'Idle' })} state={state} color={false} />,
+    <BoardRow row={boardRow({ id: 'goal_b', title: 'Idle', glyph: '◷' })} state={state} color={false} />,
   );
-  assert.match(idle.lastFrame() ?? '', /goal Idle — inactive/);
+  assert.match(idle.lastFrame() ?? '', /◷ Idle 3\/8 · parked/);
 });
 
 test('BoardRow renders a running goal checklist beneath the goal line with status glyphs', () => {
@@ -512,6 +512,7 @@ test('BoardRow renders a running goal checklist beneath the goal line with statu
         id: 'goal_a',
         title: 'Ship it',
         state: 'running',
+        glyph: '●',
         todos: [
           { id: 't1', text: 'Done item', status: 'done' },
           { id: 't2', text: 'Blocked item', status: 'blocked' },
@@ -524,14 +525,16 @@ test('BoardRow renders a running goal checklist beneath the goal line with statu
     />,
   );
   const frame = lastFrame() ?? '';
-  assert.match(frame, /goal Ship it — active/);
+  assert.match(frame, /● Ship it .* · running/);
   assert.match(frame, /\[✓\] Done item/);
   assert.match(frame, /\[⚠\] Blocked item/);
   assert.match(frame, /\[ \] Pending item/);
   assert.match(frame, /\[◐\] Active item/);
+  // Running expands the checklist — no separate "next:" line (no dual chrome).
+  assert.doesNotMatch(frame, /next:/);
 });
 
-test('BoardRow renders approach/rationale line for persistent plan viz (parked or running)', () => {
+test('BoardRow renders approach/rationale and next-action for parked goals', () => {
   const state = active([]);
   const { lastFrame } = render(
     <BoardRow
@@ -539,31 +542,37 @@ test('BoardRow renders approach/rationale line for persistent plan viz (parked o
         id: 'g1',
         title: 'Ship it',
         state: 'parked',
+        glyph: '◷',
         approach: { chosen: 'use incremental delivery', rationale: 'reduces risk on core paths' },
+        todos: [
+          { id: 't1', text: 'Write the plan', status: 'done' },
+          { id: 't2', text: 'Land the first slice', status: 'pending' },
+        ],
       })}
       state={state}
       color={false}
     />,
   );
   const frame = lastFrame() ?? '';
-  assert.match(frame, /goal Ship it — inactive/);
+  assert.match(frame, /◷ Ship it .* · parked/);
   assert.match(frame, /Approach: use incremental delivery - reduces risk on core paths/);
+  assert.match(frame, /next: Land the first slice/);
 });
 
 test('BoardRow indents nested goals by their depth (tree-view)', () => {
   const state = active([]);
   const { lastFrame } = render(
     <BoardRow
-      row={boardRow({ id: 'goal_child', title: 'Child task', depth: 2 })}
+      row={boardRow({ id: 'goal_child', title: 'Child task', depth: 2, glyph: '◷' })}
       state={state}
       color={false}
     />,
   );
   const frame = lastFrame() ?? '';
   // two levels of indentation = 4 leading spaces before the goal line
-  assert.match(frame, /^ {4}goal Child task — inactive/);
+  assert.match(frame, /^ {4}◷ Child task 3\/8 · parked/);
   // an un-nested (depth 0) row stays flush-left
-  assert.doesNotMatch(frame, /^goal Child task/);
+  assert.doesNotMatch(frame, /^◷ Child task/);
 });
 
 test('BoardPanel shows the BOARD title, one row per goal, and a +K more overflow line', () => {
@@ -605,7 +614,7 @@ test('board ON: an ordinary turn does NOT render a "GOALS ▸ <message>" card', 
   // (Live GOALS panel hidden when no live goals this turn; board supplies the persistent list.)
   assert.doesNotMatch(frame, new RegExp(raw.slice(0, 20)));
   assert.match(frame, /BOARD/);
-  assert.match(frame, /goal Redesign feed — inactive/);
+  assert.match(frame, /Redesign feed 3\/8 · parked/);
   assert.match(frame, /Thinking…/);
 });
 
