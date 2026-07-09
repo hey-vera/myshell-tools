@@ -94,7 +94,11 @@ import {
   parseRuleCommand,
 } from '../commands/rules.js';
 import { goalGlyph, roadmapProgress, goalVerdictTag, goalVerdictFromOutcome, isGoalVerifiedDone, isDuplicateGoalTitle, formatGoalsForContext, ROADMAP_LIMIT, goalDepth } from '../core/goal-todo.js';
-import { buildResumeGoalOrientation } from '../core/resume-goal-orientation.js';
+import {
+  buildGoalRewatchContext,
+  buildResumeGoalOrientation,
+  mergeGoalRewatchIntoContext,
+} from '../core/resume-goal-orientation.js';
 import { buildVerifyReceipt } from '../core/verify.js';
 import type { Goal, GoalState } from '../core/goal-todo.js';
 
@@ -1359,6 +1363,15 @@ export async function runChatLoop(
   // resolves AFTER the user has already left the conversation can't print into the
   // menu/sub-flow that replaced it.
   let conversationLive = true;
+  // Standing goals rewatch+ (PR-E): one-shot first *model* turn partner-context
+  // inject. User still gets the dim resume orientation line (below); the model
+  // also sees parked/blocked goals once so it can resume/drop/adjust/act.
+  // `goalRewatchBlock` is computed fail-soft on first goal-context refresh
+  // (`undefined` = not loaded yet; `null` = loaded, nothing to rewatch).
+  // Consumed only when buildDeps runs (so /goals and other local commands do not
+  // burn the latch). Mid-session idle re-issue skipped (no cheap focus seam).
+  let goalRewatchBlock: string | null | undefined = undefined;
+  let goalRewatchInjected = false;
 
   // One quiet orientation line on entry — NOT a per-turn label. Real chat shells
   // (claude, gpt) don't relabel the prompt every turn; they show a clean caret and
@@ -2315,6 +2328,10 @@ export async function runChatLoop(
       // always knows its plan). Empty until a goal exists → byte-identical prompts.
       let goalContextSnapshot = '';
       const currentGoalContext = (): string => goalContextSnapshot;
+      // Per-turn latch of the session rewatch block: set on first buildDeps in this
+      // runOneChatInput so every sequential/hedge/panel prompt in the same turn sees
+      // it, then goalRewatchInjected prevents later turns from re-injecting.
+      let rewatchForThisTurn: string | null | undefined = undefined;
 
       // ---- STANDING RULES snapshot (Phase 4) ---------------------------------
       // Mirrors the goalContext lazy provider exactly: the rulesStore is created
@@ -2401,7 +2418,19 @@ export async function runChatLoop(
         // closure is only CALLED here at turn time, after goalStore exists. It returns
         // the latest fail-soft snapshot string (refreshed each turn alongside the
         // board) or '' — so a goalless tool yields a byte-identical prompt. PURE read.
-        const goalContext = currentGoalContext();
+        // Standing rewatch+ (PR-E): on the first model turn of this session, prepend
+        // the rewatch block once so the partner can engage parked/blocked goals.
+        const planContext = currentGoalContext();
+        if (!goalRewatchInjected) {
+          if (rewatchForThisTurn === undefined) {
+            rewatchForThisTurn = goalRewatchBlock ?? null;
+            goalRewatchInjected = true;
+          }
+        }
+        const goalContext = mergeGoalRewatchIntoContext(
+          planContext,
+          rewatchForThisTurn ?? null,
+        );
         // STANDING RULES block (the partner's policy). Same lazy pattern as goals:
         // read through the closure at turn time; '' until a rule exists → byte-identical.
         const rulesContext = currentRulesContext();
@@ -3213,6 +3242,18 @@ export async function runChatLoop(
             (g) => g.scope === 'global' || g.projectKey === null || g.projectKey === projectKey,
           );
           goalContextSnapshot = formatGoalsForContext(relevant);
+          // Precompute standing rewatch once per conversation session (fail-soft).
+          // Consumption happens in buildDeps so local slash commands never burn it.
+          if (goalRewatchBlock === undefined && !goalRewatchInjected) {
+            try {
+              goalRewatchBlock = buildGoalRewatchContext(all, {
+                conversationId: convId,
+                projectKey,
+              });
+            } catch {
+              goalRewatchBlock = null;
+            }
+          }
         } catch {
           goalContextSnapshot = '';
         }
