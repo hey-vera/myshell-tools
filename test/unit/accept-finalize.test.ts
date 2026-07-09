@@ -71,4 +71,18 @@ describe('accept-finalize (pure contract per strategy)', () => {
     expect('completionResult' in res.final).toBe(true);
     expect(res.patchWork).toBeDefined();
   });
+
+  it('doneCondition binds from deps.completionDoneCondition when present', () => {
+    const deps = {
+      completionResultV1: true,
+      completionDoneCondition: 'acceptance tests pass',
+      clock: { isoNow: () => '2026-07-09T00:00:00.000Z' },
+      session: { id: 's1' },
+    } as unknown as OrchestrateDeps;
+    const res = finalizeAcceptTurn({ deps, final: baseFinal, candidate: baseCandidate });
+    expect(res.final.completionResult?.doneCondition).toBe('acceptance tests pass');
+    // Without verify, settlement is denied (done=check).
+    expect(res.final.completionResult?.goalSettlement.allowed).toBe(false);
+  });
 });
+

@@ -231,6 +231,41 @@ describe('orchestrate semantic preflight V1', () => {
     assert.equal(purposes.includes('reextract-web'), false);
   });
 
+  it('binds semantic doneCondition onto CompletionResult when completionResultV1 is on', async () => {
+    const provider = providerWithPrompts({
+      semanticText: semanticJson({
+        doneCondition: { status: 'specified', text: 'dashboard totals match fixtures' },
+      }),
+    });
+    const extractor = makeSemanticPreflightExtractor({
+      providers: { claude: provider },
+      policy: DEFAULT_POLICY,
+      cwd: '/fake/cwd',
+      timeoutMs: 8_000,
+    });
+    const events = await collect(orchestrate(
+      'fix the dashboard totals carefully',
+      baseDeps({
+        providers: { claude: provider },
+        semanticPreflightV1: true,
+        semanticPreflightExtractor: extractor,
+        completionResultV1: true,
+        routeClassifier: async () => {
+          throw new Error('legacy route must not run');
+        },
+        intentExtractor: async () => {
+          throw new Error('legacy intent must not run');
+        },
+      }),
+      new AbortController().signal,
+    ));
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    // Preflight doneCondition is bound; settle still requires verify (done=check).
+    assert.equal(final.completionResult?.doneCondition, 'dashboard totals match fixtures');
+    assert.equal(final.completionResult?.goalSettlement.allowed, false);
+  });
+
   it('trivial turn has zero preflight purposes and unchanged work call', async () => {
     const budget = createTurnCallBudget({
       turnId: 'semantic-trivial',
