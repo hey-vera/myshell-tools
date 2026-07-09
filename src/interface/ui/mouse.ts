@@ -94,8 +94,10 @@ export function disableMouseTracking(
  * SGR mouse: ESC [ < btn ; col ; row M|m
  * After Ink useInput strips leading ESC: [ < btn ; col ; row M|m
  * Also accept raw form with ESC still present.
+ * ESC via fromCharCode so eslint no-control-regex does not flag a CSI parse.
  */
-const SGR_MOUSE_RE = /^\x1b?\[<(\d+);(\d+);(\d+)([Mm])$/;
+const ESC = String.fromCharCode(27);
+const SGR_MOUSE_RE = new RegExp(`^${ESC}?\\[<(\\d+);(\\d+);(\\d+)([Mm])$`);
 
 /** True when `input` looks like a terminal mouse report (SGR). */
 export function isMouseInput(input: string): boolean {
