@@ -16,7 +16,7 @@ import { StatusBlock } from './StatusBlock.js';
 import { ControlPanel } from './ControlPanel.js';
 import { BottomLegend } from './BottomLegend.js';
 import { RecapDock } from './RecapDock.js';
-import { layoutForHeight, streamWrappedRows, tailStreamToRows, INPUT_ROWS, LEGEND_ROWS, RECAP_DOCK_ROWS } from './layout.js';
+import { layoutForHeight, streamWrappedRows, tailStreamToRows, goalHintsFromBoard, INPUT_ROWS, LEGEND_ROWS, RECAP_DOCK_ROWS } from './layout.js';
 import { backfillTerminalSize } from './mount.js';
 import type { Action, TranscriptLine, UiState } from './state.js';
 
@@ -578,6 +578,12 @@ function AppBody({
   const liveRows = rows ?? stdout.rows ?? process.stdout.rows ?? 24;
   const controlPanelOpen = uiState?.controlPanel.open === true;
   const fullscreenPanelOpen = controlPanelOpen;
+  // Live empty-prompt ghost hints from the persistent board (P0.17). Fail-soft [] when
+  // no board/goals; prefer real next-step todos, else goal titles of parked/running work.
+  const goalHints = useMemo(
+    () => goalHintsFromBoard(uiState?.board),
+    [uiState?.board],
+  );
 
   // Wire the bridge to this component's state on mount so the Node-side
   // OutputSink can push committed lines in and the LineReader can toggle suspend.
@@ -794,6 +800,7 @@ function AppBody({
           active={!fullscreenPanelOpen}
           pressure={uiState?.pressure ?? 0}
           dynamicWorldItems={uiState?.dynamicWorldItems ?? []}
+          goalHints={goalHints}
           onStdinControl={bridge.attachStdinControl}
           onEscape={() => bridge.interrupt()}
           onToggleFullscreenPanel={() => bridge.routeControlPanelAction({ type: 'control-panel/toggle' })}
@@ -831,6 +838,7 @@ function AppBody({
         info={inputInfoText}
         visible={chatActive}
         suspended={suspended}
+        goalHints={goalHints}
         onStdinControl={bridge.attachStdinControl}
         onEscape={() => bridge.interrupt()}
         onToggleFullscreenPanel={() => bridge.routeControlPanelAction({ type: 'control-panel/toggle' })}

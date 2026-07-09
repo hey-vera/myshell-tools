@@ -42,6 +42,7 @@ export {
   selectGoalQuickRows,
   goalStripPlannedRows,
   boardNextActionText,
+  goalHintsFromBoard,
   INPUT_ROWS,
   LEGEND_ROWS,
   RECAP_DOCK_ROWS,

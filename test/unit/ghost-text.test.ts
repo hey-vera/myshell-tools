@@ -8,6 +8,22 @@ import {
   GHOST_DEBOUNCE_MS,
   proposeGhost,
 } from '../../src/interface/ghost-text.ts';
+import { goalHintsFromBoard } from '../../src/interface/ui/layout.ts';
+import type { GoalBoardRow } from '../../src/interface/ui/state.ts';
+
+function boardRow(over: Partial<GoalBoardRow> = {}): GoalBoardRow {
+  return {
+    id: over.id ?? 'goal_a',
+    title: over.title ?? 'Redesign feed',
+    state: over.state ?? 'parked',
+    done: over.done ?? 0,
+    total: over.total ?? 3,
+    glyph: over.glyph ?? '◷',
+    scope: over.scope ?? 'project',
+    agents: over.agents ?? 0,
+    ...(over.todos !== undefined ? { todos: over.todos } : {}),
+  };
+}
 
 test('GHOST_DEBOUNCE_MS is 300', () => {
   assert.equal(GHOST_DEBOUNCE_MS, 300);
@@ -28,6 +44,73 @@ test('empty line prefers first non-empty goal hint', () => {
   assert.equal(g.source, 'goal-hint');
   assert.equal(g.full, 'continue active goal');
   assert.equal(g.suffix, 'continue active goal');
+});
+
+// ---------------------------------------------------------------------------
+// goalHintsFromBoard — live board → empty-prompt ghost inject (P0.17 wire)
+// ---------------------------------------------------------------------------
+
+test('goalHintsFromBoard: empty/null board → []', () => {
+  assert.deepEqual(goalHintsFromBoard([]), []);
+  assert.deepEqual(goalHintsFromBoard(undefined), []);
+  assert.deepEqual(goalHintsFromBoard(null), []);
+});
+
+test('goalHintsFromBoard: prefers next-step todos; ordered running → queued → parked', () => {
+  const hints = goalHintsFromBoard([
+    boardRow({
+      id: 'p',
+      title: 'Parked goal',
+      state: 'parked',
+      todos: [{ id: 't1', text: 'parked next step', status: 'pending' }],
+    }),
+    boardRow({
+      id: 'r',
+      title: 'Running goal',
+      state: 'running',
+      todos: [
+        { id: 't0', text: 'done item', status: 'done' },
+        { id: 't1', text: 'active next step', status: 'active' },
+      ],
+    }),
+    boardRow({
+      id: 'q',
+      title: 'Queued goal',
+      state: 'queued',
+      todos: [{ id: 't1', text: 'queued next step', status: 'pending' }],
+    }),
+  ]);
+  assert.deepEqual(hints, ['active next step', 'queued next step', 'parked next step']);
+});
+
+test('goalHintsFromBoard: falls back to title when no todos; skips terminal states', () => {
+  const hints = goalHintsFromBoard([
+    boardRow({ id: 'd', title: 'Done goal', state: 'done' }),
+    boardRow({ id: 'f', title: 'Failed goal', state: 'failed' }),
+    boardRow({ id: 'p', title: 'Ship the ghost PR', state: 'parked' }),
+    boardRow({
+      id: 'b',
+      title: 'Blocked',
+      state: 'blocked',
+      todos: [{ id: 't1', text: 'should not appear', status: 'active' }],
+    }),
+  ]);
+  assert.deepEqual(hints, ['Ship the ghost PR']);
+});
+
+test('goalHintsFromBoard → proposeGhost empty-prompt end-to-end', () => {
+  const hints = goalHintsFromBoard([
+    boardRow({
+      id: 'r',
+      title: 'Wire goalHints',
+      state: 'running',
+      todos: [{ id: 't1', text: 'pass goalHints into InputBox', status: 'active' }],
+    }),
+  ]);
+  const g = proposeGhost({ line: '', goalHints: hints });
+  assert.ok(g);
+  assert.equal(g.source, 'goal-hint');
+  assert.equal(g.full, 'pass goalHints into InputBox');
 });
 
 test('history prefix match is most-recent-first', () => {
