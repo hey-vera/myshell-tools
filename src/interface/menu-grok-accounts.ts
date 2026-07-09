@@ -1,7 +1,7 @@
 import type { OutputSink } from './render.js';
 import type { Confirm } from './menu-key-confirm.js';
 import { readMenuKey, NAV_ESC, NAV_LEFT, getMenuStack } from './menu-key-confirm.js';
-import { bold, yellow, green } from '../ui/theme.js';
+import { bold, dim, yellow, green } from '../ui/theme.js';
 import { navFooterText } from './ui/nav-footer.js';
 import type { Clock } from '../core/types.js';
 import type { LoginRunner } from '../commands/login.js';
@@ -17,6 +17,11 @@ import {
   subscriptionAccountKind,
 } from '../infra/subscriptions.js';
 import { detectSubscriptionAccount } from '../infra/subscription-detect.js';
+import {
+  PRIORITY_WEIGHT_DETAIL_NOTE,
+  PRIORITY_WEIGHT_EDIT_HELP,
+  PRIORITY_WEIGHT_LIST_HINT,
+} from './accounts-priority-help.js';
 import { mkdir } from 'node:fs/promises';
 
 function isGrokAccount(a: SubscriptionAccount): a is GrokSubscriptionAccount {
@@ -214,6 +219,7 @@ async function editAccountScreen(
     out.write(`  id: ${account.id}\n`);
     out.write(`  status: ${statusDisplay}\n`);
     out.write(`  priority: ${account.priority} (weight=${account.priorityWeight})\n`);
+    out.write(`  ${dim(PRIORITY_WEIGHT_DETAIL_NOTE, out.color)}\n`);
     out.write(`  expiry: ${expiryDisplay}\n`);
     out.write(`  enabled: ${account.enabled ? 'yes' : 'no'}\n`);
     out.write(`  plan: ${planDisplay}\n\n`);
@@ -350,6 +356,10 @@ async function prioritySelectScreen(
 ): Promise<AccountPriority | 'custom' | null> {
   out.beginFrame?.();
   out.write('\nPriority:\n\n');
+  for (const line of PRIORITY_WEIGHT_EDIT_HELP.split('\n')) {
+    out.write(`  ${dim(line, out.color)}\n`);
+  }
+  out.write('\n');
   out.write('  [l] low (25)\n');
   out.write('  [m] medium (100)\n');
   out.write('  [h] high (200)\n');
@@ -484,6 +494,7 @@ export async function runGrokAccountsMenu(
         out.write(formatAccountRow(acc, index) + '\n');
         index++;
       }
+      out.write(`\n  ${dim(PRIORITY_WEIGHT_LIST_HINT, out.color)}\n`);
     }
 
     out.write('\n');

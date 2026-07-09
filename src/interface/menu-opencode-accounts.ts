@@ -18,6 +18,11 @@ import {
   priorityWeight,
   type SubscriptionAccount,
 } from '../infra/subscriptions.js';
+import {
+  PRIORITY_WEIGHT_DETAIL_NOTE,
+  PRIORITY_WEIGHT_EDIT_HELP,
+  PRIORITY_WEIGHT_LIST_HINT,
+} from './accounts-priority-help.js';
 
 function isOpencodeAccount(a: SubscriptionAccount): a is OpencodeSubscriptionAccount {
   return a.provider === 'opencode';
@@ -202,6 +207,7 @@ async function editAccountScreen(
     out.write(`\n${bold('Edit OpenCode Account: ' + account.label, out.color)}\n\n`);
     out.write(`  pool: ${account.pool}\n`);
     out.write(`  priority: ${account.priority} (weight=${account.priorityWeight})\n`);
+    out.write(`  ${dim(PRIORITY_WEIGHT_DETAIL_NOTE, out.color)}\n`);
     out.write(`  expiry: ${expiryDisplay}\n`);
     out.write(`  enabled: ${account.enabled ? 'yes' : 'no'}\n\n`);
     out.write('  [p] priority\n');
@@ -305,6 +311,10 @@ async function prioritySelectScreen(
 ): Promise<AccountPriority | 'custom' | null> {
   out.beginFrame?.();
   out.write('\nPriority:\n\n');
+  for (const line of PRIORITY_WEIGHT_EDIT_HELP.split('\n')) {
+    out.write(`  ${dim(line, out.color)}\n`);
+  }
+  out.write('\n');
   out.write('  [l] low (25)\n');
   out.write('  [m] medium (100)\n');
   out.write('  [h] high (200)\n');
@@ -435,6 +445,7 @@ export async function runOpencodeAccountsMenu(
         out.write(formatAccountRow(acc, index) + '\n');
         index++;
       }
+      out.write(`\n  ${dim(PRIORITY_WEIGHT_LIST_HINT, out.color)}\n`);
     }
 
     out.write('\n');
