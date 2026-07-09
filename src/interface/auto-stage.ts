@@ -35,6 +35,7 @@ import { dim } from '../ui/theme.js';
 import type { OutputSink } from './render.js';
 import type { MenuContext } from './menu.js';
 import { resolveIntensity, planBudgetCeiling } from './menu-auto-mode.js';
+import { readSubscriptions } from '../infra/subscriptions.js';
 
 export type WarmUnderstanding = (cacheKey: string, line: string) => void;
 
@@ -294,8 +295,11 @@ export function createAutoStageEngine(deps: AutoStageEngineDeps): AutoStageEngin
       : resolved.value;
     const effectiveMode: Mode = deps.mutableCtx.config.mode ?? 'balanced';
     const modeBudget = effectiveMode === 'quality-first' ? 3 : effectiveMode === 'balanced' ? 2 : 1;
+    const accounts = deps.mutableCtx.config.mode === undefined
+      ? await readSubscriptions().then((s) => s.accounts).catch(() => [] as const)
+      : [];
     const planCeiling = deps.mutableCtx.config.mode === undefined
-      ? planBudgetCeiling(deps.mutableCtx.env)
+      ? planBudgetCeiling(deps.mutableCtx.env, accounts)
       : modeBudget;
     const callBudgetCeiling = Math.max(1, Math.max(modeBudget, planCeiling) - deps.currentPressure()) as 1 | 2 | 3;
     const cap = planningDepthCap({ resolvedIntensity, callBudgetCeiling, shape });

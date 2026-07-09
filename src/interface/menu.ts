@@ -196,6 +196,7 @@ import {
   subscriptionInventoryFromEnvironment,
   resolveIntensity,
   planBudgetCeiling,
+  accountPlanStrings,
 } from './menu-auto-mode.js';
 import { levelToMode, migrateMode, levelLabel, nextLevel, isLevel } from '../core/mode-levels.js';
 import type { Level } from '../core/mode-levels.js';
@@ -755,9 +756,20 @@ export async function runChatLoop(
   const CHAT_HINTS = ['/goal', '/help', '/back'] as const;
   let convLevel: Level =
     convMeta?.mode !== undefined && isLevel(convMeta.mode) ? convMeta.mode : 'auto';
+  // Accounts inventory for Auto posture (loaded lazily; empty until first read).
+  // Product truth: never raise Auto from ambient CLI plans alone (P1.2).
+  let chatAccounts: readonly SubscriptionAccount[] = [];
+  const refreshChatAccounts = async (): Promise<readonly SubscriptionAccount[]> => {
+    try {
+      chatAccounts = (await readSubscriptions()).accounts;
+    } catch {
+      chatAccounts = [];
+    }
+    return chatAccounts;
+  };
   const resolveEffectiveMode = (level: Level): Mode => {
     if (level !== 'auto') {
-      return levelToMode(level) ?? resolveAutoMode(mutableCtx.env);
+      return levelToMode(level) ?? resolveAutoMode(mutableCtx.env, chatAccounts);
     }
     return mutableCtx.config.mode ?? 'balanced';
   };
@@ -2080,11 +2092,12 @@ export async function runChatLoop(
     // Change the partner posture (soft bias) from inside the chat — same knob as
     // Settings → Partner style, one source of truth.
     if (line === '/style') {
+      await refreshChatAccounts();
       mutableCtx.config = await runStyleSelect(
         mutableCtx.config,
         out,
         readLine,
-        resolveAutoMode(mutableCtx.env),
+        resolveAutoMode(mutableCtx.env, chatAccounts),
         inkReadKey,
       );
       return 'continue';
@@ -2106,7 +2119,8 @@ export async function runChatLoop(
     // Change the (single, global) mode from inside the chat — same knob as the
     // home [m], so there is one source of truth and never a global/per-chat drift.
     if (line === '/mode') {
-      const autoMode = resolveAutoMode(mutableCtx.env);
+      await refreshChatAccounts();
+      const autoMode = resolveAutoMode(mutableCtx.env, chatAccounts);
       mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode, mutableCtx.env, inkReadKey);
       return 'continue';
     }
@@ -2234,8 +2248,8 @@ export async function runChatLoop(
     } catch {
       out.write(dim('  Repo helper was unavailable; continuing through normal chat.\n', out.color));
     }
-    // Effective mode: the user's explicit choice, else auto-detected from their
-    // subscription plan (Max → top of the knob, etc.) — no interrogation.
+    // Effective mode: user's explicit choice, else Auto (smart) base (balanced)
+    // with Accounts inventory raising the governor ceiling — never ambient Pro theater.
       // Concurrency (panel / hedge) is now owned by the mode preset: Balanced and
       // Max auto-engage them on hard turns, Efficient leaves them off (see
       // POLICY_PRESETS). config.panel / config.hedge remain as explicit power-user
@@ -2243,15 +2257,14 @@ export async function runChatLoop(
       // even under Efficient. (Absent → the preset's default stands; there is no
       // force-OFF override yet — a user who wants neither picks Efficient.)
       // Quota-aware auto tuning: when mode is AUTO (no explicit /mode), narrow the
-      // Max panel to 2 providers for a detected Max 5x account (gentler on its
+      // Max panel to 2 providers for a Max 5x *Accounts* entry (gentler on its
       // smaller quota); 20x / generic Max / explicit-mode users are unchanged.
+      await refreshChatAccounts();
       const autoTunedPreset =
         mutableCtx.config.mode === undefined
           ? tunePolicyForMaxSubTier(
               POLICY_PRESETS[effectiveMode],
-              [mutableCtx.env.claude, mutableCtx.env.codex, mutableCtx.env.opencode, mutableCtx.env.grok]
-                .filter((p) => p.authenticated)
-                .map((p) => p.plan),
+              accountPlanStrings(chatAccounts),
             )
           : POLICY_PRESETS[effectiveMode];
       const inventory = subscriptionInventoryFromEnvironment(mutableCtx.env);
@@ -2734,7 +2747,7 @@ export async function runChatLoop(
           // changes a no-pressure turn.
           governorPressure: currentPressure(),
           ...(mutableCtx.config.mode === undefined
-            ? { governorBudgetCeiling: planBudgetCeiling(mutableCtx.env) }
+            ? { governorBudgetCeiling: planBudgetCeiling(mutableCtx.env, chatAccounts) }
             : {}),
           // VERIFICATION CENTERPIECE (master-plan PHASE 3) — unconditional
           // (shipped-on). Always on unless MYSHELL_ROLLBACK is engaged. Injects the
@@ -7861,7 +7874,10 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [m] Change mode (direct — no settings dive) ------------------------
       if (key === 'm') {
-        const autoMode = resolveAutoMode(mutableCtx.env);
+        const accounts = await readSubscriptions()
+          .then((s) => s.accounts)
+          .catch(() => [] as readonly SubscriptionAccount[]);
+        const autoMode = resolveAutoMode(mutableCtx.env, accounts);
         mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode, mutableCtx.env, inkReadKey);
         syncSettings();
         continue;

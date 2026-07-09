@@ -33,6 +33,7 @@ import { navFooterText } from './ui/nav-footer.js';
 import type { OutputSink } from './render.js';
 import type { MenuContext } from './menu.js';
 import { resolveAutoMode } from './menu-auto-mode.js';
+import { readSubscriptions } from '../infra/subscriptions.js';
 import { readMenuKey, NAV_ESC, getMenuStack } from './menu-key-confirm.js';
 
 /**
@@ -417,7 +418,10 @@ export async function runSettings(
   inkReadKey?: () => Promise<string>,
 ): Promise<void> {
   const cfg = mutableCtx.config;
-  const autoMode = resolveAutoMode(mutableCtx.env);
+  const accounts = await readSubscriptions()
+    .then((s) => s.accounts)
+    .catch(() => [] as const);
+  const autoMode = resolveAutoMode(mutableCtx.env, accounts);
   const settingsLines = [
     '',
     `  [1] New conversation Effort Mode: ${cfg.mode === undefined ? 'Auto (smart)' : levelLabel(migrateMode(cfg.mode))}`,

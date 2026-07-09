@@ -22,7 +22,6 @@ import type { CommandGatePort } from './core/command-gate.js';
 import {
   DEFAULT_POLICY,
   POLICY_PRESETS,
-  autoModeForPlans,
   classifyPlan,
   tunePolicyForMaxSubTier,
 } from './core/policy.js';
@@ -33,7 +32,12 @@ import { runTask } from './interface/run.js';
 import { resolveImageAttachments } from './infra/attachments.js';
 import { startRepl } from './interface/repl.js';
 import { startMenu } from './interface/menu.js';
-import { hasAuthenticatedProvider } from './interface/menu-auto-mode.js';
+import {
+  hasAuthenticatedProvider,
+  resolveAutoMode,
+  accountPlanStrings,
+} from './interface/menu-auto-mode.js';
+import { readSubscriptions } from './infra/subscriptions.js';
 import type { MenuContext } from './interface/menu.js';
 import { StartupInputBuffer } from './interface/startup-input.js';
 import type { StartupInputStream } from './interface/startup-input.js';
@@ -579,12 +583,13 @@ async function main(): Promise<void> {
         ),
       );
     }
-    const [env, config] = await Promise.all([detectEnvironment(), loadConfig()]);
-    const resolvedMode = config.mode ?? autoModeForPlans(
-      [env.claude, env.codex, env.opencode, env.grok]
-        .filter((p) => p.authenticated)
-        .map((p) => p.plan),
-    );
+    const [env, config, subs] = await Promise.all([
+      detectEnvironment(),
+      loadConfig(),
+      readSubscriptions(),
+    ]);
+    // Auto defaults from Accounts inventory (empty → balanced; no ambient Pro theater).
+    const resolvedMode = config.mode ?? resolveAutoMode(env, subs.accounts);
     const policy = POLICY_PRESETS[resolvedMode];
     const providers = buildAuthenticatedProviders(cwd, env, process.env, config);
     const authenticatedProviders: import('./providers/port.js').ProviderId[] = [];
@@ -821,7 +826,11 @@ async function main(): Promise<void> {
       process.stderr.write('myshell-tools run: expected a task description\n');
       process.exit(1);
     }
-    const [env, config] = await Promise.all([detectEnvironment(), loadConfig()]);
+    const [env, config, subs] = await Promise.all([
+      detectEnvironment(),
+      loadConfig(),
+      readSubscriptions(),
+    ]);
     // Fast auth pre-check: a one-shot `run` with NO signed-in provider should give
     // clear guidance, not attempt work against an unauthenticated CLI (which can
     // hang or error opaquely). Mirrors `doctor`'s "Not ready" message. opencode
@@ -834,24 +843,19 @@ async function main(): Promise<void> {
       );
       process.exit(1);
     }
-    // Resolve mode across all authenticated providers when mode is unset (auto).
-    const resolvedMode = config.mode ?? autoModeForPlans(
-      [env.claude, env.codex, env.opencode, env.grok]
-        .filter((p) => p.authenticated)
-        .map((p) => p.plan),
-    );
+    // Resolve mode from Accounts inventory when mode is unset (auto).
+    // Empty Accounts → balanced — no ambient CLI Pro/Max theater.
+    const resolvedMode = config.mode ?? resolveAutoMode(env, subs.accounts);
     // EXPERIMENTAL: opt-in Parallel Subscription Panel (config.panel) maps to
     // policy.panelPolicy 'hard-turns'. Absent/false → unchanged sequential path.
     // Opt-in Latency-Hedged Escalation (config.hedge) maps to hedgePolicy 'on'.
     // Quota-aware auto tuning: when mode is AUTO (unset), narrow the Max panel to
-    // 2 providers for a detected Max 5x account; explicit-mode users are untouched.
+    // 2 providers for a Max 5x *Accounts* entry; explicit-mode users are untouched.
     const autoTunedPreset =
       config.mode === undefined
         ? tunePolicyForMaxSubTier(
             POLICY_PRESETS[resolvedMode],
-            [env.claude, env.codex, env.opencode, env.grok]
-              .filter((p) => p.authenticated)
-              .map((p) => p.plan),
+            accountPlanStrings(subs.accounts),
           )
         : POLICY_PRESETS[resolvedMode];
     const policy = {
@@ -1178,19 +1182,17 @@ async function main(): Promise<void> {
     out.write(banner(version, out.color) + '\n');
     const spinner = createSpinner(out);
     spinner.start('Detecting providers…');
-    const [env, config] = await Promise.all([detectEnvironment(), startupConfigPromise ?? loadConfig()]);
-    const replMode = config.mode ?? autoModeForPlans(
-      [env.claude, env.codex, env.opencode, env.grok]
-        .filter((p) => p.authenticated)
-        .map((p) => p.plan),
-    );
+    const [env, config, subs] = await Promise.all([
+      detectEnvironment(),
+      startupConfigPromise ?? loadConfig(),
+      readSubscriptions(),
+    ]);
+    const replMode = config.mode ?? resolveAutoMode(env, subs.accounts);
     const replPolicy =
       config.mode === undefined
         ? tunePolicyForMaxSubTier(
             POLICY_PRESETS[replMode],
-            [env.claude, env.codex, env.opencode, env.grok]
-              .filter((p) => p.authenticated)
-              .map((p) => p.plan),
+            accountPlanStrings(subs.accounts),
           )
         : POLICY_PRESETS[replMode];
     spinner.stop();

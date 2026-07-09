@@ -42,6 +42,7 @@ import { resolveWorkspaceRoot } from './workspace.js';
 import { runWorkspacePicker } from './workspace-picker.js';
 import { runModeSelect } from './menu-settings.js';
 import { resolveAutoMode } from './menu-auto-mode.js';
+import { readSubscriptions } from '../infra/subscriptions.js';
 import { navFooterText } from './ui/nav-footer.js';
 import { renderEffortModeBox } from './menu-render.js';
 
@@ -121,7 +122,10 @@ export async function runNewConversationScreen(
         continue;
       }
       if (key === 'm') {
-        const autoMode = resolveAutoMode(mutableCtx.env);
+        const accounts = await readSubscriptions()
+          .then((s) => s.accounts)
+          .catch(() => [] as const);
+        const autoMode = resolveAutoMode(mutableCtx.env, accounts);
         mutableCtx.config = await runModeSelect(
           mutableCtx.config, out, readLine, autoMode, mutableCtx.env, inkReadKey,
         );

@@ -92,7 +92,7 @@ Legend: `[ ]` pending -+ `[~]` in progress -+ `[x]` done -+ `[-]` cut with reaso
 
 ### Wave 4 → P1 Reliability & subscription truth
 - [ ] **P1.1** Lag watchdog + relaunch + reopen conversation (finish/harden `phase6` work onto main)
-- [ ] **P1.2** Accounts-only source of truth for Auto defaults / plan posture
+- [x] **P1.2** Accounts-only source of truth for Auto defaults / plan posture
 - [ ] **P1.3** Mouse: clickable menu choices, panel tabs, legend hits (Ink)
 - [ ] **P1.4** Control panel content honesty (real observed quota/cooldown or `unknown`; interactive settings that work)
 - [ ] Acceptance: stale UI recovers without manual kill; Auto doesn→t invent host plans

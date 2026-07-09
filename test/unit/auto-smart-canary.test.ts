@@ -21,6 +21,8 @@ import assert from 'node:assert/strict';
 import {
   planBudgetCeiling,
   resolveAutoMode,
+  resolveAutoModeFromAccounts,
+  resolveAutoModeFromEnvironment,
   autoModeReason,
 } from '../../src/interface/menu-auto-mode.ts';
 import { allocate } from '../../src/core/governor.ts';
@@ -34,6 +36,7 @@ import type { IntentFrame } from '../../src/core/intent.ts';
 import { migrateMode, levelLabel } from '../../src/core/mode-levels.ts';
 import type { Classification } from '../../src/core/types.ts';
 import type { EnvironmentStatus } from '../../src/providers/detect.ts';
+import type { SubscriptionAccount } from '../../src/infra/subscriptions.ts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -42,12 +45,47 @@ import type { EnvironmentStatus } from '../../src/providers/detect.ts';
 function makeEnv(
   plans: Partial<Record<string, { plan: string | null; authenticated: boolean }>>,
 ): EnvironmentStatus {
-  const empty = { installed: true, authenticated: false, plan: null, models: [] };
+  const empty = {
+    id: 'claude' as const,
+    installed: true,
+    version: '1.0.0',
+    authenticated: false,
+    plan: null as string | null,
+    binaryPath: 'x',
+    availableModels: [] as string[],
+  };
+  const p = (
+    id: 'claude' | 'codex' | 'opencode' | 'grok',
+    over?: { plan: string | null; authenticated: boolean },
+  ) => ({
+    ...empty,
+    id,
+    authenticated: over?.authenticated ?? false,
+    plan: over?.plan ?? null,
+  });
   return {
-    claude: plans.claude ? { ...empty, ...plans.claude } : empty,
-    codex: plans.codex ? { ...empty, ...plans.codex } : empty,
-    opencode: plans.opencode ? { ...empty, ...plans.opencode } : empty,
-    grok: plans.grok ? { ...empty, ...plans.grok } : empty,
+    claude: p('claude', plans.claude),
+    codex: p('codex', plans.codex),
+    opencode: p('opencode', plans.opencode),
+    grok: p('grok', plans.grok),
+    hasAnyProvider: true,
+    platform: 'linux',
+  };
+}
+
+function makeAccount(plan: string | null, id = 'acc-1'): SubscriptionAccount {
+  return {
+    id,
+    provider: 'claude',
+    kind: 'oauth-sub',
+    label: 'Claude',
+    homeDir: `/tmp/claude/${id}`,
+    priority: 'medium',
+    priorityWeight: 100,
+    enabled: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    status: 'active',
+    plan,
   };
 }
 
@@ -126,21 +164,30 @@ describe('SCENARIO A — ABSENT config.mode → smart auto policy (promoted defa
   });
 
   it('A#2 absent config.mode → smart auto policy is balanced (not plan-derived)', () => {
-    // Simulate promoted menu.ts:697-700 logic (autoSmartOn effectively true)
+    // Simulate promoted menu.ts: effectiveMode = config.mode ?? 'balanced'
     const configMode: Mode | undefined = undefined;
     const env = makeEnv({
       claude: { plan: 'default_claude_max_20x', authenticated: true },
     });
 
-    // Plan detection says Max → quality-first
-    const planMode = resolveAutoMode(env);
-    assert.equal(planMode, 'quality-first', 'plan detection should yield quality-first');
+    // Ambient detect still classifies Max (doctor/internal)
+    assert.equal(
+      resolveAutoModeFromEnvironment(env),
+      'quality-first',
+      'ambient plan detection should yield quality-first',
+    );
+    // Product Auto without Accounts inventory: honest balanced (P1.2)
+    assert.equal(resolveAutoMode(env), 'balanced');
+    // Accounts Max still raises posture when inventory is present
+    assert.equal(
+      resolveAutoModeFromAccounts([makeAccount('default_claude_max_20x')]),
+      'quality-first',
+    );
 
-    // But with auto-smart promoted, the effective mode is balanced
+    // With auto-smart promoted, the effective mode is balanced
     const effectiveMode: Mode = configMode ?? 'balanced';
     assert.equal(effectiveMode, 'balanced');
 
-    // The effective mode should be a valid, recognized mode
     assert.ok(
       effectiveMode === 'cost-saver' ||
         effectiveMode === 'balanced' ||
@@ -149,25 +196,24 @@ describe('SCENARIO A — ABSENT config.mode → smart auto policy (promoted defa
   });
 
   it('A#3 without config.mode, auto-smart yields a sane, in-budget budget ceiling', () => {
-    const env = makeEnv({
-      claude: { plan: 'default_claude_max_20x', authenticated: true },
-    });
+    const env = makeEnv({});
+    const accounts = [makeAccount('default_claude_max_20x')];
 
-    // Simulate promoted auto-stage.ts logic
+    // Simulate promoted auto-stage.ts logic (Accounts inventory for ceiling)
     const configMode: Mode | undefined = undefined;
     const effectiveMode: Mode = configMode ?? 'balanced';
     const modeBudget =
       effectiveMode === 'quality-first' ? 3 : effectiveMode === 'balanced' ? 2 : 1;
     const planCeiling =
-      configMode === undefined ? planBudgetCeiling(env) : modeBudget;
+      configMode === undefined ? planBudgetCeiling(env, accounts) : modeBudget;
     const callBudgetCeiling = Math.max(
       1,
       Math.max(modeBudget, planCeiling) - 0,
     ) as 1 | 2 | 3;
 
-    // Balanced mode budget = 2, Max plan ceiling = 3
+    // Balanced mode budget = 2, Accounts Max plan ceiling = 3
     assert.equal(modeBudget, 2);
-    assert.equal(planCeiling, 3, 'Max plan should raise ceiling to 3');
+    assert.equal(planCeiling, 3, 'Accounts Max plan should raise ceiling to 3');
     assert.equal(callBudgetCeiling, 3);
   });
 
@@ -261,11 +307,12 @@ describe('SCENARIO B — PERSISTED EXPLICIT mode remains AUTHORITATIVE', () => {
 
 describe('SCENARIO C — menu display reason is honest about source', () => {
   it('C#1 autoSmart ON → reason shows per-turn-effort suffix (not plan posture)', () => {
-    const env = makeEnv({
-      claude: { plan: 'default_claude_max_20x', authenticated: true },
-      codex: { plan: 'default_codex_pro', authenticated: true },
-    });
-    const reason = autoModeReason(env, true);
+    const env = makeEnv({});
+    const accounts = [
+      makeAccount('default_claude_max_20x', 'a1'),
+      makeAccount('default_codex_pro', 'a2'),
+    ];
+    const reason = autoModeReason(env, true, accounts);
 
     // Smart mode: per-turn effort, not "→ full/capable/fast"
     assert.ok(
@@ -276,20 +323,19 @@ describe('SCENARIO C — menu display reason is honest about source', () => {
       reason.includes('per-turn effort from task + risk + provider headroom'),
       `expected per-turn effort suffix in "${reason}"`,
     );
-    // Should still include the plan observation prefix
+    // Accounts inventory observation prefix
     assert.ok(
       reason.includes('auto ·'),
       `reason should start with "auto ·": "${reason}"`,
     );
   });
 
-  it('C#2 autoSmart OFF → reason shows plan-derived posture', () => {
-    const env = makeEnv({
-      claude: { plan: 'default_claude_max_20x', authenticated: true },
-    });
-    const reason = autoModeReason(env, false);
+  it('C#2 autoSmart OFF → reason shows plan-derived posture from Accounts', () => {
+    const env = makeEnv({});
+    const accounts = [makeAccount('default_claude_max_20x')];
+    const reason = autoModeReason(env, false, accounts);
 
-    // Legacy mode: plan → posture
+    // Legacy mode: Accounts plan → posture
     assert.ok(
       reason.includes('→ full'),
       `expected "→ full" in "${reason}"`,
@@ -328,16 +374,15 @@ describe('SCENARIO C — menu display reason is honest about source', () => {
 // ---------------------------------------------------------------------------
 
 describe('SCENARIO D — budget ceilings and provider capacity respected', () => {
-  it('D#1 Max plan raises smart-policy ceiling from 2 to 3', () => {
-    const env = makeEnv({
-      claude: { plan: 'default_claude_max_20x', authenticated: true },
-    });
+  it('D#1 Accounts Max plan raises smart-policy ceiling from 2 to 3', () => {
+    const env = makeEnv({});
+    const accounts = [makeAccount('default_claude_max_20x')];
 
     const configMode: Mode | undefined = undefined;
     const effectiveMode: Mode = configMode ?? 'balanced';
     const modeBudget = effectiveMode === 'quality-first' ? 3 : effectiveMode === 'balanced' ? 2 : 1;
     const planCeiling =
-      configMode === undefined ? planBudgetCeiling(env) : modeBudget;
+      configMode === undefined ? planBudgetCeiling(env, accounts) : modeBudget;
     const callBudgetCeiling = Math.max(
       1,
       Math.max(modeBudget, planCeiling) - 0,
@@ -345,20 +390,19 @@ describe('SCENARIO D — budget ceilings and provider capacity respected', () =>
 
     assert.equal(effectiveMode, 'balanced');
     assert.equal(modeBudget, 2, 'balanced mode budget');
-    assert.equal(planCeiling, 3, 'Max plan ceiling');
+    assert.equal(planCeiling, 3, 'Accounts Max plan ceiling');
     assert.equal(callBudgetCeiling, 3, 'ceiling lifted');
   });
 
-  it('D#2 Free plan keeps smart-policy ceiling at balanced floor (not lower)', () => {
-    const env = makeEnv({
-      claude: { plan: 'default_claude_free', authenticated: true },
-    });
+  it('D#2 Accounts Free plan keeps smart-policy ceiling at balanced floor (not lower)', () => {
+    const env = makeEnv({});
+    const accounts = [makeAccount('default_claude_free')];
 
     const configMode: Mode | undefined = undefined;
     const effectiveMode: Mode = configMode ?? 'balanced';
     const modeBudget = effectiveMode === 'quality-first' ? 3 : effectiveMode === 'balanced' ? 2 : 1;
     const planCeiling =
-      configMode === undefined ? planBudgetCeiling(env) : modeBudget;
+      configMode === undefined ? planBudgetCeiling(env, accounts) : modeBudget;
     const callBudgetCeiling = Math.max(
       1,
       Math.max(modeBudget, planCeiling) - 0,
@@ -366,7 +410,7 @@ describe('SCENARIO D — budget ceilings and provider capacity respected', () =>
 
     assert.equal(effectiveMode, 'balanced');
     assert.equal(modeBudget, 2, 'balanced base is 2');
-    assert.equal(planCeiling, 1, 'Free plan ceiling is 1');
+    assert.equal(planCeiling, 1, 'Accounts Free plan ceiling is 1');
     // floor is max(modeBudget, planCeiling) = max(2, 1) = 2 (base is floor)
     assert.equal(callBudgetCeiling, 2, 'mode budget acts as floor');
   });
@@ -419,15 +463,14 @@ describe('SCENARIO D — budget ceilings and provider capacity respected', () =>
 
 describe('SCENARIO E — governor pressure causes correct shedding under smart policy', () => {
   it('E#1 pressure reduces effective callBudgetCeiling', () => {
-    const env = makeEnv({
-      claude: { plan: 'default_claude_max_20x', authenticated: true },
-    });
+    const env = makeEnv({});
+    const accounts = [makeAccount('default_claude_max_20x')];
 
     const configMode: Mode | undefined = undefined;
     const effectiveMode: Mode = configMode ?? 'balanced';
     const modeBudget = effectiveMode === 'quality-first' ? 3 : effectiveMode === 'balanced' ? 2 : 1;
     const planCeiling =
-      configMode === undefined ? planBudgetCeiling(env) : modeBudget;
+      configMode === undefined ? planBudgetCeiling(env, accounts) : modeBudget;
 
     // No pressure → full ceiling
     const noPressure = Math.max(1, Math.max(modeBudget, planCeiling) - 0) as 1 | 2 | 3;
@@ -501,19 +544,27 @@ describe('SCENARIO E — governor pressure causes correct shedding under smart p
 // SCENARIO Z: backward-compat — old config keys tolerated, explicit mode still wins
 // ---------------------------------------------------------------------------
 
-describe('SCENARIO Z — backward-compat', () => {
-  it('Z#1 resolveAutoMode unchanged for Max plan (plan detection still works)', () => {
+describe('SCENARIO Z — backward-compat + Accounts truth', () => {
+  it('Z#1 Accounts Max raises Auto; ambient Max alone does not', () => {
     const env = makeEnv({
       claude: { plan: 'default_claude_max_20x', authenticated: true },
     });
-    assert.equal(resolveAutoMode(env), 'quality-first');
+    // Ambient alone is NOT product Auto truth
+    assert.equal(resolveAutoMode(env), 'balanced');
+    assert.equal(resolveAutoModeFromEnvironment(env), 'quality-first');
+    // Accounts inventory is product truth
+    assert.equal(
+      resolveAutoMode(env, [makeAccount('default_claude_max_20x')]),
+      'quality-first',
+    );
   });
 
-  it('Z#2 legacy plan-derived mode still computable (not removed)', () => {
+  it('Z#2 Accounts Pro / empty inventory → balanced ceiling 2', () => {
     const env = makeEnv({
       claude: { plan: 'default_claude_pro', authenticated: true },
     });
-    assert.equal(resolveAutoMode(env), 'balanced');
-    assert.equal(planBudgetCeiling(env), 2);
+    assert.equal(resolveAutoMode(env, [makeAccount('default_claude_pro')]), 'balanced');
+    assert.equal(planBudgetCeiling(env, [makeAccount('default_claude_pro')]), 2);
+    assert.equal(planBudgetCeiling(env, []), 2);
   });
 });
