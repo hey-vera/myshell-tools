@@ -451,7 +451,9 @@ export async function renderStream(
   // only when real answer prose begins streaming, or when the tier finishes/errors.
   const spinner = createSpinner(out, turnInput?.overlay);
   let spinnerActive = false;
-  let workLabel = 'Thinking';
+  // Honest turn phases: Preparing until a tier actually starts composing,
+  // then Thinking (or the verbose tier label). Spinner stops on first text.
+  let workLabel = 'Preparing';
   let stepCount = 0;
 
   // Whether any answer prose has streamed yet, and whether a tool call has

@@ -64,14 +64,14 @@ test('committed lines appear in the transcript', async () => {
   );
 });
 
-test('optimistic turn-start state renders Thinking immediately before any stream events arrive', async () => {
+test('optimistic turn-start state renders Preparing immediately before any stream events arrive', async () => {
   const bridge = createInkAppBridge();
   const { lastFrame } = render(<App bridge={bridge} color={false} rows={24} clock={() => 0} />);
   bridge.setChatActive(true);
   bridge.pushState({ ...initialState, turnActive: true });
   await new Promise((r) => setTimeout(r, 20));
   const frame = lastFrame() ?? '';
-  assert.ok(frame.includes('Thinking…'), `expected immediate optimistic Thinking state, got:\n${frame}`);
+  assert.ok(frame.includes('Preparing…'), `expected immediate optimistic Preparing state, got:\n${frame}`);
 });
 
 // ---------------------------------------------------------------------------

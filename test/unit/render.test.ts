@@ -579,7 +579,7 @@ describe('renderStream — live working indicator (TTY)', () => {
     return { buf, write: (s: string) => { buf.push(s); }, color: false, isTty: true };
   }
 
-  it('starts the default Thinking indicator before a delayed first event arrives', async () => {
+  it('starts the default Preparing indicator before a delayed first event arrives', async () => {
     const sink = makeTtySink();
     let yieldedFirstEvent = false;
     async function* delayedStream(): AsyncIterable<CoreEvent> {
@@ -592,7 +592,7 @@ describe('renderStream — live working indicator (TTY)', () => {
     try {
       const immediate = sink.buf.join('');
       assert.equal(yieldedFirstEvent, false, 'the stream has not yielded its first event yet');
-      assert.ok(immediate.includes('Thinking… 0 steps'), 'default Thinking label is visible immediately');
+      assert.ok(immediate.includes('Preparing… 0 steps'), 'default Preparing label is visible immediately');
       assert.ok(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(immediate), 'spinner frame is painted immediately');
     } finally {
       await rendering;
@@ -1365,7 +1365,7 @@ describe('renderStream — assistant ● turn marker', () => {
       `spinner label must not contain the semantic ●, got:\n${JSON.stringify(spinnerFrames)}`,
     );
     assert.ok(
-      spinnerFrames.some((s) => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Thinking… 0 steps/.test(s)),
+      spinnerFrames.some((s) => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (Preparing|Thinking)… 0 steps/.test(s)),
       `spinner should be only frame + label, got:\n${JSON.stringify(spinnerFrames)}`,
     );
     assert.ok(joined.includes(`\x1b[36m${DOT}\x1b[0m Hello there.`), 'answer prose still starts under cyan ●');

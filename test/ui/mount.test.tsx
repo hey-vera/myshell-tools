@@ -296,11 +296,11 @@ test('optimistic turn start can be reset cleanly before renderTurn runs', () => 
 
   store.dispatch({ type: 'turn/start' });
   assert.equal(last?.turnActive, true);
-  assert.equal(last?.stream.workLabel, 'Thinking');
+  assert.equal(last?.stream.workLabel, 'Preparing');
 
   store.dispatch({ type: 'turn/reset' });
   assert.equal(last?.turnActive, false);
-  assert.equal(last?.stream.workLabel, 'Thinking');
+  assert.equal(last?.stream.workLabel, 'Preparing');
   assert.equal(last?.goals.length, 0);
 });
 
@@ -321,7 +321,7 @@ test('createTurnDriver does not dispatch a duplicate turn/start when the optimis
           streamedChars: 0,
           panelists: [],
           synthesizing: null,
-          workLabel: 'Thinking',
+          workLabel: 'Preparing',
           toolSinceProse: false,
           breakBeforeNextProse: false,
           proseStarted: false,
