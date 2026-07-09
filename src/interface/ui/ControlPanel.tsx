@@ -13,6 +13,14 @@ import type {
   ControlPanelModel,
   ControlPanelSettingRow,
 } from './control-panel-model.js';
+import {
+  hitTestPanelChromeRow,
+  hitTestPanelFooter,
+  hitTestPanelTabs,
+  isMouseInput,
+  isPrimaryClick,
+  parseMouseInput,
+} from './mouse.js';
 
 // ---------------------------------------------------------------------------
 // Focus model (PANEL-NAV-SPEC / P0.10)
@@ -262,9 +270,24 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
   const contentRows = Math.max(1, liveRows - fixedRows);
   const pageDelta = Math.max(1, contentRows - 1);
   const wideLayout = liveColumns >= 96;
+  const showSummary = liveRows >= 6;
 
   useInput(
     (input, key) => {
+      // Optional mouse (P1.3): tab clicks + footer close. Fail-soft; keyboard first.
+      if (isMouseInput(input)) {
+        const ev = parseMouseInput(input);
+        if (ev !== null && isPrimaryClick(ev)) {
+          const chrome = hitTestPanelChromeRow(ev.row, liveRows, showSummary);
+          if (chrome === 'tabs') {
+            const section = hitTestPanelTabs(ev.col);
+            if (section !== null) onSetSection(section);
+          } else if (chrome === 'footer') {
+            if (hitTestPanelFooter(ev.col, liveColumns) === 'close') onClose();
+          }
+        }
+        return;
+      }
       // Always-escapable: Esc, Left (back to chat), Ctrl+G alias.
       // Order before Tab/section keys so close never competes with navigation.
       if (key.escape || key.leftArrow || (key.ctrl && input === 'g')) {
@@ -359,8 +382,6 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
     },
     { isActive: active !== false },
   );
-
-  const showSummary = liveRows >= 6;
 
   return (
     <Box flexDirection="column">

@@ -42,6 +42,7 @@ import { Box, Text, useInput, useStdin } from 'ink';
 import { dim, cyan, blue } from '../../ui/theme.js';
 import { visibleLength } from '../../ui/tui.js';
 import { composerShownPlan, fitComposerInfo, INPUT_BORDER_ROWS } from './layout.js';
+import { isMouseInput } from './mouse.js';
 import { completeChat, classifyCompletion } from '../menu-completion.js';
 import {
   applyGhost,
@@ -582,6 +583,12 @@ export function InputBox({
   // state and callbacks.
   const inputHandlerRef = useRef<Parameters<typeof useInput>[0]>(() => undefined);
   inputHandlerRef.current = (input, key): void => {
+    // Optional mouse reports (P1.3): never type SGR click sequences into the buffer.
+    // Legend / ControlPanel own the actual click actions; we only fail-soft here.
+    if (input.length > 0 && isMouseInput(input)) {
+      return;
+    }
+
     // --- Empty-buffer Ctrl+G → toggle fullscreen panel -------------------------
     // The one narrow bridge route from React events back to the reducer. Matches
     // only a truly empty editor with Ctrl+G; non-empty or absent callback falls
