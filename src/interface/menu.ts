@@ -716,11 +716,13 @@ export async function runChatLoop(
   // (legacy/test paths) → no-op, byte-identical. Mirrors inkSetInputInfo.
   inkSetChatActive?: (active: boolean) => void,
   // Optimistic live-turn seams. On the Ink path the menu can flip the reducer into
-  // a visible "Thinking…" state immediately on submit, before dependency-building
-  // awaits; if preprocessing fails or the turn is diverted elsewhere, reset clears
-  // that optimistic state without emitting a completion line.
+  // a visible "Preparing…" state on the model-bound path (honest preflight — not
+  // "Thinking" until a tier actually starts). If preprocessing fails after begin,
+  // or a path needs to clear a stale optimistic turn without a completion line,
+  // reset clears that state. Local divert paths (repo-chat, slash commands) run
+  // BEFORE begin so they never leave optimistic turnActive stuck.
   inkBeginTurn?: () => void,
-  _inkResetTurn?: () => void,
+  inkResetTurn?: () => void,
   // Shift+Tab Effort Mode cycle seam (P0.8). When provided (Ink path), the App
   // routes Shift+Tab here; the handler persists via ConversationStore.setMode and
   // updates the InputBox info chrome. Does NOT touch global config.mode. Cleared
@@ -6186,31 +6188,41 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // Enrich with account fields (best-effort; flag off → no-op).
       deps = await enrichDepsWithAccounts(deps);
 
+      // Optimistic Preparing… (not Thinking) once we know this is a model turn.
+      // Local divert paths (repo-chat / slash) returned earlier — never stuck here.
+      // If preflight after begin fails before renderTurn settles, reset clears it.
       inkBeginTurn?.();
-      const ac = new AbortController();
-      currentAc = ac;
       const oversight = resolveOversight(mutableCtx.config, process.env);
-      // DRAFT GOALS (Phase 1): always on. The post-turn slot reads the captured
-      // intent frame and creates PARKED draft goals.
-      lastDraftGoalFrame = null;
-      const captureIntentEvents = deps !== null
-        ? (async function* (): AsyncIterable<CoreEvent> {
-            for await (const event of orchestrate(line, deps as OrchestrateDeps, ac.signal)) {
-              if (event.type === 'intent') {
-                lastDraftGoalFrame = event.frame;
+      let result: Awaited<ReturnType<typeof runTaskWithInputHooks>>;
+      try {
+        const ac = new AbortController();
+        currentAc = ac;
+        // DRAFT GOALS (Phase 1): always on. The post-turn slot reads the captured
+        // intent frame and creates PARKED draft goals.
+        lastDraftGoalFrame = null;
+        const captureIntentEvents = deps !== null
+          ? (async function* (): AsyncIterable<CoreEvent> {
+              for await (const event of orchestrate(line, deps as OrchestrateDeps, ac.signal)) {
+                if (event.type === 'intent') {
+                  lastDraftGoalFrame = event.frame;
+                }
+                yield event;
               }
-              yield event;
-            }
-          })()
-        : undefined;
-      const result = await runTaskWithInputHooks(
-        line,
-        deps,
-        ac.signal,
-        mutableCtx.config.verbosity ?? 'normal',
-        captureIntentEvents,
-        oversight === 'autonomous' ? 'automatic' : 'prompt',
-      );
+            })()
+          : undefined;
+        result = await runTaskWithInputHooks(
+          line,
+          deps,
+          ac.signal,
+          mutableCtx.config.verbosity ?? 'normal',
+          captureIntentEvents,
+          oversight === 'autonomous' ? 'automatic' : 'prompt',
+        );
+      } catch (err) {
+        currentAc = null;
+        inkResetTurn?.();
+        throw err;
+      }
       currentAc = null;
       noteRateLimit(result);
       await syncCapacity();

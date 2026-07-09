@@ -167,16 +167,18 @@ test('StatusBlock is hidden (empty frame) when the turn is idle', () => {
   assert.equal((lastFrame() ?? '').trim(), '');
 });
 
-test('StatusBlock shows a "Thinking…" status line when active with no goals/stream yet', () => {
+test('StatusBlock shows a "Preparing…" status line when active with no goals/stream yet', () => {
   // The exact post-turn/start state: turnActive true, no goals, fresh stream
-  // (phase 'idle', workLabel 'Thinking', 0 steps). The block must render a
-  // sensible "Thinking…" spinner line (NOT an empty box, NOT a crash, NO goals
-  // panel) so the UI never looks frozen between submit and the first event.
+  // (phase 'idle', workLabel 'Preparing', 0 steps). The block must render a
+  // sensible "Preparing…" spinner line (NOT an empty box, NOT a crash, NO goals
+  // panel) so the UI never looks frozen between submit and the first event —
+  // and does not claim "Thinking" before any model work has started.
   const state: UiState = { ...initialState, turnActive: true };
   const { lastFrame } = render(<StatusBlock state={state} color={false} rows={24} />);
   const frame = lastFrame() ?? '';
   assert.notEqual(frame.trim(), ''); // not an empty box
-  assert.match(frame, /Thinking…/);
+  assert.match(frame, /Preparing…/);
+  assert.doesNotMatch(frame, /Thinking…/);
   assert.doesNotMatch(frame, /esc to interrupt/);
   assert.doesNotMatch(frame, /GOALS/); // no goals panel until goals arrive
 });

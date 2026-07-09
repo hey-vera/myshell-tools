@@ -422,6 +422,7 @@ test('Escape closes CP; normal board/status returns', async () => {
   });
   assert.equal(store.getState().controlPanel.open, true);
   assert.match(plain(lastFrame()), /CONTROL PANEL/);
+  assert.match(plain(lastFrame()), /Esc close/, 'open panel must show Esc close footer');
 
   // Escape closes.
   await act(async () => {
@@ -430,6 +431,35 @@ test('Escape closes CP; normal board/status returns', async () => {
   });
   assert.equal(store.getState().controlPanel.open, false);
   assert.match(plain(lastFrame()), /BOARD/);
+  assert.doesNotMatch(plain(lastFrame()), /CONTROL PANEL/);
+});
+
+test('Left arrow closes CP back to chat (always escapable)', async () => {
+  const { bridge, store } = setupCPBridgeAndStore();
+  store.dispatch({
+    type: 'board/sync',
+    rows: [
+      boardRow({ id: 'g1', title: 'Ship it', state: 'running', done: 1, total: 5, agents: 1 }),
+    ],
+    enabled: true,
+  });
+  const { lastFrame, stdin } = render(
+    <App bridge={bridge} color={false} isTty={false} rows={24} clock={() => 0} />,
+  );
+  bridge.pushState(store.getState());
+  await tick();
+
+  await act(async () => {
+    stdin.write('\x07');
+    await tick();
+  });
+  assert.equal(store.getState().controlPanel.open, true);
+
+  await act(async () => {
+    stdin.write('\x1b[D'); // Left
+    await tick();
+  });
+  assert.equal(store.getState().controlPanel.open, false, 'Left must close Control Panel');
   assert.doesNotMatch(plain(lastFrame()), /CONTROL PANEL/);
 });
 

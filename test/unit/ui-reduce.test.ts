@@ -75,6 +75,8 @@ describe('ui reduce — prose accumulation + tier flush', () => {
     assert.equal(s.stream.phase, 'streaming');
     assert.equal(s.stream.proseStarted, true);
     assert.equal(s.stream.streamedChars, 'Hello world.'.length);
+    // First text tokens promote the default Preparing verb to Responding.
+    assert.equal(s.stream.workLabel, 'Responding');
   });
 
   it('flush-tier commits the buffered prose and accounts tokens', () => {
@@ -502,6 +504,39 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
     // spinner appears immediately on submit, before the first real event) — it
     // no longer waits for classified/intent/phase/tier-start.
     assert.equal(started.turnActive, true);
+  });
+
+  it('honest workLabel phases: Preparing → Thinking → Responding', () => {
+    const started = reduce(initialState, { type: 'turn/start' });
+    assert.equal(started.stream.workLabel, 'Preparing');
+    assert.equal(started.turnActive, true);
+
+    const thinking = reduce(started, {
+      type: 'tier-start',
+      tier: 'ic',
+      provider: 'claude',
+      model: 'sonnet',
+      attempt: 1,
+      verbosity: 'normal',
+    });
+    assert.equal(thinking.stream.workLabel, 'Thinking');
+    assert.equal(thinking.stream.phase, 'thinking');
+
+    const responding = reduce(thinking, { type: 'stream/prose', text: 'Hi' });
+    assert.equal(responding.stream.workLabel, 'Responding');
+    assert.equal(responding.stream.phase, 'streaming');
+
+    // Verbose tier labels are preserved across prose (not overwritten to Responding).
+    const verbose = reduce(initialState, {
+      type: 'tier-start',
+      tier: 'manager',
+      provider: 'codex',
+      model: 'gpt-5',
+      attempt: 1,
+      verbosity: 'verbose',
+    });
+    const afterProse = reduce(verbose, { type: 'stream/prose', text: 'x' });
+    assert.equal(afterProse.stream.workLabel, 'manager (codex/gpt-5)');
   });
 
   it('turn/start sets turnActive true and turn/final settles it back to false', () => {

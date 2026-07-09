@@ -182,10 +182,12 @@ export function reduce(state: UiState, action: Action): UiState {
         // until the first real event (classified/intent/phase/tier-start), which
         // can be seconds away (classification + cold provider spawn), leaving the
         // UI looking frozen. With turnActive true and the fresh initialStreamView
-        // (phase 'idle', workLabel 'Thinking', 0 steps), StatusBlock renders a
-        // sensible immediate "⠋ Thinking… · 0s" line — no goals panel yet (it
-        // stays hidden until goals arrive), never empty, never a crash.
-        // turn/final still settles turnActive back to false.
+        // (phase 'idle', workLabel 'Preparing', 0 steps), StatusBlock renders a
+        // sensible immediate "⠋ Preparing… · 0s" line — honest preflight, not
+        // "Thinking" before any model work. tier-start promotes to Thinking;
+        // first prose promotes to Responding. No goals panel yet (hidden until
+        // goals arrive), never empty, never a crash. turn/final settles
+        // turnActive back to false.
         turnActive: true,
         tokens: { turn: 0, session: state.tokens.session },
       };
@@ -277,7 +279,8 @@ export function reduce(state: UiState, action: Action): UiState {
 
     // -- tier-start: reset per-tier counters, add a running agent/goal. In verbose
     //    mode render.ts prints a `▶ tier (provider/model)` line. The workLabel is
-    //    the verbose tier label or "Thinking". In panel mode (pre-synthesis) a
+    //    the verbose tier label or "Thinking" (model is now composing — not the
+    //    optimistic "Preparing" from turn/start). In panel mode (pre-synthesis) a
     //    not-yet-registered candidate is appended as running.
     case 'tier-start': {
       const isVerbose = action.verbosity === 'verbose';
@@ -459,6 +462,11 @@ export function reduce(state: UiState, action: Action): UiState {
       const proseFull = s.proseFull + delta;
       const grown = s.buffer + delta;
       const buffer = grown.length > PROSE_BUFFER_CAP ? grown.slice(grown.length - PROSE_BUFFER_CAP) : grown;
+      // First real answer tokens → prefer "Responding" over Preparing/Thinking.
+      // Preserve verbose tier labels ("manager (codex/gpt-5)") and any other
+      // non-phase verb already set by the stream.
+      const phaseVerb =
+        s.workLabel === 'Preparing' || s.workLabel === 'Thinking' || s.workLabel === 'Responding';
       return withStream(state, {
         buffer,
         proseFull,
@@ -469,6 +477,7 @@ export function reduce(state: UiState, action: Action): UiState {
         breakBeforeNextProse: false,
         toolSinceProse: false,
         streamedChars: s.streamedChars + action.text.length,
+        ...(phaseVerb ? { workLabel: 'Responding' } : {}),
       });
     }
 

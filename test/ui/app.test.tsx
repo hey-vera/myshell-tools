@@ -64,14 +64,14 @@ test('committed lines appear in the transcript', async () => {
   );
 });
 
-test('optimistic turn-start state renders Thinking immediately before any stream events arrive', async () => {
+test('optimistic turn-start state renders Preparing immediately before any stream events arrive', async () => {
   const bridge = createInkAppBridge();
   const { lastFrame } = render(<App bridge={bridge} color={false} rows={24} clock={() => 0} />);
   bridge.setChatActive(true);
   bridge.pushState({ ...initialState, turnActive: true });
   await new Promise((r) => setTimeout(r, 20));
   const frame = lastFrame() ?? '';
-  assert.ok(frame.includes('Thinking…'), `expected immediate optimistic Thinking state, got:\n${frame}`);
+  assert.ok(frame.includes('Preparing…'), `expected immediate optimistic Preparing state, got:\n${frame}`);
 });
 
 // ---------------------------------------------------------------------------
@@ -189,6 +189,9 @@ test('BottomLegend hidden while Control Panel is open', async () => {
   assert.ok(!plainFrame.includes('\u2190 menu'), `legend must NOT show when CP is open, got:\n${plainFrame}`);
   assert.ok(!plainFrame.includes('\u2192 panel'), `legend must NOT show when CP is open, got:\n${plainFrame}`);
   assert.ok(plainFrame.includes('CONTROL PANEL'), `CP must render, got:\n${plainFrame}`);
+  // Panel chrome footer replaces chat legend — always teaches Esc close (P0.10).
+  assert.ok(plainFrame.includes('Esc close'), `CP footer must show Esc close, got:\n${plainFrame}`);
+  assert.ok(plainFrame.includes('Tab sections') || plainFrame.includes('Tab'), `CP footer must show Tab, got:\n${plainFrame}`);
 });
 
 test('BottomLegend narrow terminal keeps back + panel only', async () => {

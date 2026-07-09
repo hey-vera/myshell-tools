@@ -36,6 +36,7 @@ import {
   type ProviderAccountSummary,
 } from './menu-display.js';
 import { workspaceLabel, normalizeWorkspacePath } from './workspace.js';
+import { navFooterText } from './ui/nav-footer.js';
 
 // ---------------------------------------------------------------------------
 // Effort Mode box — live from config.mode (shared pure helper).
@@ -321,7 +322,9 @@ export async function renderMainScreen(
   // order ([c] is the conceptual `[0]`).
   out.write(renderControls(metas, nowMs, authed, currentRoot) + '\n\n');
 
-  // 5. Choice prompt. 6. Root footer (only `ESC to exit`).
+  // 5. Choice prompt. 6. Root footer via shared nav-footer pattern (P0.11 light).
+  // Same glyphs as locked skeleton (`ESC to exit`); dimmed when color is on so
+  // it reads as chrome, not a crammed control row.
   out.write('Choice: ▌\n');
-  out.write('ESC to exit\n');
+  out.write(navFooterText('exit-only', out.color) + '\n');
 }
