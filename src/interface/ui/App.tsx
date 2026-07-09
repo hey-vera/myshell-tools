@@ -683,6 +683,9 @@ function AppBody({
       <Box flexDirection="column">
         <CommittedTranscript lines={uiState.committed} color={color} />
         {controlPanelOpen ? (
+          // Control Panel route: sole `useInput` owner. InputBox below stays
+          // mounted with active=false + visible=false so draft/bridge/stdin
+          // survive, but keys cannot be trapped in a hidden editor (P0.10).
           <Box height={Math.max(1, liveRows - 1)} overflowY="hidden">
               <ControlPanel
                 state={uiState}
@@ -737,6 +740,11 @@ function AppBody({
         {!fullscreenPanelOpen && chatActive && (
           <GoalQuickStrip rows={quickRows} color={color} columns={liveColumns} />
         )}
+        {/*
+          Focus model: when the Control Panel is open, InputBox is inactive
+          (active=false) and hidden (visible=false). Empty-buffer Right / Ctrl+G
+          open the panel; panel Esc/Left/Ctrl+G close back here. See ControlPanel.tsx.
+        */}
         <InputBox
           bridge={bridge.input}
           color={color}

@@ -15,8 +15,41 @@ import type {
 } from './control-panel-model.js';
 
 // ---------------------------------------------------------------------------
+// Focus model (PANEL-NAV-SPEC / P0.10)
+// ---------------------------------------------------------------------------
+//
+// Single active `useInput` owner per route — terminals have no rich focus:
+//
+// - **Chat route:** InputBox owns keys. Empty-buffer bare Right / Ctrl+G open
+//   this panel; empty-buffer bare Left returns to the main menu. Non-empty
+//   buffer keeps Left/Right as cursor movement.
+// - **Control Panel route (this component):** App sets InputBox `active=false`
+//   and `visible=false` so the composer is not a competing listener and cannot
+//   trap keys. This panel's `useInput` is the sole owner while `active`.
+// - **Always escapable:** Esc, Left, and Ctrl+G call `onClose` → chat. The
+//   chrome footer always shows Esc (and Left) so the panel is never a black hole.
+// - **Suspended TTY handoff:** when App passes `active={false}` (inherited child
+//   owns the TTY), all keys are inert here — same contract as InputBox.
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+/** Clustered panel key legend — must stay ≤1 terminal row (footer is reserved chrome). */
+const FULL_PANEL_FOOTER =
+  '\u2190 chat  \u00b7  Tab sections  \u00b7  \u2191\u2193 select  \u00b7  Enter goal  \u00b7  Esc close';
+/** Narrow terminals keep close + section-switch only (never bury Esc). */
+const NARROW_PANEL_FOOTER = '\u2190 chat  \u00b7  Tab  \u00b7  Esc close';
+/** Columns below this threshold drop select/goal hints. */
+const NARROW_PANEL_COLUMNS = 60;
+
+/**
+ * Pure footer text for the Control Panel chrome.
+ * Always includes Esc close so discoverability does not depend on reading source.
+ */
+export function buildControlPanelFooterText(columns: number): string {
+  return columns < NARROW_PANEL_COLUMNS ? NARROW_PANEL_FOOTER : FULL_PANEL_FOOTER;
+}
 
 function sectionLabel(section: ControlPanelSection): string {
   switch (section) {
@@ -232,7 +265,9 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
 
   useInput(
     (input, key) => {
-      if (key.escape || (key.ctrl && input === 'g')) {
+      // Always-escapable: Esc, Left (back to chat), Ctrl+G alias.
+      // Order before Tab/section keys so close never competes with navigation.
+      if (key.escape || key.leftArrow || (key.ctrl && input === 'g')) {
         onClose();
         return;
       }
@@ -377,9 +412,8 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
         />
       )}
 
-      <Text dimColor>
-        Tab/Shift+Tab navigate sections · ↑↓/jk select goal · Enter/c chat about goal · PgUp/PgDn scroll · Esc close
-      </Text>
+      {/* Always-visible chrome footer (reserved in fixedRows) — never buried in content. */}
+      <Text dimColor>{buildControlPanelFooterText(liveColumns)}</Text>
     </Box>
   );
 }
