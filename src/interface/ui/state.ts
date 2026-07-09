@@ -673,6 +673,11 @@ export type Action =
        *  impure caller via cliErrorForCategory/formatErrorMessage. When present on
        *  a failing final, committed as an `error` line before the Failed line. */
       readonly actionableError?: string;
+      /**
+       * End-of-turn visible-dispatch line (provider · model · effort · account? · why)
+       * from the CoreEvent final. Absent when no truthful routing fields existed.
+       */
+      readonly routingReceipt?: string;
     }
 
   // --- control-panel/open: open the panel, optionally to a specific section.
