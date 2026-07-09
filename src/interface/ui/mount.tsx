@@ -262,8 +262,15 @@ export function createInkOutputSink(
  *
  * `suspend()`/`resume()` stay as Step-1/2b stubs (the inherited-stdio child
  * handoff is Step 2b); the read-side works without them.
+ *
+ * Optional `onUserActivity` fires on every submit (including mid-turn typed-ahead)
+ * so the lag watchdog can treat chat input as recent user activity (design:
+ * lastInputMs updated by onSubmit + readKey).
  */
-export function createInkLineReader(bridge: InkAppBridge): LineReader {
+export function createInkLineReader(
+  bridge: InkAppBridge,
+  opts?: { readonly onUserActivity?: () => void },
+): LineReader {
   const buffered: string[] = [];
   const waiters: Array<(value: string | null) => void> = [];
   let closed = false;
@@ -289,6 +296,13 @@ export function createInkLineReader(bridge: InkAppBridge): LineReader {
 
   bridge.onSubmit((raw: string) => {
     if (closed) return;
+    // Count as user activity even when the blank-line suppressor drops the
+    // trailing Enter — a key was still observed on the TTY.
+    try {
+      opts?.onUserActivity?.();
+    } catch {
+      /* activity hooks must never break input */
+    }
     const line = raw.trim();
     if (line === '' && Date.now() <= suppressEmptyUntil) {
       // The child's trailing submit-Enter (or a stray newline from re-priming raw
@@ -510,6 +524,9 @@ export function createTurnDriver(
 
 export type WatchdogReason = 'hard-stall' | 'active-stale';
 
+/** How long recent user/turn activity keeps the UI "watched active". */
+export const WATCHDOG_ACTIVITY_WINDOW_MS = 60_000;
+
 export interface WatchdogSnapshot {
   readonly reason: WatchdogReason;
   readonly consecutiveBadSamples: number;
@@ -548,6 +565,172 @@ export interface WatchdogOptions {
    * loops when the recovered conversation is still rendering.
    */
   readonly recoveryRelaunch: boolean;
+}
+
+/**
+ * Pure predicate: is this sample "bad" (event-loop lag / interval drift)?
+ * Histogram values must already be in milliseconds (not nanoseconds).
+ */
+export function isBadWatchdogSample(input: {
+  readonly driftMs: number;
+  readonly histMaxMs: number;
+  readonly histP99Ms: number;
+  readonly badSampleThresholdMs: number;
+  readonly badSampleP99ThresholdMs: number;
+}): boolean {
+  return (
+    input.driftMs >= input.badSampleThresholdMs ||
+    input.histMaxMs >= input.badSampleThresholdMs ||
+    input.histP99Ms >= input.badSampleP99ThresholdMs
+  );
+}
+
+/**
+ * Pure predicate: should the watchdog treat the UI as "watched active"?
+ * Chat must be open with recent user input or turn activity (design §Detection).
+ */
+export function isWatchdogWatchedActive(input: {
+  readonly chatActive: boolean;
+  readonly sampleMs: number;
+  readonly lastInputMs: number;
+  readonly lastTurnActivityMs: number;
+  readonly activityWindowMs?: number;
+}): boolean {
+  if (!input.chatActive) return false;
+  const lastActivity = Math.max(input.lastInputMs, input.lastTurnActivityMs);
+  if (lastActivity <= 0) return false;
+  const windowMs = input.activityWindowMs ?? WATCHDOG_ACTIVITY_WINDOW_MS;
+  return input.sampleMs - lastActivity < windowMs;
+}
+
+export type WatchdogEvaluateResult =
+  | { readonly action: 'none'; readonly consecutiveBadSamples: number }
+  | {
+      readonly action: 'fire';
+      readonly reason: WatchdogReason;
+      readonly consecutiveBadSamples: number;
+      readonly snapshot: WatchdogSnapshot;
+    };
+
+/**
+ * Pure sample evaluator. Caller owns wall-clock sampling and histogram reads;
+ * this decides whether to fire (and why) given thresholds + heartbeats.
+ */
+export function evaluateWatchdogSample(input: {
+  readonly sampleMs: number;
+  readonly driftMs: number;
+  readonly histMaxMs: number;
+  readonly histP99Ms: number;
+  readonly consecutiveBadSamplesBefore: number;
+  readonly armedAtMs: number;
+  readonly recoveryRelaunch: boolean;
+  readonly hasUiCommit: boolean;
+  readonly suspended: boolean;
+  readonly chatActive: boolean;
+  readonly lastInputMs: number;
+  readonly lastTurnActivityMs: number;
+  readonly lastUiCommitMs: number;
+  readonly badSampleThresholdMs: number;
+  readonly badSampleP99ThresholdMs: number;
+  readonly consecutiveBadSamplesRequired: number;
+  readonly staleWindowMs: number;
+  readonly hardStallThresholdMs: number;
+}): WatchdogEvaluateResult {
+  const isBad = isBadWatchdogSample({
+    driftMs: input.driftMs,
+    histMaxMs: input.histMaxMs,
+    histP99Ms: input.histP99Ms,
+    badSampleThresholdMs: input.badSampleThresholdMs,
+    badSampleP99ThresholdMs: input.badSampleP99ThresholdMs,
+  });
+  const consecutiveBadSamples = isBad ? input.consecutiveBadSamplesBefore + 1 : 0;
+
+  if (input.sampleMs < input.armedAtMs) {
+    return { action: 'none', consecutiveBadSamples };
+  }
+  if (input.recoveryRelaunch && !input.hasUiCommit) {
+    return { action: 'none', consecutiveBadSamples };
+  }
+  if (input.suspended) {
+    return { action: 'none', consecutiveBadSamples };
+  }
+  if (
+    !isWatchdogWatchedActive({
+      chatActive: input.chatActive,
+      sampleMs: input.sampleMs,
+      lastInputMs: input.lastInputMs,
+      lastTurnActivityMs: input.lastTurnActivityMs,
+    })
+  ) {
+    return { action: 'none', consecutiveBadSamples };
+  }
+
+  const msSinceLastUiCommit = input.sampleMs - input.lastUiCommitMs;
+  const msSinceLastInput = input.lastInputMs > 0 ? input.sampleMs - input.lastInputMs : -1;
+  const msSinceLastTurnActivity =
+    input.lastTurnActivityMs > 0 ? input.sampleMs - input.lastTurnActivityMs : -1;
+
+  const baseSnapshot = {
+    consecutiveBadSamples,
+    msSinceLastUiCommit,
+    msSinceLastInput,
+    msSinceLastTurnActivity,
+    lastSampleDriftMs: input.driftMs,
+    lastHistogramMaxMs: input.histMaxMs,
+    lastHistogramP99Ms: input.histP99Ms,
+  };
+
+  if (input.driftMs >= input.hardStallThresholdMs) {
+    return {
+      action: 'fire',
+      reason: 'hard-stall',
+      consecutiveBadSamples,
+      snapshot: { reason: 'hard-stall', ...baseSnapshot },
+    };
+  }
+
+  if (
+    consecutiveBadSamples >= input.consecutiveBadSamplesRequired &&
+    msSinceLastUiCommit >= input.staleWindowMs
+  ) {
+    const lastActivity = Math.max(input.lastInputMs, input.lastTurnActivityMs);
+    // Stale only when UI progress AND recent user/turn activity have both gone quiet.
+    // "No UI commit or turn activity" is the progress signal; activity age gates
+    // false positives right after the user typed or a turn just started.
+    if (lastActivity > 0 && input.sampleMs - lastActivity >= input.staleWindowMs) {
+      return {
+        action: 'fire',
+        reason: 'active-stale',
+        consecutiveBadSamples,
+        snapshot: { reason: 'active-stale', ...baseSnapshot },
+      };
+    }
+  }
+
+  return { action: 'none', consecutiveBadSamples };
+}
+
+/**
+ * True when a reducer action represents live turn / provider progress that should
+ * refresh `lastTurnActivityMs` (design: update on turn start, provider events,
+ * turn complete/reset). Keeps long agentic turns inside the watched-active window.
+ * Intentionally excludes idle chrome (menu frames, capacity, settings, pressure).
+ */
+export function isWatchdogTurnProgressAction(actionType: string): boolean {
+  return (
+    actionType === 'turn/start' ||
+    actionType === 'turn/reset' ||
+    actionType === 'classified' ||
+    actionType === 'intent' ||
+    actionType === 'engagement' ||
+    actionType === 'phase/panel' ||
+    actionType === 'phase/synthesis' ||
+    actionType === 'tier-start' ||
+    actionType.startsWith('stream/') ||
+    actionType.startsWith('final') ||
+    actionType === 'error' ||
+    actionType === 'done'
+  );
 }
 
 const DEFAULT_WATCHDOG: Omit<WatchdogOptions, 'onUnresponsive' | 'isTty'> = {
@@ -614,61 +797,31 @@ export function createWatchdog(opts: WatchdogOptions): WatchdogHeartbeat {
       histogram.reset();
     }
 
-    const isBadSample =
-      drift >= opts.badSampleThresholdMs ||
-      histMax >= opts.badSampleThresholdMs ||
-      histP99 >= opts.badSampleP99ThresholdMs;
+    const decision = evaluateWatchdogSample({
+      sampleMs,
+      driftMs: drift,
+      histMaxMs: histMax,
+      histP99Ms: histP99,
+      consecutiveBadSamplesBefore: consecutiveBadSamples,
+      armedAtMs,
+      recoveryRelaunch: opts.recoveryRelaunch,
+      hasUiCommit,
+      suspended,
+      chatActive,
+      lastInputMs,
+      lastTurnActivityMs,
+      lastUiCommitMs,
+      badSampleThresholdMs: opts.badSampleThresholdMs,
+      badSampleP99ThresholdMs: opts.badSampleP99ThresholdMs,
+      consecutiveBadSamplesRequired: opts.consecutiveBadSamplesRequired,
+      staleWindowMs: opts.staleWindowMs,
+      hardStallThresholdMs: opts.hardStallThresholdMs,
+    });
+    consecutiveBadSamples = decision.consecutiveBadSamples;
 
-    if (isBadSample) {
-      consecutiveBadSamples++;
-    } else {
-      consecutiveBadSamples = 0;
-    }
-
-    if (sampleMs < armedAtMs) return;
-    if (opts.recoveryRelaunch && !hasUiCommit) return;
-    if (suspended) return;
-
-    const watchedActive =
-      chatActive &&
-      (lastInputMs > 0 || lastTurnActivityMs > 0) &&
-      (sampleMs - Math.max(lastInputMs, lastTurnActivityMs) < 60_000);
-
-    if (!watchedActive) return;
-
-    if (drift >= opts.hardStallThresholdMs) {
+    if (decision.action === 'fire') {
       fired = true;
-      opts.onUnresponsive({
-        reason: 'hard-stall',
-        consecutiveBadSamples,
-        msSinceLastUiCommit: sampleMs - lastUiCommitMs,
-        msSinceLastInput: lastInputMs > 0 ? sampleMs - lastInputMs : -1,
-        msSinceLastTurnActivity: lastTurnActivityMs > 0 ? sampleMs - lastTurnActivityMs : -1,
-        lastSampleDriftMs: drift,
-        lastHistogramMaxMs: histMax,
-        lastHistogramP99Ms: histP99,
-      });
-      return;
-    }
-
-    if (
-      consecutiveBadSamples >= opts.consecutiveBadSamplesRequired &&
-      sampleMs - lastUiCommitMs >= opts.staleWindowMs
-    ) {
-      const lastActivity = Math.max(lastInputMs, lastTurnActivityMs);
-      if (lastActivity > 0 && sampleMs - lastActivity >= opts.staleWindowMs) {
-        fired = true;
-        opts.onUnresponsive({
-          reason: 'active-stale',
-          consecutiveBadSamples,
-          msSinceLastUiCommit: sampleMs - lastUiCommitMs,
-          msSinceLastInput: lastInputMs > 0 ? sampleMs - lastInputMs : -1,
-          msSinceLastTurnActivity: lastTurnActivityMs > 0 ? sampleMs - lastTurnActivityMs : -1,
-          lastSampleDriftMs: drift,
-          lastHistogramMaxMs: histMax,
-          lastHistogramP99Ms: histP99,
-        });
-      }
+      opts.onUnresponsive(decision.snapshot);
     }
   }, opts.samplerIntervalMs);
 
@@ -810,13 +963,32 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
   let watchdog: WatchdogHeartbeat | null = null;
 
   const store = createInkStore(bridge, (obs) => {
-    if (obs.stateChanged && watchdog !== null) {
+    if (watchdog === null) return;
+    // UI progress: any real state change (chrome commit, stream prose, etc.).
+    if (obs.stateChanged) {
       watchdog.recordUiCommit();
+    }
+    // Turn/provider progress: keep long agentic turns inside the watched-active
+    // 60s window even when individual UI commits are sparse (tool waits).
+    // Gate on turnActive so idle chrome never silently extends the window.
+    if (
+      isWatchdogTurnProgressAction(obs.action.type) &&
+      (obs.after.turnActive ||
+        obs.before.turnActive ||
+        obs.action.type === 'turn/start' ||
+        obs.action.type === 'turn/reset')
+    ) {
+      watchdog.recordTurnActivity();
     }
   });
   bridge.onControlPanelAction((a) => store.dispatch(a));
   const out = createInkOutputSink(store, { color: opts.color, isTty: opts.isTty });
-  const reader = createInkLineReader(bridge);
+  // onSubmit → recordInput (design): chat composer submits arm watched-active.
+  const reader = createInkLineReader(bridge, {
+    onUserActivity: () => {
+      watchdog?.recordInput();
+    },
+  });
   const renderTurn = createTurnDriver(store, { color: opts.color, isTty: opts.isTty });
   const beginTurn = (): void => {
     if (!store.getState().turnActive) store.dispatch({ type: 'turn/start' });

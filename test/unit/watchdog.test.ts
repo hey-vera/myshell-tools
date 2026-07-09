@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, it, vi } from 'vitest';
 import assert from 'node:assert/strict';
 
-import { createWatchdog } from '../../src/interface/ui/mount.tsx';
+import {
+  createWatchdog,
+  evaluateWatchdogSample,
+  isBadWatchdogSample,
+  isWatchdogTurnProgressAction,
+  isWatchdogWatchedActive,
+} from '../../src/interface/ui/mount.tsx';
 import type { WatchdogSnapshot, WatchdogOptions } from '../../src/interface/ui/mount.tsx';
 
 const histogramSample = vi.hoisted(() => ({ maxNs: 0, p99Ns: 0 }));
@@ -34,6 +40,266 @@ function makeOpts(overrides: Partial<WatchdogOptions> = {}): WatchdogOptions & {
     snapshots,
   };
 }
+
+describe('pure watchdog detection helpers', () => {
+  it('isBadWatchdogSample flags drift / max / p99 thresholds', () => {
+    assert.equal(
+      isBadWatchdogSample({
+        driftMs: 2_000,
+        histMaxMs: 0,
+        histP99Ms: 0,
+        badSampleThresholdMs: 2_000,
+        badSampleP99ThresholdMs: 750,
+      }),
+      true,
+    );
+    assert.equal(
+      isBadWatchdogSample({
+        driftMs: 0,
+        histMaxMs: 2_000,
+        histP99Ms: 0,
+        badSampleThresholdMs: 2_000,
+        badSampleP99ThresholdMs: 750,
+      }),
+      true,
+    );
+    assert.equal(
+      isBadWatchdogSample({
+        driftMs: 0,
+        histMaxMs: 0,
+        histP99Ms: 750,
+        badSampleThresholdMs: 2_000,
+        badSampleP99ThresholdMs: 750,
+      }),
+      true,
+    );
+    assert.equal(
+      isBadWatchdogSample({
+        driftMs: 100,
+        histMaxMs: 20,
+        histP99Ms: 20,
+        badSampleThresholdMs: 2_000,
+        badSampleP99ThresholdMs: 750,
+      }),
+      false,
+    );
+  });
+
+  it('isWatchdogWatchedActive requires chat + recent input/turn activity', () => {
+    assert.equal(
+      isWatchdogWatchedActive({
+        chatActive: false,
+        sampleMs: 10_000,
+        lastInputMs: 9_000,
+        lastTurnActivityMs: 0,
+      }),
+      false,
+    );
+    assert.equal(
+      isWatchdogWatchedActive({
+        chatActive: true,
+        sampleMs: 10_000,
+        lastInputMs: 0,
+        lastTurnActivityMs: 0,
+      }),
+      false,
+    );
+    assert.equal(
+      isWatchdogWatchedActive({
+        chatActive: true,
+        sampleMs: 70_000,
+        lastInputMs: 1_000,
+        lastTurnActivityMs: 0,
+      }),
+      false,
+      'activity older than 60s is not watched',
+    );
+    assert.equal(
+      isWatchdogWatchedActive({
+        chatActive: true,
+        sampleMs: 10_000,
+        lastInputMs: 9_500,
+        lastTurnActivityMs: 0,
+      }),
+      true,
+    );
+    assert.equal(
+      isWatchdogWatchedActive({
+        chatActive: true,
+        sampleMs: 90_000,
+        lastInputMs: 0,
+        lastTurnActivityMs: 50_000,
+      }),
+      true,
+      'turn activity within window is enough',
+    );
+  });
+
+  it('evaluateWatchdogSample: hard-stall on large drift while watched active', () => {
+    const result = evaluateWatchdogSample({
+      sampleMs: 20_000,
+      driftMs: 12_000,
+      histMaxMs: 0,
+      histP99Ms: 0,
+      consecutiveBadSamplesBefore: 0,
+      armedAtMs: 0,
+      recoveryRelaunch: false,
+      hasUiCommit: true,
+      suspended: false,
+      chatActive: true,
+      lastInputMs: 15_000,
+      lastTurnActivityMs: 0,
+      lastUiCommitMs: 19_000,
+      badSampleThresholdMs: 2_000,
+      badSampleP99ThresholdMs: 750,
+      consecutiveBadSamplesRequired: 3,
+      staleWindowMs: 8_000,
+      hardStallThresholdMs: 10_000,
+    });
+    assert.equal(result.action, 'fire');
+    if (result.action === 'fire') {
+      assert.equal(result.reason, 'hard-stall');
+      assert.equal(result.snapshot.reason, 'hard-stall');
+      assert.equal(result.snapshot.lastSampleDriftMs, 12_000);
+    }
+  });
+
+  it('evaluateWatchdogSample: active-stale after consecutive bad samples + quiet UI', () => {
+    const result = evaluateWatchdogSample({
+      sampleMs: 30_000,
+      driftMs: 2_500,
+      histMaxMs: 0,
+      histP99Ms: 0,
+      consecutiveBadSamplesBefore: 2, // this sample becomes 3
+      armedAtMs: 0,
+      recoveryRelaunch: false,
+      hasUiCommit: true,
+      suspended: false,
+      chatActive: true,
+      lastInputMs: 20_000,
+      lastTurnActivityMs: 0,
+      lastUiCommitMs: 20_000,
+      badSampleThresholdMs: 2_000,
+      badSampleP99ThresholdMs: 750,
+      consecutiveBadSamplesRequired: 3,
+      staleWindowMs: 8_000,
+      hardStallThresholdMs: 10_000,
+    });
+    assert.equal(result.action, 'fire');
+    if (result.action === 'fire') {
+      assert.equal(result.reason, 'active-stale');
+      assert.equal(result.consecutiveBadSamples, 3);
+    }
+  });
+
+  it('evaluateWatchdogSample: does not fire when UI still committing', () => {
+    const result = evaluateWatchdogSample({
+      sampleMs: 30_000,
+      driftMs: 2_500,
+      histMaxMs: 0,
+      histP99Ms: 0,
+      consecutiveBadSamplesBefore: 5,
+      armedAtMs: 0,
+      recoveryRelaunch: false,
+      hasUiCommit: true,
+      suspended: false,
+      chatActive: true,
+      lastInputMs: 20_000,
+      lastTurnActivityMs: 0,
+      lastUiCommitMs: 29_500, // fresh commit
+      badSampleThresholdMs: 2_000,
+      badSampleP99ThresholdMs: 750,
+      consecutiveBadSamplesRequired: 3,
+      staleWindowMs: 8_000,
+      hardStallThresholdMs: 10_000,
+    });
+    assert.equal(result.action, 'none');
+    assert.equal(result.consecutiveBadSamples, 6);
+  });
+
+  it('evaluateWatchdogSample: does not fire during arm cooldown', () => {
+    const result = evaluateWatchdogSample({
+      sampleMs: 5_000,
+      driftMs: 12_000,
+      histMaxMs: 0,
+      histP99Ms: 0,
+      consecutiveBadSamplesBefore: 0,
+      armedAtMs: 15_000,
+      recoveryRelaunch: false,
+      hasUiCommit: true,
+      suspended: false,
+      chatActive: true,
+      lastInputMs: 4_000,
+      lastTurnActivityMs: 0,
+      lastUiCommitMs: 4_000,
+      badSampleThresholdMs: 2_000,
+      badSampleP99ThresholdMs: 750,
+      consecutiveBadSamplesRequired: 3,
+      staleWindowMs: 8_000,
+      hardStallThresholdMs: 10_000,
+    });
+    assert.equal(result.action, 'none');
+  });
+
+  it('evaluateWatchdogSample: recoveryRelaunch waits for first UI commit', () => {
+    const result = evaluateWatchdogSample({
+      sampleMs: 20_000,
+      driftMs: 12_000,
+      histMaxMs: 0,
+      histP99Ms: 0,
+      consecutiveBadSamplesBefore: 0,
+      armedAtMs: 0,
+      recoveryRelaunch: true,
+      hasUiCommit: false,
+      suspended: false,
+      chatActive: true,
+      lastInputMs: 15_000,
+      lastTurnActivityMs: 0,
+      lastUiCommitMs: 0,
+      badSampleThresholdMs: 2_000,
+      badSampleP99ThresholdMs: 750,
+      consecutiveBadSamplesRequired: 3,
+      staleWindowMs: 8_000,
+      hardStallThresholdMs: 10_000,
+    });
+    assert.equal(result.action, 'none');
+  });
+
+  it('evaluateWatchdogSample: good sample resets consecutive bad count', () => {
+    const result = evaluateWatchdogSample({
+      sampleMs: 20_000,
+      driftMs: 10,
+      histMaxMs: 5,
+      histP99Ms: 5,
+      consecutiveBadSamplesBefore: 4,
+      armedAtMs: 0,
+      recoveryRelaunch: false,
+      hasUiCommit: true,
+      suspended: false,
+      chatActive: true,
+      lastInputMs: 15_000,
+      lastTurnActivityMs: 0,
+      lastUiCommitMs: 19_000,
+      badSampleThresholdMs: 2_000,
+      badSampleP99ThresholdMs: 750,
+      consecutiveBadSamplesRequired: 3,
+      staleWindowMs: 8_000,
+      hardStallThresholdMs: 10_000,
+    });
+    assert.equal(result.action, 'none');
+    assert.equal(result.consecutiveBadSamples, 0);
+  });
+
+  it('isWatchdogTurnProgressAction covers stream/turn paths, not idle chrome', () => {
+    assert.equal(isWatchdogTurnProgressAction('turn/start'), true);
+    assert.equal(isWatchdogTurnProgressAction('stream/prose'), true);
+    assert.equal(isWatchdogTurnProgressAction('tier-start'), true);
+    assert.equal(isWatchdogTurnProgressAction('final'), true);
+    assert.equal(isWatchdogTurnProgressAction('chrome/replace'), false);
+    assert.equal(isWatchdogTurnProgressAction('capacity/sync'), false);
+    assert.equal(isWatchdogTurnProgressAction('commit/raw'), false);
+  });
+});
 
 describe('createWatchdog', () => {
   beforeEach(() => {
@@ -269,6 +535,30 @@ describe('createWatchdog', () => {
 
     heartbeat.stop();
     assert.ok(opts.snapshots.length >= 1, `expected at least 1 snapshot, got ${opts.snapshots.length}`);
+    assert.equal(opts.snapshots[0]!.reason, 'hard-stall');
+  });
+
+  it('turn activity alone (no input) can arm watched-active for hard-stall', () => {
+    let nowMs = 1_000;
+    const opts = makeOpts({
+      armCooldownMs: 0,
+      now: () => nowMs,
+    });
+    const heartbeat = createWatchdog(opts);
+    heartbeat.setChatActive(true);
+    // Simulate long-running turn heartbeats without composer input.
+    heartbeat.recordTurnActivity();
+
+    for (let i = 0; i < 2; i++) {
+      nowMs += 500;
+      vi.advanceTimersByTime(500);
+    }
+
+    nowMs += 12_000;
+    vi.advanceTimersByTime(500);
+
+    heartbeat.stop();
+    assert.ok(opts.snapshots.length >= 1, `expected hard-stall from turn activity, got ${opts.snapshots.length}`);
     assert.equal(opts.snapshots[0]!.reason, 'hard-stall');
   });
 });
