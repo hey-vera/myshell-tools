@@ -117,6 +117,7 @@ import { vendorNeutralRoute } from './vendor-neutral-route.js';
 import { opencodePoolForModel, selectOpencodeAccount, selectSubscriptionAccount } from './opencode-account-routing.js';
 import { accountEnvFor } from '../infra/subscriptions.js';
 import type { SubscriptionAccount } from '../infra/subscriptions.js';
+import { routingReceiptFromRun } from './turn-routing-receipt.js';
 
 function blockedCodeForError(
   category: import('../providers/port.js').CliError['category'],
@@ -1165,6 +1166,13 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           : {}),
       ...(candidate.workTrace !== undefined ? { workTrace: candidate.workTrace } : {}),
       ...(outcome.toolEvents.length > 0 ? { toolEvents: outcome.toolEvents } : {}),
+      // Preserve visible-dispatch fields from the parent candidate (same seat/model).
+      ...(candidate.accountId !== undefined ? { accountId: candidate.accountId } : {}),
+      ...(candidate.accountLabel !== undefined ? { accountLabel: candidate.accountLabel } : {}),
+      ...(candidate.reasoningEffort !== undefined
+        ? { reasoningEffort: candidate.reasoningEffort }
+        : {}),
+      ...(candidate.routeReason !== undefined ? { routeReason: candidate.routeReason } : {}),
     };
     acceptedRun = repairedRun;
     return makeCandidate(repairedRun, candidate.disposition);
@@ -1701,6 +1709,14 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
 
     lastOutput = finalText ?? (errored?.message ?? '');
     if (success) {
+      // Visible-dispatch fields: actual who/why for the end-of-turn receipt.
+      // Prefer capability-fit reason when present; else classification rationale.
+      // Never fabricate costs or invent a reason the router did not produce.
+      const routeReason =
+        decision.capabilityReasons?.[0] ??
+        (classification.rationale.trim().length > 0
+          ? classification.rationale
+          : undefined);
       acceptedRun = {
         content: lastOutput,
         tier: decision.tier,
@@ -1712,7 +1728,14 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         ...(outcome.sessionId !== undefined ? { sessionId: outcome.sessionId } : {}),
         ...(workTrace !== undefined ? { workTrace } : {}),
         ...(outcome.toolEvents.length > 0 ? { toolEvents: outcome.toolEvents } : {}),
-        ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
+        ...(subscriptionAccount !== null
+          ? {
+              accountId: subscriptionAccount.id,
+              accountLabel: subscriptionAccount.label,
+            }
+          : {}),
+        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+        ...(routeReason !== undefined ? { routeReason } : {}),
       };
     }
 
@@ -1830,6 +1853,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           throw new Error('orchestrate invariant violated: question final without accepted run');
         }
         await appendAcceptedAssistant(deps, acceptedRun);
+        const questionsRouting = routingReceiptFromRun(acceptedRun);
         yield terminalFinal({
           type: 'final',
           success: true,
@@ -1840,6 +1864,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           attempts,
           questions,
           ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
+          ...(questionsRouting !== undefined ? { routingReceipt: questionsRouting } : {}),
         }, 'needs-user');
         return;
       }
@@ -1885,6 +1910,25 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           message:
             'Timed out before the model finished. Not retrying on another vendor (the same work would likely time out again and double the cost). The task may be too broad — narrow it, or raise the timeout in Settings.',
         };
+        const timeoutRouteReason =
+          decision.capabilityReasons?.[0] ??
+          (classification.rationale.trim().length > 0
+            ? classification.rationale
+            : undefined);
+        const timeoutRouting = routingReceiptFromRun({
+          provider: decision.provider,
+          model: decision.model,
+          ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+          ...(subscriptionAccount !== null
+            ? {
+                accountId: subscriptionAccount.id,
+                accountLabel: subscriptionAccount.label,
+              }
+            : {}),
+          ...(timeoutRouteReason !== undefined
+            ? { routeReason: timeoutRouteReason }
+            : {}),
+        });
         const timeoutFinal: Extract<CoreEvent, { readonly type: 'final' }> = {
           type: 'final',
           success: false,
@@ -1896,6 +1940,7 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
           errorCategory: 'timeout',
           provider: decision.provider,
           ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
+          ...(timeoutRouting !== undefined ? { routingReceipt: timeoutRouting } : {}),
           ...(deps.evidenceReceiptV2 === true
             ? (() => {
                 const entries = deps.receiptLedgerSnapshot?.() ?? [];
