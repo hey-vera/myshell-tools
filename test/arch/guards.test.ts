@@ -33,6 +33,8 @@ const SHELL_EXEC_ALLOWLIST = new Set([
   "src/infra/repo-scan.ts",
   "src/infra/repo-ops.ts",
   "src/infra/research-port.ts",
+  // Fail-soft git remote + PATH probes for forge host class (gh/glab); no user shell.
+  "src/infra/workspace-context.ts",
 ]);
 
 /** Recursively collect all .ts files under a directory. Returns [] if dir does not exist. */

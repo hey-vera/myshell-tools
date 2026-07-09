@@ -47,6 +47,7 @@ import { createFileUserMemoryStore, resolveProjectKey } from './infra/user-memor
 export { createFileUserMemoryStore };
 import { resolveMemoryContext } from './core/memory-injection.js';
 import { buildEnvironmentContext } from './core/repo-map.js';
+import { mergeEnvironmentWithForge } from './core/workspace-context.js';
 import {
   buildToolStateContext,
   buildCapabilitySummary,
@@ -56,6 +57,7 @@ import {
 import { refreshCapabilities } from './core/model-capability-refresh.js';
 import { createCapabilityRefreshPort } from './infra/model-capability-port.js';
 import { nodeRepoScanPort } from './infra/repo-scan.js';
+import { detectWorkspaceContext } from './infra/workspace-context.js';
 import { nodeVerifyPort } from './infra/verify-port.js';
 import { createEvidenceSink, createEvidenceSnapshotBuilder } from './infra/evidence-sink.js';
 import { loadConfig, saveConfig, resolvePartnerStyle } from './infra/config.js';
@@ -876,10 +878,15 @@ async function main(): Promise<void> {
     // gather the deterministic block once for the one-shot run. Fully fail-soft
     // (→ ''), NO model call. Kill-switch: config.codebaseAwareness === false → skip.
     // (Phase1 seam: render now carries compact symbols via ranker; reuses ENV cap.)
-    const environmentContext =
-      config.codebaseAwareness === false
-        ? ''
-        : await buildEnvironmentContext(cwd, nodeRepoScanPort).catch(() => '');
+    // P0.19/P0.20 — merge WORKSPACE FORGE vocabulary (always; cheap + partner fluency).
+    const environmentContext = await (async (): Promise<string> => {
+      const envBlock =
+        config.codebaseAwareness === false
+          ? ''
+          : await buildEnvironmentContext(cwd, nodeRepoScanPort).catch(() => '');
+      const forge = await detectWorkspaceContext(cwd).catch(() => null);
+      return mergeEnvironmentWithForge(envBlock, forge);
+    })();
     // TOOL SELF-AWARENESS (tool-state §): render the authoritative "ABOUT THIS
     // TOOL" block from the live env + effective mode + config so the partner
     // answers the user's setup/mode questions from truth. Pure, NO model call.

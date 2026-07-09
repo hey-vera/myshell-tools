@@ -42,6 +42,10 @@ import { resolveMemoryContextDetailed } from '../core/memory-injection.js';
 import { buildEnvironmentContext, type RepoScanPort } from '../core/repo-map.js';
 import { repoCacheKey, type RepoFingerprint } from '../core/repo-identity.js';
 import {
+  formatForgeOrientationLine,
+  mergeEnvironmentWithForge,
+} from '../core/workspace-context.js';
+import {
   buildToolStateContext,
   buildCapabilitySummary,
   type ToolStateProvider,
@@ -50,6 +54,7 @@ import {
 import { refreshCapabilities } from '../core/model-capability-refresh.js';
 import { createCapabilityRefreshPort } from '../infra/model-capability-port.js';
 import { nodeRepoScanPort } from '../infra/repo-scan.js';
+import { detectWorkspaceContext } from '../infra/workspace-context.js';
 import { createFileUserMemoryStore, resolveProjectKey } from '../infra/user-memory-store.js';
 import { createFileTasteLedger } from '../infra/taste-ledger.js';
 import { researchEnabled } from '../core/research-flag.js';
@@ -1377,6 +1382,19 @@ export async function runChatLoop(
         /* best-effort: UI already reflects the cycle */
       });
     });
+    // P0.19/P0.20 — forge orientation dim line ONLY when non-GitHub-default
+    // (GitLab / other / local-only). Fire-and-forget so chat open stays instant;
+    // GitHub is silent (no spam). Fail-soft.
+    void detectWorkspaceContext(activeCwd)
+      .then((forge) => {
+        if (!conversationLive) return;
+        const line = formatForgeOrientationLine(forge);
+        if (line === null) return;
+        out.write(dim(`${line}\n`, out.color));
+      })
+      .catch(() => {
+        /* fail-soft: orientation is cosmetic */
+      });
   }
 
   // Recap on resume: dock a real ※ recap orientation line at the bottom (near
@@ -4263,16 +4281,24 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // it every turn. Mirrors resolveProjectKeyOnce's memoize-once pattern. Fully
       // fail-soft: any scan error → '' (no block), the turn proceeds. NO model
       // call. Kill-switch: config.codebaseAwareness === false → skip entirely.
+      //
+      // P0.19/P0.20 — also merge WORKSPACE FORGE (host class + partner vocabulary)
+      // once per session so the partner adapts PR/MR language without re-detecting.
       let environmentContext: string | undefined;
       const resolveEnvironmentOnce = async (): Promise<string> => {
         if (environmentContext !== undefined) return environmentContext;
         if (mutableCtx.config.codebaseAwareness === false) {
-          environmentContext = '';
+          // Still detect forge vocabulary even when the full repo-map is off —
+          // forge class is cheap and partner fluency does not need the ranked map.
+          const forge = await detectWorkspaceContext(activeCwd).catch(() => null);
+          environmentContext = mergeEnvironmentWithForge('', forge);
           return environmentContext;
         }
-        environmentContext = await buildEnvironmentContext(activeCwd, nodeRepoScanPort).catch(
-          () => '',
-        );
+        const [envBlock, forge] = await Promise.all([
+          buildEnvironmentContext(activeCwd, nodeRepoScanPort).catch(() => ''),
+          detectWorkspaceContext(activeCwd).catch(() => null),
+        ]);
+        environmentContext = mergeEnvironmentWithForge(envBlock, forge);
         return environmentContext;
       };
 
