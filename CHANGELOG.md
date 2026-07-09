@@ -4,6 +4,33 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.166.0] - 2026-07-09 — checklist completion wave
+
+Ships the complete-checklist-wave on main after **3.165.0** (#140): partner-depth
+checkpoints and safe undo, thin GitLab MR list, checklist smoke, and honest
+README / board / checklist status. Acceptances remain human-smoke pending;
+`npm publish` is owner-only.
+
+### Added
+- **AI edit checkpoints (P2.1)** — capture a pre-snapshot checkpoint after
+  successful model turns so later undo has a real restore point
+  (`captureAiEditCheckpoint` + menu wire).
+- **Safe undo apply (P2.2)** — undo apply behind conflict plan, oversight
+  confirm, and commandGate (`applyUndoActions` from repo-ops).
+- **Thin GitLab MR list (P1.7 partial)** — allowlisted `glab mr list` when the
+  workspace is GitLab and `glab` is present; MR natural-language intents;
+  GitLab routes prefer glab over GitHub PR language.
+- **`npm run smoke:checklist` (S.2)** — marker smoke that fails soft without a
+  TTY for CI/local checklist verification.
+
+### Changed
+- **README daily-use honesty (S.3)** — status and “Current daily use” table for
+  multi-goal one-chat (Effort Mode, panel honesty, goals, forge PR/MR, trust
+  bar with no fake quota %).
+- **Checklist + project board audit** — mark P1.3/P1.4/S.5 done, P1.6/P1.7
+  partial, P2.1/P2.2/S.2/S.3 done this wave; acceptances left open for human
+  Replit/local smoke.
+
 ## [3.165.0] - 2026-07-09 — actualization UX and reliability wave
 
 Subscription-native one-chat partner polish: truth in Effort Mode and Accounts,
