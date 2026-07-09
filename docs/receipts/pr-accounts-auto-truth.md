@@ -2,7 +2,9 @@
 
 **Date:** 2026-07-09  
 **Branch:** `actualize/pr-accounts-auto-truth`  
+**SHA:** `da643d3`  
 **Base:** `origin/main`  
+**PR:** https://github.com/hey-vera/myshell-tools/pull/134  
 **Checklist:** Wave P1.2 / PR 8 (`docs/actualization-checklist-10of10-2026-07-09.md`)
 
 ## Product rule
