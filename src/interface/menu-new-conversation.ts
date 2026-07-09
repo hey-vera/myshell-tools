@@ -36,45 +36,20 @@ import type { AppConfig } from '../infra/config.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
 import type { OutputSink } from './render.js';
 import { readMenuKey, NAV_ESC, NAV_LEFT, getMenuStack } from './menu-key-confirm.js';
-import { sectionBox, titleBox } from '../ui/tui.js';
+import { titleBox } from '../ui/tui.js';
 import { nodeRepoScanPort } from '../infra/repo-scan.js';
 import { resolveWorkspaceRoot } from './workspace.js';
 import { runWorkspacePicker } from './workspace-picker.js';
 import { runModeSelect } from './menu-settings.js';
 import { resolveAutoMode } from './menu-auto-mode.js';
 import { navFooterText } from './ui/nav-footer.js';
+import { renderEffortModeBox } from './menu-render.js';
 
 /** The screen's outcome handed back to the `[n]` handler in menu.ts. */
 export type NewConversationOutcome =
   | { readonly kind: 'create'; readonly workspaceRoot: string }
   | { readonly kind: 'back' }
   | { readonly kind: 'exit' };
-
-// ---------------------------------------------------------------------------
-// Effort Mode box — locked Slice 1 copy, rendered verbatim (menu-render.ts is
-// read-only for this slice, so the locked copy is reproduced here rather than
-// imported). Identical to the home Effort box: 48-column rounded sectionBox,
-// two sections split by an internal divider.
-// ---------------------------------------------------------------------------
-
-const EFFORT_BOX_WIDTH = 48;
-
-const EFFORT_SECTION_HEADER: readonly string[] = [
-  'Effort Mode:  Auto (smart)',
-  'Picks the right effort each turn from task,',
-  'risk, and provider headroom.',
-];
-
-const EFFORT_SECTION_FOOTER: readonly string[] = [
-  'm = switch modes' + ' '.repeat(16) + 'Auto recommended',
-];
-
-function renderEffortModeBox(color: boolean): string {
-  return sectionBox(
-    [EFFORT_SECTION_HEADER.slice(), EFFORT_SECTION_FOOTER.slice()],
-    { width: EFFORT_BOX_WIDTH, color },
-  );
-}
 
 /**
  * Run the New Conversation screen until the user picks a workspace ( returns
@@ -108,7 +83,7 @@ export async function runNewConversationScreen(
       if (getMenuStack().exitRequested) return { kind: 'exit' };
 
       out.write('\n');
-      out.write(renderEffortModeBox(out.color) + '\n\n');
+      out.write(renderEffortModeBox(mutableCtx.config.mode, out.color) + '\n\n');
       out.write(titleBox('New Conversation', { padding: 6, color: out.color }) + '\n\n');
       out.write('         [1] Current\n');
       out.write(`             ${currentRoot}\n\n`);

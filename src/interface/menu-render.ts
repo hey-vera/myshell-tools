@@ -2,7 +2,8 @@
  * src/interface/menu-render.ts — Slice 1 home render skeleton (locked).
  *
  * Renders the locked home-menu skeleton from docs/menu-build-spec-final.md:
- *   1. Effort Mode rounded box (sectionBox, two sections + internal divider).
+ *   1. Effort Mode rounded box (sectionBox, two sections + internal divider) —
+ *      LIVE from config.mode (not a hardcoded Auto mockup).
  *   2. One `Recent (<workspace label>):` list (no workspace location column yet —
  *      workspace-root resolution is a later slice; the label is just the current
  *      cwd basename, never fabricated).
@@ -11,10 +12,6 @@
  *      not signed in).
  *   5. `Choice: ▌` prompt line.
  *   6. Root footer `ESC to exit`.
- *
- * The Effort Mode copy is rendered VERBATIM per the Slice 1 locked mockup. The
- * internal `mode`/`ConversationMode` rename and dynamic effort selection are
- * Slice 2 — Slice 1 ships the locked skeleton copy as-is.
  */
 
 // See docs/menu-build-spec-final.md (locked slices + Slice 3 doctor de-advertise) + kern-spec.md
@@ -26,6 +23,9 @@ import type { EnvironmentStatus } from '../providers/detect.js';
 import type { UpdateCheckResult } from '../infra/update-check.js';
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
 import type { HealthIssue } from '../infra/health.js';
+import type { Mode } from '../core/policy.js';
+import { levelLabel, LEVEL_DESC, migrateMode } from '../core/mode-levels.js';
+import type { Level } from '../core/mode-levels.js';
 import { sectionBox, titleBox } from '../ui/tui.js';
 import type { OutputSink } from './render.js';
 import type { MenuContext } from './menu.js';
@@ -38,24 +38,74 @@ import {
 import { workspaceLabel, normalizeWorkspacePath } from './workspace.js';
 
 // ---------------------------------------------------------------------------
-// Effort Mode box — locked Slice 1 copy (verbatim from the mockup).
+// Effort Mode box — live from config.mode (shared pure helper).
 // ---------------------------------------------------------------------------
 
 /** Inner content width matching the locked mockup box (48 columns of text). */
-const EFFORT_BOX_WIDTH = 48;
+export const EFFORT_BOX_WIDTH = 48;
 
-const EFFORT_SECTION_HEADER: readonly string[] = [
-  'Effort Mode:  Auto (smart)',
-  'Picks the right effort each turn from task,',
-  'risk, and provider headroom.',
-];
+/**
+ * User-facing short label for a persisted config.mode:
+ *   undefined → Auto (smart); cost-saver → Budget; balanced → Balanced;
+ *   quality-first → Max (via migrateMode). PURE.
+ */
+export function effortModeShortLabel(mode: Mode | string | null | undefined): string {
+  const level = migrateMode(mode);
+  if (level === 'auto') return 'Auto (smart)';
+  return levelLabel(level);
+}
 
-// `m = switch modes` (16) + 16 spaces + `Auto recommended` (16) = 48 columns,
-// right-aligning `Auto recommended` near the box's right border.
-const EFFORT_SECTION_FOOTER: readonly string[] = [
-  'm = switch modes' + ' '.repeat(16) + 'Auto recommended',
-];
+/** Word-wrap plain text to `width` columns (no ANSI). PURE. */
+function wrapWords(text: string, width: number): string[] {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [''];
+  const lines: string[] = [];
+  let cur = '';
+  for (const w of words) {
+    if (cur.length === 0) {
+      cur = w;
+    } else if (cur.length + 1 + w.length <= width) {
+      cur = `${cur} ${w}`;
+    } else {
+      lines.push(cur);
+      cur = w;
+    }
+  }
+  if (cur.length > 0) lines.push(cur);
+  return lines;
+}
 
+/**
+ * Build the two sectionBox sections for the Effort Mode box from a persisted
+ * config.mode. Shared by home and New Conversation. PURE.
+ *
+ * Header: `Effort Mode:  <label>` + LEVEL_DESC lines (wrapped to width 48).
+ * Footer: `m = switch modes` left + current short label right-aligned.
+ */
+export function buildEffortModeSections(
+  mode: Mode | string | null | undefined,
+): { header: string[]; footer: string[] } {
+  const level: Level = migrateMode(mode);
+  const short = effortModeShortLabel(mode);
+  const headerLine = `Effort Mode:  ${short}`;
+  const descLines = wrapWords(LEVEL_DESC[level], EFFORT_BOX_WIDTH);
+  const left = 'm = switch modes';
+  const gap = Math.max(1, EFFORT_BOX_WIDTH - left.length - short.length);
+  const footerLine = left + ' '.repeat(gap) + short;
+  return {
+    header: [headerLine, ...descLines],
+    footer: [footerLine],
+  };
+}
+
+/** Render the 48-wide Effort Mode sectionBox for the given mode. PURE (no I/O). */
+export function renderEffortModeBox(
+  mode: Mode | string | null | undefined,
+  color: boolean,
+): string {
+  const { header, footer } = buildEffortModeSections(mode);
+  return sectionBox([header, footer], { width: EFFORT_BOX_WIDTH, color });
+}
 // ---------------------------------------------------------------------------
 // Pure helpers (Slice 1 scoped)
 // ---------------------------------------------------------------------------
@@ -234,12 +284,8 @@ export async function renderMainScreen(
 ): Promise<void> {
   out.write('\n');
 
-  // 1. Effort Mode box (locked Slice 1 copy).
-  const effortBox = sectionBox(
-    [EFFORT_SECTION_HEADER.slice(), EFFORT_SECTION_FOOTER.slice()],
-    { width: EFFORT_BOX_WIDTH, color: out.color },
-  );
-  out.write(effortBox + '\n\n');
+  // 1. Effort Mode box — live from config.mode (blank line after for section rhythm).
+  out.write(renderEffortModeBox(mutableCtx.config.mode, out.color) + '\n\n');
 
   // 2. Recent (<current workspace label>): — one list, no workspace split.
   //

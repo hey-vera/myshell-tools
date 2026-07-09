@@ -97,11 +97,12 @@ async function render(
   env: EnvironmentStatus,
   metas: ConversationMeta[] = [],
   currentWorkspaceRoot?: string,
+  config: AppConfig = {} as AppConfig,
 ): Promise<string> {
   const { sink, text } = makeSink();
   await renderMainScreen(
     makeCtx(),
-    { config: {} as AppConfig, env },
+    { config, env },
     metas,
     EMPTY_SPEND,
     sink,
@@ -132,15 +133,20 @@ function makeMeta(overrides: Partial<ConversationMeta> = {}): ConversationMeta {
   };
 }
 
-const EXPECTED_HOME_POPULATED = [
-  '',
+/** Live Auto (smart) Effort box — default when config.mode is unset. */
+const EFFORT_BOX_AUTO = [
   '╭──────────────────────────────────────────────────╮',
   '│  Effort Mode:  Auto (smart)                      │',
-  '│  Picks the right effort each turn from task,     │',
-  '│  risk, and provider headroom.                    │',
+  '│  smart default — picks the effective level per   │',
+  '│  task from how the turn is going                 │',
   '├──────────────────────────────────────────────────┤',
-  '│  m = switch modes                Auto recommended│',
+  '│  m = switch modes                    Auto (smart)│',
   '╰──────────────────────────────────────────────────╯',
+].join('\n');
+
+const EXPECTED_HOME_POPULATED = [
+  '',
+  EFFORT_BOX_AUTO,
   '',
   'Recent (myshell-tools):',
   '  [1] 1h  Test conversation  · budget',
@@ -164,13 +170,7 @@ const EXPECTED_HOME_POPULATED = [
 
 const EXPECTED_HOME_EMPTY_SIGNED_IN = [
   '',
-  '╭──────────────────────────────────────────────────╮',
-  '│  Effort Mode:  Auto (smart)                      │',
-  '│  Picks the right effort each turn from task,     │',
-  '│  risk, and provider headroom.                    │',
-  '├──────────────────────────────────────────────────┤',
-  '│  m = switch modes                Auto recommended│',
-  '╰──────────────────────────────────────────────────╯',
+  EFFORT_BOX_AUTO,
   '',
   'Recent (myshell-tools):',
   'No conversations yet.',
@@ -191,13 +191,7 @@ const EXPECTED_HOME_EMPTY_SIGNED_IN = [
 
 const EXPECTED_HOME_EMPTY_NOT_SIGNED_IN = [
   '',
-  '╭──────────────────────────────────────────────────╮',
-  '│  Effort Mode:  Auto (smart)                      │',
-  '│  Picks the right effort each turn from task,     │',
-  '│  risk, and provider headroom.                    │',
-  '├──────────────────────────────────────────────────┤',
-  '│  m = switch modes                Auto recommended│',
-  '╰──────────────────────────────────────────────────╯',
+  EFFORT_BOX_AUTO,
   '',
   'Recent (myshell-tools):',
   'Sign in to start conversations.',
@@ -229,14 +223,60 @@ describe('renderMainScreen — Slice 1 locked home skeleton (populated)', () => 
     assert.ok(out.includes('Effort Mode:'), `expected "Effort Mode:" in:\n${out}`);
   });
 
-  it('contains the locked Effort Mode verbatim copy', async () => {
+  it('contains the live Auto Effort Mode copy when mode is unset', async () => {
     const out = await render(ENV_CLAUDE_AUTHED, [makeMeta()]);
     assert.ok(out.includes('Auto (smart)'), 'effort header shows Auto (smart)');
     assert.ok(
-      out.includes('Picks the right effort each turn from task,'),
-      'effort box shows the locked explanatory copy',
+      out.includes('smart default — picks the effective level per'),
+      'effort box shows LEVEL_DESC for auto',
     );
     assert.ok(out.includes('m = switch modes'), 'effort box advertises m = switch modes');
+  });
+
+  it('reflects Budget when config.mode is cost-saver', async () => {
+    const out = await render(
+      ENV_CLAUDE_AUTHED,
+      [makeMeta()],
+      undefined,
+      { mode: 'cost-saver' } as AppConfig,
+    );
+    assert.ok(out.includes('Effort Mode:  Budget'), 'header shows Budget');
+    assert.ok(
+      out.includes('cheapest models, low/no reasoning effort,'),
+      'shows Budget LEVEL_DESC',
+    );
+    assert.ok(
+      /m = switch modes\s+Budget/.test(out),
+      'footer right-aligns Budget short label',
+    );
+  });
+
+  it('reflects Balanced when config.mode is balanced', async () => {
+    const out = await render(
+      ENV_CLAUDE_AUTHED,
+      [],
+      undefined,
+      { mode: 'balanced' } as AppConfig,
+    );
+    assert.ok(out.includes('Effort Mode:  Balanced'), 'header shows Balanced');
+    assert.ok(
+      /m = switch modes\s+Balanced/.test(out),
+      'footer right-aligns Balanced short label',
+    );
+  });
+
+  it('reflects Max when config.mode is quality-first (migrateMode)', async () => {
+    const out = await render(
+      ENV_CLAUDE_AUTHED,
+      [],
+      undefined,
+      { mode: 'quality-first' } as AppConfig,
+    );
+    assert.ok(out.includes('Effort Mode:  Max'), 'header shows Max');
+    assert.ok(
+      /m = switch modes\s+Max/.test(out),
+      'footer right-aligns Max short label',
+    );
   });
 
   it('contains the Session Manager centered box', async () => {
