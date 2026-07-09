@@ -5,7 +5,7 @@
 
 import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
-import { buildPrompt } from '../../src/core/prompt.ts';
+import { buildPrompt, PARTNER_LAWS } from '../../src/core/prompt.ts';
 
 // ---------------------------------------------------------------------------
 // Basic tier prompt building
@@ -601,6 +601,61 @@ describe('buildPrompt — elite VOICE preamble (review §5)', () => {
       assert.ok(voiceIdx < honestyIdx, `${tier}: elite voice precedes brutal honesty`);
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Partner laws (Wave 7 absorb / PR-A) — always-on compact behavioral ceiling
+// ---------------------------------------------------------------------------
+
+describe('buildPrompt — partner laws (Wave 7 PR-A)', () => {
+  it('PARTNER_LAWS export is compact (≤8 body lines after the header)', () => {
+    const lines = PARTNER_LAWS.trimEnd().split('\n');
+    assert.ok(lines[0]?.startsWith('PARTNER LAWS'), 'starts with PARTNER LAWS header');
+    const body = lines.slice(1).filter((l) => l.trim().length > 0);
+    assert.ok(body.length <= 8, `body must be ≤8 lines, got ${body.length}`);
+    assert.ok(body.length >= 6, `body should cover the six core laws, got ${body.length}`);
+  });
+
+  for (const tier of TIERS) {
+    it(`${tier}: embeds the full PARTNER_LAWS block`, () => {
+      const result = buildPrompt(tier, 'task');
+      assert.ok(
+        result.includes(PARTNER_LAWS),
+        `${tier} prompt must embed PARTNER_LAWS verbatim`,
+      );
+    });
+
+    it(`${tier}: carries each core partner law`, () => {
+      const result = buildPrompt(tier, 'task');
+      assert.ok(result.includes('Done = check'), `${tier}: done=check`);
+      assert.ok(result.includes('label Unverified'), `${tier}: Unverified label`);
+      assert.ok(result.includes('No gold-plate'), `${tier}: no gold-plate`);
+      assert.ok(result.includes('No overplan'), `${tier}: no overplan`);
+      assert.ok(result.includes('Grounded claims'), `${tier}: grounded claims`);
+      assert.ok(result.includes('Effort thrift'), `${tier}: effort thrift`);
+      assert.ok(result.includes('Multi-goal'), `${tier}: multi-goal`);
+    });
+
+    it(`${tier}: partner laws sit after elite voice and with brutal honesty (still present)`, () => {
+      const result = buildPrompt(tier, 'task');
+      const voiceIdx = result.indexOf('partner a sharp builder wishes they had');
+      const lawsIdx = result.indexOf('PARTNER LAWS (always on)');
+      const honestyIdx = result.indexOf('respectful brutal honesty');
+      assert.ok(voiceIdx >= 0 && lawsIdx >= 0 && honestyIdx >= 0);
+      assert.ok(voiceIdx < lawsIdx, `${tier}: elite voice precedes partner laws`);
+      assert.ok(lawsIdx < honestyIdx, `${tier}: partner laws precede brutal honesty block`);
+      // Honesty must not be weakened or dropped when laws land.
+      assert.ok(
+        result.includes('no sycophancy or flattery'),
+        `${tier}: brutal honesty retained alongside partner laws`,
+      );
+    });
+  }
+
+  it('partner laws remain present on goal turns (always-on persona, not envelope tail)', () => {
+    const result = buildPrompt('ic', 'Goal: ship it', undefined, undefined, { goalTurn: true });
+    assert.ok(result.includes(PARTNER_LAWS), 'goal turns still carry partner laws');
+  });
 });
 
 describe('buildPrompt — adaptive-explanation ladder (review §2, the #1 ask)', () => {
