@@ -124,7 +124,7 @@ test('hitTestLegend: full legend maps menu / mode / panel / interrupt', () => {
     zones.map((z) => z.id),
     ['menu', 'mode', 'panel', 'interrupt'],
   );
-  // First char of "← menu"
+  // First char of "Alt+← menu"
   assert.equal(hitTestLegend(0, columns), 'menu');
   // Middot gap is a miss
   const menuEnd = zones[0]!.end;
