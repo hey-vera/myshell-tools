@@ -45,6 +45,7 @@ import type {
   GoalView,
   UiState,
 } from './state.js';
+import { resolveStatusHeadline } from './reduce.js';
 
 // ---------------------------------------------------------------------------
 // currentTool → a scannable live-action label
@@ -595,6 +596,13 @@ export interface StatusLineProps {
   readonly frame: string;
   /** Elapsed seconds the turn has been visible (injected) → the `· Ns` suffix. */
   readonly elapsedSecs?: number;
+  /**
+   * Injected wall-clock (ms) for honest stall chrome. When provided and the turn
+   * has had no liveness event for ≥12s, the headline becomes
+   * `stalled · last <label> · Ns` (display-only). Omitted → never shows stall
+   * (hermetic tests that only assert progressive labels).
+   */
+  readonly nowMs?: number;
   readonly color?: boolean;
 }
 
@@ -602,6 +610,8 @@ interface SpinnerStatusLineProps {
   readonly state: UiState;
   /** Elapsed seconds the turn has been visible (injected) → the `· Ns` suffix. */
   readonly elapsedSecs?: number;
+  /** Injected wall-clock (ms) for stall detection; see {@link StatusLineProps.nowMs}. */
+  readonly nowMs?: number;
   readonly color?: boolean;
 }
 
@@ -615,7 +625,7 @@ interface SpinnerStatusLineProps {
  * output to the prior {@link StatusLine} (same braille cycle, same verb, same
  * elapsed) — the smokes that scrape the braille frame + `· Ns` see no change.
  */
-function SpinnerStatusLine({ state, elapsedSecs, color = true }: SpinnerStatusLineProps): React.ReactElement {
+function SpinnerStatusLine({ state, elapsedSecs, nowMs, color = true }: SpinnerStatusLineProps): React.ReactElement {
   const [frameIndex, setFrameIndex] = useState(0);
   useEffect(() => {
     if (!state.turnActive) {
@@ -634,6 +644,7 @@ function SpinnerStatusLine({ state, elapsedSecs, color = true }: SpinnerStatusLi
       state={state}
       frame={frame}
       {...(elapsedSecs !== undefined ? { elapsedSecs } : {})}
+      {...(nowMs !== undefined ? { nowMs } : {})}
       color={color}
     />
   );
@@ -644,20 +655,33 @@ function SpinnerStatusLine({ state, elapsedSecs, color = true }: SpinnerStatusLi
  * verb mirrors render.ts's spinnerLabel exactly:
  *   - panel mode → panelLabel() ("Waiting on N models · claude ✓ · codex …" /
  *     "Synthesizing N answers…");
- *   - otherwise → "<workLabel>… · honest work summary".
+ *   - otherwise → "<workLabel>… · honest work summary";
+ *   - stall (no event ≥12s) → `stalled · last <label> · Ns` (display-only).
  * The braille `frame` and the `· Ns` elapsed come from the injected tick/clock so
  * this component never reads the system clock.
  */
-export function StatusLine({ state, frame, elapsedSecs, color = true }: StatusLineProps): React.ReactElement {
+export function StatusLine({ state, frame, elapsedSecs, nowMs, color = true }: StatusLineProps): React.ReactElement {
   const s = state.stream;
   const elapsed = elapsedSecs !== undefined ? `${elapsedSecs}s` : '';
   if (s.phase === 'panel' || s.phase === 'synthesis') {
     // Panel mode keeps the already-agent-shaped panelLabel ("Waiting on N
-    // models · claude ✓ · codex …" / "Synthesizing N answers…").
+    // models · claude ✓ · codex …" / "Synthesizing N answers…"). Stall still
+    // applies when silence is real — panel waiting can hang just like a single
+    // model turn.
     const panelists = s.panelists.map((p) => ({
       provider: String(p.provider),
       state: (p.state === 'done' ? 'done' : 'running') as PanelistState,
     }));
+    const resolved = resolveStatusHeadline(s, nowMs, '');
+    if (resolved.stalled) {
+      return (
+        <Box>
+          <Text {...(color ? { color: 'yellow' as const } : {})}>{frame}</Text>
+          <Text>{` ${resolved.headline}`}</Text>
+          <Text dimColor={color}>{'   esc to interrupt'}</Text>
+        </Box>
+      );
+    }
     const verb = panelLabel(panelists, s.synthesizing, color);
     return (
       <Box>
@@ -670,14 +694,25 @@ export function StatusLine({ state, frame, elapsedSecs, color = true }: StatusLi
   // Non-panel: LEAD with the live ACTION — the single most informative real-time
   // signal — i.e. the real tool verb + target ("editing src/auth/mw.ts") from the
   // most recent tool event; fall back to the real workLabel ("Preparing" /
-  // "Thinking" / "Responding") when no tool is active. Then the demoted, DIM
-  // detail: a strictly derived work summary
+  // "Thinking" / "Responding") when no tool is active. After ≥12s of silence,
+  // honest stall chrome replaces the progressive verb (never invents work).
+  // Then the demoted, DIM detail: a strictly derived work summary
   // (running agents, completed agents, visible multi-goal count, elapsed). NO
   // token figure is shown here: mid-run there is no honest token count for the
   // Claude subscription provider, so we never render the old fabricated
   // `streamedChars/4` proxy.
   const liveAction = liveActionLabel(s.currentTool);
-  const headline = liveAction.length > 0 ? liveAction : s.workLabel;
+  const resolved = resolveStatusHeadline(s, nowMs, liveAction);
+  if (resolved.stalled) {
+    return (
+      <Box>
+        <Text {...(color ? { color: 'yellow' as const } : {})}>{frame}</Text>
+        <Text>{` ${resolved.headline}`}</Text>
+        <Text dimColor={color}>{'   esc to interrupt'}</Text>
+      </Box>
+    );
+  }
+  const headline = resolved.headline;
   const summary = summarizeWork(state);
   const detailParts: string[] = [];
   if (summary.active > 0) detailParts.push(`◐ ${summary.active} active`);
@@ -759,14 +794,20 @@ export function StatusBlock({
   const turnStartRef = React.useRef<number | null>(null);
   const [elapsedSecs, setElapsedSecs] = useState<number | undefined>(undefined);
 
+  // Sampled wall-clock for stall chrome (recomputed on the 1Hz tick + state push).
+  // Undefined when no clock is injected → StatusLine never claims stall.
+  const [nowMs, setNowMs] = useState<number | undefined>(undefined);
+
   // The 1Hz elapsed-seconds tick (when a clock is injected). Stops + resets when
   // the turn ends so an idle UI has zero timers. The cadence is now 1s, not 80ms:
   // elapsed only changes whole seconds, so a slower interval renders identically
-  // while cutting this block's tick-driven re-renders by ~12x.
+  // while cutting this block's tick-driven re-renders by ~12x. The same tick
+  // refreshes `nowMs` so stall chrome can flip without a stream event.
   useEffect(() => {
     if (!state.turnActive) {
       turnStartRef.current = null;
       setElapsedSecs(undefined);
+      setNowMs(undefined);
       return;
     }
     if (clock === undefined) {
@@ -776,9 +817,12 @@ export function StatusBlock({
       turnStartRef.current = clock();
       setElapsedSecs(0);
     }
+    setNowMs(clock());
     const timer = setInterval(() => {
+      const t = clock();
+      setNowMs(t);
       if (turnStartRef.current !== null) {
-        const secs = Math.floor((clock() - turnStartRef.current) / 1000);
+        const secs = Math.floor((t - turnStartRef.current) / 1000);
         setElapsedSecs(secs >= 0 ? secs : 0);
       }
     }, 1000);
@@ -842,6 +886,7 @@ export function StatusBlock({
       <SpinnerStatusLine
         state={state}
         {...(elapsedSecs !== undefined ? { elapsedSecs } : {})}
+        {...(nowMs !== undefined ? { nowMs } : {})}
         color={color}
       />
     </Box>

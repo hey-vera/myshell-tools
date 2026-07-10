@@ -208,6 +208,21 @@ export interface StreamView {
    */
   readonly workLabel: string;
   /**
+   * Wall-clock ms of the most recent liveness-relevant stream event (turn/start,
+   * tier-start, tool, prose, phase, reasoning, …). Injected via `reduce(..., nowMs)`
+   * from the impure store boundary — the pure reducer never calls `Date.now`.
+   * `null` when idle / never stamped. Status chrome uses this for honest stall
+   * detection (≥12s without a real event); display-only, never auto-aborts.
+   */
+  readonly lastEventAt: number | null;
+  /**
+   * Progressive pulse label frozen at the last liveness event: Preparing /
+   * Thinking / tool verb / Responding (or a verbose tier label). Used by the
+   * stall line (`stalled · last <label> · Ns`) so we never invent work after
+   * silence — we only report what was last truly observed.
+   */
+  readonly lastPulseLabel: string;
+  /**
    * The LIVE action the agent is currently performing, derived SOLELY from the
    * most recent real `tool` provider-event (never fabricated): a friendly `verb`
    * mapped from the tool name (Edit/Write→"editing", Read→"reading",
@@ -428,6 +443,8 @@ export const initialStreamView: StreamView = {
   panelists: [],
   synthesizing: null,
   workLabel: 'Preparing',
+  lastEventAt: null,
+  lastPulseLabel: 'Preparing',
   toolSinceProse: false,
   breakBeforeNextProse: false,
   proseStarted: false,

@@ -158,10 +158,145 @@ function toolVerb(name: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Turn pulse + stall (display-only liveness chrome)
+// ---------------------------------------------------------------------------
+
+/**
+ * Silence threshold for honest stall chrome. After this many ms with no
+ * liveness-relevant event while a turn is active, the status line reports
+ * stall — never invents work, never auto-aborts (hang-cap remains the provider
+ * backstop).
+ */
+export const STALL_THRESHOLD_MS = 12_000;
+
+/**
+ * Progressive pulse label from the live stream: tool verb when a real tool is
+ * active, else the phase workLabel (Preparing / Thinking / Responding / verbose
+ * tier label). PURE — never fabricates a verb.
+ */
+export function derivePulseLabel(
+  stream: Pick<StreamView, 'workLabel' | 'currentTool'>,
+): string {
+  if (stream.currentTool !== undefined && stream.currentTool.verb.length > 0) {
+    return stream.currentTool.verb;
+  }
+  return stream.workLabel.length > 0 ? stream.workLabel : 'Thinking';
+}
+
+/** True when a turn has gone silent long enough to surface stall chrome. PURE. */
+export function isTurnStalled(
+  lastEventAt: number | null,
+  nowMs: number,
+  thresholdMs: number = STALL_THRESHOLD_MS,
+): boolean {
+  return lastEventAt !== null && nowMs - lastEventAt >= thresholdMs;
+}
+
+/**
+ * Honest stall status text: `stalled · last Thinking · 47s`. The seconds are
+ * the silence duration (now − lastEventAt), not invented work. PURE.
+ */
+export function formatStallStatus(
+  lastPulseLabel: string,
+  silenceSecs: number,
+): string {
+  const label = lastPulseLabel.length > 0 ? lastPulseLabel : 'Thinking';
+  const secs = Number.isFinite(silenceSecs) && silenceSecs > 0 ? Math.floor(silenceSecs) : 0;
+  return `stalled · last ${label} · ${secs}s`;
+}
+
+/**
+ * Resolve the non-panel status headline: either the live progressive pulse, or
+ * honest stall chrome when silence ≥ {@link STALL_THRESHOLD_MS}. PURE.
+ */
+export function resolveStatusHeadline(
+  stream: Pick<StreamView, 'workLabel' | 'currentTool' | 'lastEventAt' | 'lastPulseLabel'>,
+  nowMs: number | undefined,
+  liveAction: string,
+): { readonly stalled: boolean; readonly headline: string } {
+  if (
+    nowMs !== undefined &&
+    isTurnStalled(stream.lastEventAt, nowMs)
+  ) {
+    const silenceSecs =
+      stream.lastEventAt !== null
+        ? Math.floor((nowMs - stream.lastEventAt) / 1000)
+        : 0;
+    const last =
+      stream.lastPulseLabel.length > 0
+        ? stream.lastPulseLabel
+        : derivePulseLabel(stream);
+    return { stalled: true, headline: formatStallStatus(last, silenceSecs) };
+  }
+  const headline = liveAction.length > 0 ? liveAction : stream.workLabel;
+  return { stalled: false, headline };
+}
+
+/** Actions that represent real stream / turn liveness (not chrome or panels). */
+function isLivenessAction(action: Action): boolean {
+  switch (action.type) {
+    case 'turn/start':
+    case 'classified':
+    case 'intent':
+    case 'engagement':
+    case 'phase/panel':
+    case 'phase/synthesis':
+    case 'tier-start':
+    case 'stream/prose':
+    case 'stream/tool':
+    case 'stream/reasoning':
+    case 'stream/flush-tier':
+    case 'stream/narration':
+    case 'goal/enqueue':
+    case 'goal/phase':
+    case 'escalate':
+    case 'failover':
+    case 'notice':
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
+ * Stamp lastEventAt / lastPulseLabel after a liveness action. `nowMs` is injected
+ * by the impure store (never `Date.now` here). When omitted (unit tests that only
+ * care about workLabel), the label still updates and lastEventAt is preserved.
+ */
+function applyTurnPulse(state: UiState, action: Action, nowMs?: number): UiState {
+  if (!isLivenessAction(action)) return state;
+  const lastPulseLabel = derivePulseLabel(state.stream);
+  const lastEventAt = nowMs !== undefined ? nowMs : state.stream.lastEventAt;
+  if (
+    state.stream.lastPulseLabel === lastPulseLabel &&
+    state.stream.lastEventAt === lastEventAt
+  ) {
+    return state;
+  }
+  return {
+    ...state,
+    stream: {
+      ...state.stream,
+      lastPulseLabel,
+      lastEventAt,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // reduce
 // ---------------------------------------------------------------------------
 
-export function reduce(state: UiState, action: Action): UiState {
+/**
+ * Pure MVU reducer. Optional `nowMs` is the injected wall-clock used to stamp
+ * turn-pulse liveness (`lastEventAt`) — callers that own a clock (the Ink store)
+ * pass it; pure table tests may omit it.
+ */
+export function reduce(state: UiState, action: Action, nowMs?: number): UiState {
+  return applyTurnPulse(reduceAction(state, action), action, nowMs);
+}
+
+function reduceAction(state: UiState, action: Action): UiState {
   switch (action.type) {
     // -- turn/start: reset ONLY the per-turn slice (live stream, goals,
     //    turnActive, the per-turn token counter) while PRESERVING the committed
