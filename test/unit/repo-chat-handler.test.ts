@@ -3,12 +3,15 @@
 import { buildAiCheckpoint, hashText, type AiChangeCheckpoint } from '../../src/core/ai-checkpoint.js';
 import type { CommandGateDecision, CommandGatePort } from '../../src/core/command-gate.js';
 import {
+  formatWorkspaceForgeMessage,
   githubPrChecksUnavailableMessage,
   githubPrCreateUnavailableMessage,
   githubPrReviewUnavailableMessage,
   githubPrStatusUnavailableMessage,
   gitlabMrCreateUnavailableMessage,
+  gitlabMrStatusUnavailableMessage,
   handleRepoChatIntent,
+  otherForgeRemoteDetail,
   type RepoChatHandlerDeps,
 } from '../../src/interface/repo-chat-handler.js';
 
@@ -1336,5 +1339,233 @@ describe('handleRepoChatIntent', () => {
       }),
     ).toMatch(/not on PATH/i);
     expect(gitlabMrCreateUnavailableMessage(githubForge)).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // P1.8 — other forge + pure local honesty (no false gh/glab)
+  // -------------------------------------------------------------------------
+
+  const otherForge = {
+    cwd: '/repo',
+    gitRoot: '/repo',
+    remotes: [
+      {
+        name: 'origin',
+        url: 'git@bitbucket.org:acme/app.git',
+        purpose: 'fetch' as const,
+      },
+    ],
+    hostClass: 'other' as const,
+    primaryRemoteUrl: 'git@bitbucket.org:acme/app.git',
+    tools: { gh: true, glab: true },
+  };
+
+  const localOnlyForge = {
+    cwd: '/repo',
+    gitRoot: '/repo',
+    remotes: [] as const,
+    hostClass: 'none' as const,
+    primaryRemoteUrl: null,
+    tools: { gh: false, glab: false },
+  };
+
+  it('otherForgeRemoteDetail includes host when parseable', () => {
+    expect(otherForgeRemoteDetail(otherForge)).toBe('other forge (bitbucket.org)');
+  });
+
+  it('github_pr_status: other forge names host and never runs gh/glab', async () => {
+    const ghCalls: unknown[] = [];
+    const glabCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('pr status', deps({
+      forgeContext: otherForge,
+      async runGh() {
+        ghCalls.push(1);
+        return { ok: true, stdout: 'should not run', stderr: '', exitCode: 0 };
+      },
+      async runGlab() {
+        glabCalls.push(1);
+        return { ok: true, stdout: 'should not run', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(result?.operation).toBe('github_pr_status');
+    expect(result?.mutatesWorkspace).toBe(false);
+    expect(result?.message).toMatch(/not GitHub/i);
+    expect(result?.message).toMatch(/bitbucket\.org/i);
+    expect(result?.message).toMatch(/Local status\/diff/i);
+    expect(result?.message).not.toMatch(/GitHub PR status \(via gh\)/);
+    expect(ghCalls).toEqual([]);
+    expect(glabCalls).toEqual([]);
+  });
+
+  it('github_pr_checks: other forge honest degrade (no gh theater)', async () => {
+    const ghCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('pr checks', deps({
+      forgeContext: otherForge,
+      async runGh() {
+        ghCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(result?.operation).toBe('github_pr_checks');
+    expect(result?.message).toMatch(/not GitHub/i);
+    expect(result?.message).toMatch(/bitbucket\.org/i);
+    expect(result?.message).toMatch(/Local status\/diff/i);
+    expect(ghCalls).toEqual([]);
+  });
+
+  it('github_pr_create: other forge explains limits + remote host', async () => {
+    const ghCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('open a pr', deps({
+      forgeContext: otherForge,
+      async runGh() {
+        ghCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(result?.operation).toBe('github_pr_create');
+    expect(result?.mutatesWorkspace).toBe(false);
+    expect(result?.message).toMatch(/not GitHub/i);
+    expect(result?.message).toMatch(/bitbucket\.org/i);
+    expect(result?.message).toMatch(/host'?s UI|Bitbucket|Gitea/i);
+    expect(result?.message).toMatch(/Local status\/diff/i);
+    expect(ghCalls).toEqual([]);
+  });
+
+  it('github_pr_create: local-only has no remote honesty', async () => {
+    const ghCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('open a pr', deps({
+      forgeContext: localOnlyForge,
+      async runGh() {
+        ghCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(result?.operation).toBe('github_pr_create');
+    expect(result?.mutatesWorkspace).toBe(false);
+    expect(result?.message).toMatch(/Local-only|no remote/i);
+    expect(result?.message).toMatch(/no GitHub host/i);
+    expect(result?.message).toMatch(/Local status\/diff/i);
+    expect(ghCalls).toEqual([]);
+  });
+
+  it('github_pr_status / checks: local-only never spawns forge CLIs', async () => {
+    const ghCalls: unknown[] = [];
+    const glabCalls: unknown[] = [];
+    const status = await handleRepoChatIntent('pr status', deps({
+      forgeContext: localOnlyForge,
+      async runGh() {
+        ghCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+      async runGlab() {
+        glabCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+    const checks = await handleRepoChatIntent('ci status', deps({
+      forgeContext: localOnlyForge,
+      async runGh() {
+        ghCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(status?.message).toMatch(/Local-only|no remote/i);
+    expect(checks?.message).toMatch(/Local-only|no remote/i);
+    expect(ghCalls).toEqual([]);
+    expect(glabCalls).toEqual([]);
+  });
+
+  it('gitlab_mr_status / create: other + none honest (no glab theater)', async () => {
+    const glabCalls: unknown[] = [];
+    const otherStatus = await handleRepoChatIntent('mr status', deps({
+      forgeContext: otherForge,
+      async runGlab() {
+        glabCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+    const otherCreate = await handleRepoChatIntent('create a mr', deps({
+      forgeContext: otherForge,
+      async runGlab() {
+        glabCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+    const noneCreate = await handleRepoChatIntent('open a merge request', deps({
+      forgeContext: localOnlyForge,
+      async runGlab() {
+        glabCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(otherStatus?.message).toMatch(/not GitLab/i);
+    expect(otherStatus?.message).toMatch(/bitbucket\.org/i);
+    expect(otherCreate?.message).toMatch(/not GitLab/i);
+    expect(noneCreate?.message).toMatch(/Local-only|no remote/i);
+    expect(glabCalls).toEqual([]);
+  });
+
+  it('workspace_forge: answers host + remotes for other forge (no gh spawn)', async () => {
+    const ghCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('what forge am I on?', deps({
+      forgeContext: otherForge,
+      async runGh() {
+        ghCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(result?.operation).toBe('workspace_forge');
+    expect(result?.mutatesWorkspace).toBe(false);
+    expect(result?.message).toMatch(/bitbucket\.org/i);
+    expect(result?.message).toMatch(/Remotes/i);
+    expect(result?.message).toMatch(/Not GitHub\/GitLab/i);
+    expect(result?.message).toMatch(/Local status\/diff/i);
+    expect(ghCalls).toEqual([]);
+  });
+
+  it('workspace_forge: local-only honesty', async () => {
+    const result = await handleRepoChatIntent('is this github?', deps({
+      forgeContext: localOnlyForge,
+    }));
+
+    expect(result?.operation).toBe('workspace_forge');
+    expect(result?.message).toMatch(/local-only|no remote/i);
+    expect(result?.message).toMatch(/Local status\/diff/i);
+  });
+
+  it('workspace_forge: GitHub host surfaces gh readiness', async () => {
+    const result = await handleRepoChatIntent('show remotes', deps({
+      forgeContext: githubForge,
+    }));
+
+    expect(result?.operation).toBe('workspace_forge');
+    expect(result?.message).toMatch(/GitHub/i);
+    expect(result?.message).toMatch(/github\.com/i);
+    expect(result?.message).toMatch(/gh on PATH/i);
+  });
+
+  it('formatWorkspaceForgeMessage / unavailable pure helpers cover other + none', () => {
+    const otherMsg = formatWorkspaceForgeMessage(otherForge);
+    expect(otherMsg).toMatch(/bitbucket\.org/);
+    expect(otherMsg).toMatch(/Not GitHub\/GitLab/);
+
+    const noneMsg = formatWorkspaceForgeMessage(localOnlyForge);
+    expect(noneMsg).toMatch(/local-only|no remote/i);
+
+    expect(githubPrStatusUnavailableMessage(otherForge)).toMatch(/bitbucket\.org/);
+    expect(githubPrChecksUnavailableMessage(otherForge)).toMatch(/bitbucket\.org/);
+    expect(githubPrCreateUnavailableMessage(otherForge)).toMatch(/bitbucket\.org/);
+    expect(gitlabMrStatusUnavailableMessage(otherForge)).toMatch(/bitbucket\.org/);
+    expect(gitlabMrCreateUnavailableMessage(otherForge)).toMatch(/bitbucket\.org/);
+
+    expect(githubPrCreateUnavailableMessage(localOnlyForge)).toMatch(/Local-only|no remote/i);
+    expect(gitlabMrCreateUnavailableMessage(localOnlyForge)).toMatch(/Local-only|no remote/i);
   });
 });
