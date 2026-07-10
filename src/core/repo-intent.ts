@@ -30,7 +30,12 @@ export type RepoOperationIntent =
    */
   | 'github_pr_create'
   /** NL GitLab MR status (P1.7 thin): "mr status" / "gitlab status" — not local git status. */
-  | 'gitlab_mr_status';
+  | 'gitlab_mr_status'
+  /**
+   * NL GitLab MR create (P1.7 thin extension): "create a mr" / "open a merge request"
+   * / "glab mr create" — explicit create only; never steals "mr status" / "mr list".
+   */
+  | 'gitlab_mr_create';
 
 export interface RepoIntentConstraint {
   readonly kind:
@@ -138,6 +143,22 @@ const GITHUB_PR_CREATE_RE: readonly RegExp[] = [
   /\bgh\s+pr\s+create\b/,
   /\bpr\s+create\b/,
   /\bpull[\s-]?request\s+create\b/,
+];
+
+/**
+ * GitLab MR create phrases (P1.7 thin extension). Explicit create/open only —
+ * must not match "mr status" / "list the merge requests" / plain "mr list".
+ * Checked before edit verbs so "create a mr for the fix" is not stealable by edit.
+ */
+const GITLAB_MR_CREATE_RE: readonly RegExp[] = [
+  /\bcreate\s+(a\s+|an\s+|the\s+)?(mr|merge[\s-]?request)\b/,
+  /\bopen\s+(a\s+|an\s+|the\s+)?(mr|merge[\s-]?request)\b/,
+  /\bmake\s+(a\s+|an\s+|the\s+)?(mr|merge[\s-]?request)\b/,
+  /\bsubmit\s+(a\s+|an\s+|the\s+)?(mr|merge[\s-]?request)\b/,
+  /\bnew\s+(mr|merge[\s-]?request)\b/,
+  /\bglab\s+mr\s+create\b/,
+  /\bmr\s+create\b/,
+  /\bmerge[\s-]?request\s+create\b/,
 ];
 
 /**
@@ -357,6 +378,19 @@ export function inferRepoIntent(task: string): RepoIntent {
       needsVerification: false,
       constraints,
       rationale: 'natural-language GitHub PR create request',
+    };
+  }
+
+  // Explicit MR create before edit verbs and before MR status/list.
+  if (hasAny(text, GITLAB_MR_CREATE_RE)) {
+    return {
+      version: 1,
+      operation: 'gitlab_mr_create',
+      confidence: 'high',
+      mutatesWorkspace: true,
+      needsVerification: false,
+      constraints,
+      rationale: 'natural-language GitLab MR create request',
     };
   }
 

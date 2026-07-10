@@ -60,6 +60,18 @@ const REPRESENTATIVE_FIXTURES: readonly DecisionFixture[] = [
     },
   },
   {
+    name: 'local-write glab mr create',
+    command: 'glab mr create --fill --yes',
+    expected: {
+      commandTier: 'local-write',
+      allowed: true,
+      requireConfirmation: false,
+      forbidBackground: false,
+      mustRecord: true,
+      rationale: 'local-write: mutates local files; record for the audit trail.',
+    },
+  },
+  {
     name: 'test-build',
     command: 'npm test',
     expected: {

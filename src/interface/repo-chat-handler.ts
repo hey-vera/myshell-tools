@@ -10,9 +10,10 @@
  * (no --watch). GitHub PR create (P1.6 thin extension) runs non-interactive
  * `gh pr create --fill` under the same gate/oversight posture as commit — never
  * force-push, never invent base. GitLab MR list (P1.7 thin) runs `glab mr list`
- * when the workspace is GitLab and glab is on PATH — honest fail-soft otherwise
- * (MR create is out of scope). Undo plans via checkpoint conflict gate, then
- * applies under oversight + commandGate when safe.
+ * when the workspace is GitLab and glab is on PATH. GitLab MR create (P1.7 thin
+ * extension) runs non-interactive `glab mr create --fill --yes` under the same
+ * gate/oversight posture as PR create — honest fail-soft otherwise. Undo plans
+ * via checkpoint conflict gate, then applies under oversight + commandGate when safe.
  */
 
 import { planUndoAiCheckpoint } from '../core/ai-checkpoint.js';
@@ -81,7 +82,8 @@ function handled(
       opts?.mutatesWorkspace ??
       (operation === 'commit_current_ai_change' ||
         operation === 'undo_last_ai_change' ||
-        operation === 'github_pr_create'),
+        operation === 'github_pr_create' ||
+        operation === 'gitlab_mr_create'),
     message,
   };
 }
@@ -159,15 +161,15 @@ export function githubPrChecksUnavailableMessage(forge: WorkspaceContext): strin
 /**
  * Honest message when forge/tools cannot support GitHub PR create. PURE-ish.
  * Returns null only when host is GitHub and gh is on PATH.
- * GitLab MR create is intentionally out of scope — honest degrade only.
+ * GitLab + glab: handler may cross-route to MR create (caller decides).
  */
 export function githubPrCreateUnavailableMessage(forge: WorkspaceContext): string | null {
   if (forge.hostClass === 'github' && forge.tools.gh) return null;
+  // GitLab + glab: handler runs glab MR create rather than refusing.
+  if (forge.hostClass === 'gitlab' && forge.tools.glab) return null;
 
   if (forge.hostClass === 'gitlab') {
-    return forge.tools.glab
-      ? 'This workspace is GitLab — not GitHub. PR create via gh does not apply. GitLab MR create is not wired yet; use `glab mr create` in the shell or the GitLab UI.'
-      : 'This workspace is GitLab — not GitHub. PR create via gh does not apply, and glab is not on PATH. Use the GitLab UI or install glab (https://gitlab.com/gitlab-org/cli).';
+    return 'This workspace is GitLab — not GitHub. PR create via gh does not apply, and glab is not on PATH. Use the GitLab UI or install glab (https://gitlab.com/gitlab-org/cli), then ask to create a merge request.';
   }
   if (forge.hostClass === 'other') {
     return 'This remote is not GitHub — I will not run gh PR create against a non-GitHub forge.';
@@ -179,6 +181,31 @@ export function githubPrCreateUnavailableMessage(forge: WorkspaceContext): strin
   }
   // github but gh missing
   return 'This is a GitHub repo, but `gh` is not on PATH. Install the GitHub CLI (https://cli.github.com) or open a PR in the browser. I will not pretend gh is available.';
+}
+
+/**
+ * Honest message when forge/tools cannot support GitLab MR create. PURE-ish.
+ * Returns null only when host is GitLab and glab is on PATH.
+ * GitHub + gh: handler may cross-route to PR create (caller decides).
+ */
+export function gitlabMrCreateUnavailableMessage(forge: WorkspaceContext): string | null {
+  if (forge.hostClass === 'gitlab' && forge.tools.glab) return null;
+  // GitHub + gh: handler runs gh PR create rather than refusing.
+  if (forge.hostClass === 'github' && forge.tools.gh) return null;
+
+  if (forge.hostClass === 'github') {
+    return 'This workspace is GitHub — not GitLab. MR create via glab does not apply, and gh is not on PATH. Use the GitHub UI or install the GitHub CLI (https://cli.github.com), then ask to create a pull request.';
+  }
+  if (forge.hostClass === 'other') {
+    return 'This remote is not GitLab — I will not run glab MR create against a non-GitLab forge.';
+  }
+  if (forge.hostClass === 'none') {
+    return forge.gitRoot !== null
+      ? 'Local-only workspace (no remote forge) — there is no GitLab host to open an MR against.'
+      : 'This folder is not a git repo — there is no MR to create.';
+  }
+  // gitlab but glab missing
+  return 'This is a GitLab repo, but `glab` is not on PATH. Install the GitLab CLI (https://gitlab.com/gitlab-org/cli) or open an MR in the browser. I will not pretend glab is available.';
 }
 
 /**
@@ -263,8 +290,9 @@ const GH_PR_CREATE_TIMEOUT_MS = 60_000;
 
 /**
  * Resolve forge + gated non-interactive `gh pr create --fill` when GitHub+gh.
- * Honest degrade for GitLab/other/missing tools. Never hangs on TTY prompts —
- * if gh cannot fill safely, surfaces the failure + suggested shell command.
+ * On GitLab+glab, cross-routes to thin MR create. Honest degrade otherwise.
+ * Never hangs on TTY prompts — if gh cannot fill safely, surfaces the failure
+ * + suggested shell command.
  */
 async function handleGithubPrCreate(deps: RepoChatHandlerDeps): Promise<RepoChatHandled> {
   const forge = await resolveForge(deps);
@@ -275,6 +303,11 @@ async function handleGithubPrCreate(deps: RepoChatHandlerDeps): Promise<RepoChat
       'Could not detect workspace forge context just now — try again, or run `gh pr create --fill` in the shell.',
       { mutatesWorkspace: false },
     );
+  }
+
+  // PR create language on GitLab → thin glab MR create when available.
+  if (forge.hostClass === 'gitlab' && forge.tools.glab) {
+    return handleGitlabMrCreate(deps, 'github_pr_create');
   }
 
   const unavailable = githubPrCreateUnavailableMessage(forge);
@@ -358,6 +391,133 @@ function formatGhPrCreateResult(result: GhRunResult): RepoChatHandled {
   return handled(
     'github_pr_create',
     `gh pr create --fill failed${code}:\n${detail}\n\nI will not hang on interactive prompts. If title/body or push is needed, run in a real shell:\n  ${GH_PR_CREATE_DISPLAY}\nor:\n  gh pr create --title "…" --body "…"`,
+    { mutatesWorkspace: false },
+  );
+}
+
+/**
+ * Non-interactive thin create: title/description from commit log via --fill;
+ * --yes skips the glab submission confirmation. Never force-push; no invented
+ * --target-branch. --fill may push the current branch (normal glab behavior) —
+ * that is why create is gated like commit / gh pr create.
+ */
+const GLAB_MR_CREATE_ARGS = ['mr', 'create', '--fill', '--yes'] as const;
+const GLAB_MR_CREATE_DISPLAY = 'glab mr create --fill --yes';
+/** Create can push + talk to GitLab; allow more than the status probe budget. */
+const GLAB_MR_CREATE_TIMEOUT_MS = 60_000;
+
+/**
+ * Resolve forge + gated non-interactive `glab mr create --fill --yes` when
+ * GitLab+glab. On GitHub+gh, cross-routes to thin PR create. Honest degrade
+ * otherwise. Never hangs on TTY prompts.
+ *
+ * `operation` lets "create a pr" on GitLab still report as github_pr_create
+ * intent while using the glab runner (and vice versa for MR language on GitHub).
+ */
+async function handleGitlabMrCreate(
+  deps: RepoChatHandlerDeps,
+  operation: 'gitlab_mr_create' | 'github_pr_create' = 'gitlab_mr_create',
+): Promise<RepoChatHandled> {
+  const forge = await resolveForge(deps);
+
+  if (forge === null) {
+    return handled(
+      operation,
+      'Could not detect workspace forge context just now — try again, or run `glab mr create --fill --yes` in the shell.',
+      { mutatesWorkspace: false },
+    );
+  }
+
+  // MR create language on GitHub → thin gh PR create when available.
+  if (operation === 'gitlab_mr_create' && forge.hostClass === 'github' && forge.tools.gh) {
+    return handleGithubPrCreate({ ...deps, forgeContext: forge });
+  }
+
+  const unavailable = gitlabMrCreateUnavailableMessage(forge);
+  if (unavailable !== null) {
+    return handled(operation, unavailable, { mutatesWorkspace: false });
+  }
+
+  const summary =
+    'MR create intent: run non-interactive `glab mr create --fill --yes` (title/description from commits; default target; no force-push).';
+  const oversight: Oversight = deps.oversight ?? 'checkpoint';
+  let proceed = true;
+  if (oversight !== 'autonomous') {
+    const confirmMsg = `${summary}\n\nProceed with MR create?`;
+    if (deps.commandGate?.confirm) {
+      proceed = await deps.commandGate.confirm(confirmMsg);
+    } else {
+      // Non-autonomous without a confirm seam → honest guidance only (safe).
+      return handled(
+        operation,
+        `${summary}\n\nI have not created an MR yet. Confirm in chat, or run:\n  ${GLAB_MR_CREATE_DISPLAY}\n(Requires branch pushed / commits vs target. Use \`glab mr create --title "…" --description "…" --yes\` if --fill is not enough.)`,
+        { mutatesWorkspace: false },
+      );
+    }
+  }
+  if (!proceed) {
+    return handled(operation, 'MR create declined by gate.', { mutatesWorkspace: false });
+  }
+
+  const runGlab =
+    deps.runGlab ??
+    ((args: readonly string[], cwd: string) =>
+      defaultRunGlab(args, cwd, GLAB_MR_CREATE_TIMEOUT_MS));
+
+  if (deps.commandGate !== undefined) {
+    const gate = deps.commandGate.gate(GLAB_MR_CREATE_DISPLAY);
+    const confirmed = await confirmGate(
+      deps.commandGate,
+      gate,
+      'Run `glab mr create --fill --yes` to open a GitLab merge request?',
+    );
+    if (!gate.allowed || confirmed === false) {
+      await recordGate(deps.commandGate, deps.cwd, GLAB_MR_CREATE_DISPLAY, gate, confirmed, 'denied');
+      return handled(
+        operation,
+        gate.allowed
+          ? 'MR create declined by gate.'
+          : 'Command gate denied `glab mr create --fill --yes`.',
+        { mutatesWorkspace: false },
+      );
+    }
+
+    const result = await runGlab([...GLAB_MR_CREATE_ARGS], deps.cwd);
+    await recordGate(deps.commandGate, deps.cwd, GLAB_MR_CREATE_DISPLAY, gate, confirmed, 'ran');
+    return formatGlabMrCreateResult(result, operation);
+  }
+
+  const result = await runGlab([...GLAB_MR_CREATE_ARGS], deps.cwd);
+  return formatGlabMrCreateResult(result, operation);
+}
+
+function formatGlabMrCreateResult(
+  result: GlabRunResult,
+  operation: 'gitlab_mr_create' | 'github_pr_create',
+): RepoChatHandled {
+  const out = clipForgeOutput(result.stdout);
+  const err = clipForgeOutput(result.stderr);
+
+  if (result.ok) {
+    if (out.length > 0) {
+      return handled(
+        operation,
+        `GitLab MR created (via glab mr create --fill --yes):\n\n${out}`,
+        { mutatesWorkspace: true },
+      );
+    }
+    return handled(
+      operation,
+      'glab mr create --fill --yes returned no output. Check `glab mr list` or the GitLab UI to confirm whether an MR was opened.',
+      { mutatesWorkspace: true },
+    );
+  }
+
+  const detail = err.length > 0 ? err : out.length > 0 ? out : 'unknown error';
+  const code = result.exitCode !== null ? ` (exit ${result.exitCode})` : '';
+  return handled(
+    operation,
+    `glab mr create --fill --yes failed${code}:\n${detail}\n\nI will not hang on interactive prompts. If title/description or push is needed, run in a real shell:\n  ${GLAB_MR_CREATE_DISPLAY}\nor:\n  glab mr create --title "…" --description "…" --yes`,
     { mutatesWorkspace: false },
   );
 }
@@ -757,6 +917,9 @@ export async function handleRepoChatIntent(
 
     case 'gitlab_mr_status':
       return handleGitlabMrStatus(deps, 'gitlab_mr_status');
+
+    case 'gitlab_mr_create':
+      return handleGitlabMrCreate(deps, 'gitlab_mr_create');
 
     case 'summarize_diff': {
       const diff = await deps.repoOps.diff(deps.cwd);

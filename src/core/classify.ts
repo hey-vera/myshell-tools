@@ -501,6 +501,9 @@ const COMMAND_TIER_SIGNALS: readonly CommandTierSignal[] = [
       // GitHub CLI PR create (P1.6 thin): may push the branch + open a remote PR.
       // Not read-only; mustRecord via local-write. Handler also requires explicit NL + confirm.
       /\bgh\s+pr\s+create\b/i,
+      // GitLab CLI MR create (P1.7 thin): --fill may push the branch + open a remote MR.
+      // Same local-write posture as gh pr create.
+      /\bglab\s+mr\s+create\b/i,
       /(?:^|[^>])>>?\s*\S+/,
       /\bsed\b[^\n;&|]*\s-i(?:\b|['"])/i,
       /\btee\b/i,
