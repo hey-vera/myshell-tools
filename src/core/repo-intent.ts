@@ -35,7 +35,12 @@ export type RepoOperationIntent =
    * NL GitLab MR create (P1.7 thin extension): "create a mr" / "open a merge request"
    * / "glab mr create" — explicit create only; never steals "mr status" / "mr list".
    */
-  | 'gitlab_mr_create';
+  | 'gitlab_mr_create'
+  /**
+   * NL forge identity (P1.8 thin): "what forge am I on?" / "is this github?" /
+   * "show remotes" — read-only hostClass + remotes honesty; never steals git status.
+   */
+  | 'workspace_forge';
 
 export interface RepoIntentConstraint {
   readonly kind:
@@ -215,6 +220,23 @@ const GITLAB_MR_STATUS_RE: readonly RegExp[] = [
   /\bhow\s+is\s+(the\s+)?mr\b/,
   /\bcurrent\s+mr\b/,
   /\blist\s+(the\s+)?(mrs|merge[\s-]?requests)\b/,
+];
+
+/**
+ * Workspace forge identity (P1.8 thin). Explicit host/remote questions only —
+ * must not match generic "status" / "pr status" / local git status.
+ */
+const WORKSPACE_FORGE_RE: readonly RegExp[] = [
+  /\bwhat\s+forge\s+(am\s+i|are\s+we)\s+on\b/,
+  /\bwhich\s+forge\b/,
+  /\bwhat\s+(host|remote)\s+(is\s+this|are\s+we\s+on)\b/,
+  /\bis\s+this\s+(github|gitlab|bitbucket|gitea)\b/,
+  /\bare\s+we\s+on\s+(github|gitlab|bitbucket|gitea)\b/,
+  /\bforge\s+(host|context|type|identity)\b/,
+  /\bgit\s+remote\s+-v\b/,
+  /\bshow\s+(me\s+)?(the\s+)?(git\s+)?remotes?\b/,
+  /\blist\s+(the\s+)?(git\s+)?remotes?\b/,
+  /\bwhat\s+remote\b/,
 ];
 
 const STATUS_RE: readonly RegExp[] = [
@@ -429,6 +451,19 @@ export function inferRepoIntent(task: string): RepoIntent {
       needsVerification: false,
       constraints,
       rationale: 'natural-language provider steering request',
+    };
+  }
+
+  // Forge identity before PR/MR status and generic "status" (P1.8).
+  if (hasAny(text, WORKSPACE_FORGE_RE)) {
+    return {
+      version: 1,
+      operation: 'workspace_forge',
+      confidence: 'high',
+      mutatesWorkspace: false,
+      needsVerification: false,
+      constraints,
+      rationale: 'natural-language workspace forge / remote identity request',
     };
   }
 
