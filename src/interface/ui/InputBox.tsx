@@ -47,8 +47,11 @@ import { completeChat, classifyCompletion } from '../menu-completion.js';
 import {
   applyGhost,
   GHOST_DEBOUNCE_MS,
+  parseModelGhostCompletion,
   proposeGhost,
+  shouldOfferModelGhost,
   type GhostSuggestion,
+  type SuggestGhost,
 } from '../ghost-text.js';
 import type { InkStdinControl } from './App.js';
 
@@ -268,6 +271,17 @@ export interface InputBoxProps {
    * (300). Tests may pass 0 for immediate ghost after the next microtask tick.
    */
   readonly ghostDebounceMs?: number;
+  /**
+   * Optional budgeted model ghost (P1.5). Default OFF. When true AND
+   * {@link suggestGhost} is wired, a model may fill in after local layers miss.
+   * Local always wins; failures are silent.
+   */
+  readonly modelGhostEnabled?: boolean;
+  /**
+   * Injected model-ghost port (subscription-native). Absent → model path never
+   * fires even if {@link modelGhostEnabled} is true (fail-soft off).
+   */
+  readonly suggestGhost?: SuggestGhost | undefined;
 }
 
 /** The slice of Ink's `key` object {@link InputBoxProps.onReadKey} forwards (a
@@ -373,6 +387,8 @@ export function InputBox({
   dynamicWorldItems,
   goalHints,
   ghostDebounceMs = GHOST_DEBOUNCE_MS,
+  modelGhostEnabled = false,
+  suggestGhost,
   onEmptyLeft,
   onEmptyRight,
   onShiftTab,
@@ -395,8 +411,9 @@ export function InputBox({
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [suggIndex, setSuggIndex] = useState(0);
   const lastCompletionRef = useRef<{ token: string } | null>(null);
-  // Ghost text (P0.17–P0.18): dim inline suffix after the typed prefix. Local-only;
-  // debounced; dismissed by Esc / typing / Tab-accept. Never blocks input.
+  // Ghost text (P0.17–P0.18 + optional P1.5 model): dim inline suffix after the
+  // typed prefix. Local-first; model only when enabled + local empty. Debounced;
+  // dismissed by Esc / typing / Tab-accept. Never blocks input.
   const [ghost, setGhost] = useState<GhostSuggestion | null>(null);
   /** Session-local cache of recently accepted completions (history-layer boost). */
   const recentCompletionsRef = useRef<string[]>([]);
@@ -412,6 +429,10 @@ export function InputBox({
   goalHintsRef.current = goalHints;
   const dynamicWorldItemsRef = useRef(dynamicWorldItems);
   dynamicWorldItemsRef.current = dynamicWorldItems;
+  const modelGhostEnabledRef = useRef(modelGhostEnabled);
+  modelGhostEnabledRef.current = modelGhostEnabled;
+  const suggestGhostRef = useRef(suggestGhost);
+  suggestGhostRef.current = suggestGhost;
 
   // Register the imperative API + queued subscriber; consume the history seed.
   useEffect(() => {
@@ -510,8 +531,9 @@ export function InputBox({
     bridge._submit?.(submitted);
   };
 
-  // Debounced local-first ghost (P0.17). Fail-soft: never blocks typing; async
-  // path/mention hits are best-effort and race-guarded against the live buffer.
+  // Debounced local-first ghost (P0.17) with optional model fallback (P1.5).
+  // Fail-soft: never blocks typing; async hits race-guarded; AbortController
+  // cancels in-flight model ghost on keystroke / unmount.
   useEffect(() => {
     // Multi-candidate Tab row owns the chrome — no parallel ghost.
     if (suggestions.length > 0) {
@@ -524,7 +546,36 @@ export function InputBox({
       return;
     }
     let cancelled = false;
+    const ac = new AbortController();
     const delay = Math.max(0, ghostDebounceMs);
+
+    const tryModelGhost = (lineToCursor: string, local: GhostSuggestion | null, kind: string): void => {
+      if (cancelled) return;
+      const enabled = modelGhostEnabledRef.current === true;
+      const port = suggestGhostRef.current;
+      if (
+        !shouldOfferModelGhost({ enabled, local, line: lineToCursor, kind }) ||
+        port === undefined
+      ) {
+        if (!cancelled && local === null) setGhost(null);
+        return;
+      }
+      const requestedValue = valueRef.current;
+      const requestedCursor = cursorRef.current;
+      void port(lineToCursor, ac.signal)
+        .then((raw) => {
+          if (cancelled || ac.signal.aborted) return;
+          if (valueRef.current !== requestedValue || cursorRef.current !== requestedCursor) return;
+          // Re-check local still empty at resolve time (another path may have filled).
+          if (local !== null) return;
+          const model = parseModelGhostCompletion(lineToCursor, raw ?? undefined);
+          if (model !== null) setGhost(model);
+        })
+        .catch(() => {
+          /* fail-soft: leave ghost as-is (null or prior local) */
+        });
+    };
+
     const timer = setTimeout(() => {
       const lineToCursor = valueRef.current.slice(0, cursorRef.current);
       const classified = classifyCompletion(lineToCursor);
@@ -538,7 +589,7 @@ export function InputBox({
       const base = proposeGhost(ghostInput);
 
       // Prose / empty / pure slash already covered. For path/@ (and slash when
-      // pure missed), enrich with completeChat hits — still no model call.
+      // pure missed), enrich with completeChat hits — still no model call first.
       const needsAsync =
         classified.kind === 'path' ||
         classified.kind === 'mention' ||
@@ -546,7 +597,14 @@ export function InputBox({
         (classified.kind === 'slash-arg' && base === null);
 
       if (!needsAsync) {
-        if (!cancelled) setGhost(base);
+        if (!cancelled) {
+          if (base !== null) {
+            setGhost(base);
+          } else {
+            setGhost(null);
+            tryModelGhost(lineToCursor, null, classified.kind);
+          }
+        }
         return;
       }
 
@@ -564,17 +622,40 @@ export function InputBox({
             ...ghostInput,
             completionHits: hits,
           });
-          setGhost(enriched);
+          if (enriched !== null) {
+            setGhost(enriched);
+            return;
+          }
+          // Local (incl. path/@) empty → optional model (only for prose kinds).
+          tryModelGhost(lineToCursor, null, classified.kind);
         })
         .catch(() => {
-          /* fail-soft: keep base ghost or null */
+          /* fail-soft: keep base ghost or try model on prose */
+          if (!cancelled && base === null) {
+            tryModelGhost(lineToCursor, null, classified.kind);
+          }
         });
     }, delay);
     return () => {
       cancelled = true;
       clearTimeout(timer);
+      try {
+        ac.abort();
+      } catch {
+        /* abort is best-effort */
+      }
     };
-  }, [value, cursor, history, suggestions.length, ghostDebounceMs, goalHints, dynamicWorldItems]);
+  }, [
+    value,
+    cursor,
+    history,
+    suggestions.length,
+    ghostDebounceMs,
+    goalHints,
+    dynamicWorldItems,
+    modelGhostEnabled,
+    suggestGhost,
+  ]);
 
   // Ink subscribes the callback passed to useInput in a passive effect. Keep that
   // callback stable across renders so visibility/menu transitions cannot briefly
