@@ -23,7 +23,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { execa } from 'execa';
 import {
   clearClaudeToken,
@@ -60,6 +60,23 @@ export interface EnvironmentStatus {
   readonly hasAnyProvider: boolean;
   readonly platform: NodeJS.Platform;
 }
+
+/**
+ * Claude Code stable model aliases. The CLI maps these to the current backend
+ * model family — they are not a hard-coded release catalog of dated model ids.
+ */
+export const CLAUDE_FALLBACK_MODELS: readonly string[] = ['opus', 'sonnet', 'haiku'];
+
+/**
+ * Codex floor when `$CODEX_HOME/models_cache.json` is missing/unreadable.
+ * Live inventory from the cache takes precedence so newly listed Codex models
+ * appear without a myshell release.
+ */
+export const CODEX_FALLBACK_MODELS: readonly string[] = [
+  'gpt-5.5',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+];
 
 // ---------------------------------------------------------------------------
 // Internal factory
@@ -357,6 +374,50 @@ export function resolveCodexAuthPath(
 }
 
 /**
+ * Resolve `$CODEX_HOME/models_cache.json` the same way as auth.json — sibling of
+ * the auth file under the effective CODEX_HOME. Pure-ish; never throws.
+ */
+export function resolveCodexModelsCachePath(
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  home: string = homedir(),
+): string {
+  return join(dirname(resolveCodexAuthPath(env, cwd, home)), 'models_cache.json');
+}
+
+/**
+ * Parse Codex `models_cache.json` into list-visible model slugs.
+ *
+ * Fail-soft + pure: corrupt JSON / unexpected shape / missing models → `[]`.
+ * Skips non-user-facing entries (`visibility` present and not `'list'`), matching
+ * capability-refresh Layer 2. Never invents tier/effort — ids only.
+ */
+export function parseCodexModelsCache(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+    const models = (parsed as { models?: unknown }).models;
+    if (!Array.isArray(models)) return [];
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const rawModel of models) {
+      if (rawModel === null || typeof rawModel !== 'object' || Array.isArray(rawModel)) continue;
+      const m = rawModel as { slug?: unknown; visibility?: unknown };
+      const slug = typeof m.slug === 'string' ? m.slug.trim() : '';
+      if (slug.length === 0) continue;
+      if (typeof m.visibility === 'string' && m.visibility !== 'list') continue;
+      const key = slug.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(slug);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Fallback auth signal from the on-disk credentials file. True when the file
  * holds a usable Claude credential — a non-expired OAuth token (expiresAt in
  * the future, or absent) or an API key — even if `claude auth status` couldn't
@@ -597,7 +658,8 @@ export async function detectProvider(
           installed: true,
           version: (result.stdout as string).trim(),
           binaryPath: 'claude',
-          availableModels: ['opus', 'sonnet', 'haiku'],
+          // Stable CLI aliases (map to current backend families) — not a dated catalog.
+          availableModels: [...CLAUDE_FALLBACK_MODELS],
           authenticated,
           plan,
         };
@@ -671,12 +733,25 @@ export async function detectProvider(
         }
       }
 
+      // Live inventory from local models_cache.json when present (CLI-written,
+      // no network scrape). New listed models appear without a myshell release.
+      // Missing/corrupt cache → declarative floor only. Never invents tier/effort.
+      let availableModels: string[] = [...CODEX_FALLBACK_MODELS];
+      try {
+        const cachePath = resolveCodexModelsCachePath(codexChildEnv, cwd);
+        const raw = await readFile(cachePath, 'utf8');
+        const live = parseCodexModelsCache(raw);
+        if (live.length > 0) availableModels = live;
+      } catch {
+        // File missing/unreadable — keep floor.
+      }
+
       return {
         id: 'codex',
         installed: true,
         version: (result.stdout as string).trim(),
         binaryPath: 'codex',
-        availableModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
+        availableModels,
         authenticated,
         plan,
       };
@@ -1077,6 +1152,100 @@ export async function detectEnvironment(): Promise<EnvironmentStatus> {
     grok,
     hasAnyProvider: claude.installed || codex.installed || opencode.installed || grok.installed,
     platform: process.platform,
+  };
+}
+
+/**
+ * Light mid-session model re-probe for live inventory only.
+ *
+ * Re-reads advertised model lists for installed providers that expose a machine-
+ * readable local source (Codex models_cache, `opencode models`, `grok models`).
+ * Does NOT re-probe auth/version/plan — callers keep those from the session env.
+ * Fully fail-soft: any probe failure keeps the prior availableModels for that
+ * provider. Bounded 10s timeouts match detectProvider so this cannot hang forever.
+ *
+ * Intended for optional mid-session refresh (mode switch / interval / before Auto
+ * route) so newly shipped models appear without restarting myshell.
+ */
+export async function refreshProviderModels(
+  env: EnvironmentStatus,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd(),
+): Promise<EnvironmentStatus> {
+  const codexChildEnv: NodeJS.ProcessEnv = {
+    ...baseEnv,
+    ...replitPersistentEnv(baseEnv, cwd),
+  };
+  const opencodeEnv: NodeJS.ProcessEnv = {
+    ...baseEnv,
+    ...replitPersistentEnv(baseEnv, cwd),
+  };
+
+  const [codexModels, opencodeModels, grokModels] = await Promise.all([
+    (async (): Promise<readonly string[] | undefined> => {
+      if (!env.codex.installed) return undefined;
+      try {
+        const raw = await readFile(resolveCodexModelsCachePath(codexChildEnv, cwd), 'utf8');
+        const live = parseCodexModelsCache(raw);
+        return live.length > 0 ? live : undefined;
+      } catch {
+        return undefined;
+      }
+    })(),
+    (async (): Promise<readonly string[] | undefined> => {
+      if (!env.opencode.installed) return undefined;
+      try {
+        const modelsResult = await execa('opencode', ['models'], {
+          reject: false,
+          timeout: 10_000,
+          env: opencodeEnv,
+        });
+        if (modelsResult.timedOut === true || modelsResult.exitCode !== 0) return undefined;
+        const live = parseOpencodeModels(
+          typeof modelsResult.stdout === 'string' ? modelsResult.stdout : '',
+        );
+        return live.length > 0 ? live : undefined;
+      } catch {
+        return undefined;
+      }
+    })(),
+    (async (): Promise<readonly string[] | undefined> => {
+      if (!env.grok.installed || !env.grok.authenticated) return undefined;
+      try {
+        const modelsResult = await execa('grok', ['models'], {
+          reject: false,
+          timeout: 10_000,
+          env: baseEnv,
+        });
+        if (modelsResult.timedOut === true || modelsResult.exitCode !== 0) return undefined;
+        const live = parseGrokModels(
+          typeof modelsResult.stdout === 'string' ? modelsResult.stdout : '',
+        );
+        return live.length > 0 ? live : undefined;
+      } catch {
+        return undefined;
+      }
+    })(),
+  ]);
+
+  const codex =
+    codexModels !== undefined
+      ? { ...env.codex, availableModels: codexModels }
+      : env.codex;
+  const opencode =
+    opencodeModels !== undefined
+      ? { ...env.opencode, availableModels: opencodeModels }
+      : env.opencode;
+  const grok =
+    grokModels !== undefined ? { ...env.grok, availableModels: grokModels } : env.grok;
+
+  return {
+    claude: env.claude,
+    codex,
+    opencode,
+    grok,
+    hasAnyProvider: env.hasAnyProvider,
+    platform: env.platform,
   };
 }
 

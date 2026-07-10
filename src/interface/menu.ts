@@ -52,6 +52,10 @@ import {
   type CapabilitySelfAwarenessSummary,
 } from '../core/tool-state.js';
 import { refreshCapabilities } from '../core/model-capability-refresh.js';
+import {
+  DEFAULT_MODEL_REDETECT_INTERVAL_MS,
+  shouldRedetectModels,
+} from '../core/live-model-inventory.js';
 import { createCapabilityRefreshPort } from '../infra/model-capability-port.js';
 import { nodeRepoScanPort } from '../infra/repo-scan.js';
 import { detectWorkspaceContext } from '../infra/workspace-context.js';
@@ -137,7 +141,7 @@ import type { ConversationMeta, ConversationMode, ConversationStore } from '../i
 import { readLedger } from '../infra/ledger.js';
 import { summarizeSessionProviderTokens, summarizeSpend } from '../infra/insights.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
-import { detectEnvironment } from '../providers/detect.js';
+import { detectEnvironment, refreshProviderModels } from '../providers/detect.js';
 import { installProvider } from '../providers/install.js';
 import type { Provider, ProviderId, ProviderRequest, SandboxLevel } from '../providers/port.js';
 import { route } from '../core/route.js';
@@ -1151,30 +1155,25 @@ export async function runChatLoop(
   const recentAccount429sByProvider = new Map<SubscriptionProvider, Array<{ accountId: string; atMs: number }>>();
   const accountParallelismDisabledProviders = new Set<SubscriptionProvider>();
 
-  // ---- MODEL CAPABILITY REGISTRY (Stage 1, §4) ----------------------------
-  // Refresh the objective capability facts ONCE per chat session (the local Codex
-  // cache + advertised model set are stable within a session, like the repo map)
-  // and feed the capped summary into the self-awareness block via buildToolStateContext.
+  // ---- MODEL CAPABILITY REGISTRY (Stage 1, §4) + live auto-adapt -----------
+  // Refresh objective capability facts on chat/session start from local CLI
+  // inventory (detect availableModels + Codex models_cache + opencode verbose).
   // Cheap + FULLY fail-soft (any error / missing cache → undefined → the ABOUT
   // block renders exactly as before; reasoning efforts stay "unknown"). NO model
-  // call, NO network. Reads mutableCtx.env so it reflects the detected providers.
-  // PER-SESSION capability cache (Stage 1/3). The objective capability summary +
-  // the STRUCTURED registry it was derived from, both resolved ONCE per chat
-  // session from the SAME snapshot (REUSED, never recomputed) and memoized behind
-  // `resolved`. `summary` feeds the self-awareness ABOUT block; `registry` is
-  // threaded into orchestrate's route()/selectReasoningEffort. Either absent on a
-  // fail-soft refresh failure → unchanged routing / the ABOUT block renders as
-  // before. Grouped into one object so the three cross-turn fields share one
-  // explicit holder instead of three free closure `let`s.
+  // call, NO network scrape. Memoized per session; optional light re-detect on a
+  // bounded interval / mode switch updates inventory mid-session so newly shipped
+  // models appear without a myshell restart (background, fail-soft, no hang).
   const caps: {
     summary: CapabilitySelfAwarenessSummary | undefined;
     registry: import('../core/model-capabilities.js').CapabilityRegistry | undefined;
     resolved: boolean;
   } = { summary: undefined, registry: undefined, resolved: false };
-  const resolveCapabilitySummaryOnce = async (): Promise<
-    CapabilitySelfAwarenessSummary | undefined
-  > => {
-    if (caps.resolved) return caps.summary;
+  let lastModelRedetectAtMs: number | undefined;
+  let modelRedetectInFlight = false;
+  const resolveCapabilitySummaryOnce = async (
+    opts?: { readonly force?: boolean },
+  ): Promise<CapabilitySelfAwarenessSummary | undefined> => {
+    if (caps.resolved && opts?.force !== true) return caps.summary;
     caps.resolved = true;
     try {
       const { registry } = await refreshCapabilities(
@@ -1205,10 +1204,40 @@ export async function runChatLoop(
         (p) => PROVIDER_LABEL[p] ?? p,
       );
     } catch {
-      caps.summary = undefined;
-      caps.registry = undefined;
+      // Force re-resolve keeps prior snapshot when a refresh fails mid-session.
+      if (opts?.force !== true) {
+        caps.summary = undefined;
+        caps.registry = undefined;
+      }
     }
     return caps.summary;
+  };
+  /**
+   * Optional light re-detect of advertised models (Codex cache / opencode / grok).
+   * Background only — never awaits on the turn path. Fail-soft; no hang.
+   */
+  const scheduleLiveModelRedetect = (force = false): void => {
+    const nowMs = ctx.clock.now();
+    if (modelRedetectInFlight) return;
+    if (
+      !force &&
+      !shouldRedetectModels(lastModelRedetectAtMs, nowMs, DEFAULT_MODEL_REDETECT_INTERVAL_MS)
+    ) {
+      return;
+    }
+    modelRedetectInFlight = true;
+    void (async () => {
+      try {
+        const nextEnv = await refreshProviderModels(mutableCtx.env, process.env, activeCwd);
+        mutableCtx.env = nextEnv;
+        await resolveCapabilitySummaryOnce({ force: true });
+        lastModelRedetectAtMs = ctx.clock.now();
+      } catch {
+        // fail-soft: keep prior env + capability snapshot
+      } finally {
+        modelRedetectInFlight = false;
+      }
+    })();
   };
 
   // Quota-shed (whole-tool-finish §3.2): derive the per-turn shed plan from the
@@ -1422,6 +1451,9 @@ export async function runChatLoop(
       void ctx.store.setMode(convId, toPersist).catch(() => {
         /* best-effort: UI already reflects the cycle */
       });
+      // Mode switch → light live model re-detect (background, fail-soft) so
+      // mid-session provider releases can enter Auto inventory promptly.
+      scheduleLiveModelRedetect(true);
     });
     // P0.19/P0.20 — forge orientation dim line ONLY when non-GitHub-default
     // (GitLab / other / local-only). Fire-and-forget so chat open stays instant;
@@ -2340,9 +2372,16 @@ export async function runChatLoop(
         out.write(dim("  Couldn't read prior history — continuing without it.\n", out.color));
       }
 
-      // Resolve the capability summary once per session (await here so the
-      // synchronous buildDeps below can read the memoized value). Fail-soft → undefined.
+      // Capability refresh on chat turn (session-start default-on; memoized).
+      // Optional bounded-interval re-detect runs in the background so mid-session
+      // CLI model releases appear without hanging the turn.
       await resolveCapabilitySummaryOnce();
+      if (lastModelRedetectAtMs === undefined) {
+        // Session-start inventory already gathered — start the re-detect clock.
+        lastModelRedetectAtMs = ctx.clock.now();
+      } else {
+        scheduleLiveModelRedetect(false);
+      }
 
       // ---- CURRENT GOALS / PLAN snapshot (the partner's OWN plan) -------------
       // The persisted goalStore is created LATER (after buildDeps is defined), so

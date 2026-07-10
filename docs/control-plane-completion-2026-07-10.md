@@ -80,3 +80,7 @@
 3. **Stall frees control** — after stall UI, ensure capture still accepts preempt (hang-cap may still run).
 4. **Zombie reconcile on chat enter** — not only post-turn.
 5. **Pause with reason** stored on goal for rewatch (“waiting on user research”).
+
+## Live model auto-adapt (adjacent, default-on)
+
+When a provider CLI ships a new model, myshell picks it up from **local** inventory — not a static catalog-only release. Capability refresh runs on chat/session start (menu + CLI); light re-detect may run mid-session (bounded interval / mode switch, fail-soft). Unknown ids enter routing inventory with worker-floor / unknown profile — never invent tier or effort. Seams: `detect.ts` `availableModels`, `model-capability-refresh.ts`, `live-model-inventory.ts`.

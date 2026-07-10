@@ -210,4 +210,41 @@ describe('buildSharedOrchestrateCore', () => {
     assert.ok(SHARED_ORCHESTRATE_CORE_KEYS.includes('blockedStateV1'));
     assert.equal(SHARED_ORCHESTRATE_CORE_KEYS.length, 13);
   });
+
+  it('expands availableModels with live registry ids (detect/codex-cache)', () => {
+    const registry = {
+      claude: [],
+      codex: [
+        {
+          provider: 'codex' as const,
+          id: 'gpt-5.5',
+          aliases: [],
+          supportedReasoningEfforts: [],
+          source: ['declarative'] as const,
+        },
+        {
+          provider: 'codex' as const,
+          id: 'gpt-brand-new-ship',
+          aliases: [],
+          supportedReasoningEfforts: [],
+          source: ['detect'] as const,
+        },
+      ],
+      opencode: [],
+      grok: [],
+    };
+    const core = buildSharedOrchestrateCore(
+      env({
+        codex: {
+          installed: true,
+          authenticated: true,
+          availableModels: ['gpt-5.5'],
+        },
+      }),
+      { context: { capabilityRegistry: registry } },
+    );
+    assert.deepEqual(core.availableModels, {
+      codex: ['gpt-5.5', 'gpt-brand-new-ship'],
+    });
+  });
 });
