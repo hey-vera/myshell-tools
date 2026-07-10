@@ -711,6 +711,22 @@ export function reduce(state: UiState, action: Action): UiState {
         return commit(s, { kind: 'notice', text: action.routingReceipt });
       };
 
+      // P2.5 completion-truth chrome: verified vs unverified · terminal · settle.
+      // Only when CompletionResultV1 was actually attached (no theater). Quiet-suppressed.
+      const appendCompletionTruth = (s: UiState): UiState => {
+        if (
+          isQuiet ||
+          action.completionTruth === undefined ||
+          action.completionTruth.length === 0
+        ) {
+          return s;
+        }
+        return commit(s, { kind: 'notice', text: action.completionTruth });
+      };
+
+      const appendEndOfTurnChrome = (s: UiState): UiState =>
+        appendCompletionTruth(appendRoutingReceipt(s));
+
       if (!action.success) {
         if (action.blocked !== undefined) {
           if (!isQuiet) {
@@ -723,7 +739,7 @@ export function reduce(state: UiState, action: Action): UiState {
                 text: `  Preserved: ${action.blocked.preservedWork.slice(0, 200)}`,
               });
             }
-            next = appendRoutingReceipt(next);
+            next = appendEndOfTurnChrome(next);
           }
           return next;
         }
@@ -748,7 +764,7 @@ export function reduce(state: UiState, action: Action): UiState {
                   `attempts: ${action.attempts} · session: ${action.sessionId}`,
               },
             );
-            next = appendRoutingReceipt(next);
+            next = appendEndOfTurnChrome(next);
           }
           return next;
         }
@@ -763,7 +779,7 @@ export function reduce(state: UiState, action: Action): UiState {
               `Failed — tier: ${action.tier}, ${tokenStr} tokens, ` +
               `attempts: ${action.attempts}, session: ${action.sessionId}`,
           });
-          next = appendRoutingReceipt(next);
+          next = appendEndOfTurnChrome(next);
         }
         return next;
       }
@@ -771,8 +787,8 @@ export function reduce(state: UiState, action: Action): UiState {
       // success
       if (action.hasQuestions === true) {
         // Suppress the completion line entirely — the caller drives a selector.
-        // Still surface who ran the ask when known (visible dispatch).
-        return appendRoutingReceipt(next);
+        // Still surface who ran the ask when known (visible dispatch) + check truth.
+        return appendEndOfTurnChrome(next);
       }
       if (action.bestEffort === true && !isQuiet) {
         next = commit(next, {
@@ -804,7 +820,7 @@ export function reduce(state: UiState, action: Action): UiState {
           text: `✓ done${tokenSeg}${elapsedStr}`,
         });
       }
-      return appendRoutingReceipt(next);
+      return appendEndOfTurnChrome(next);
     }
 
 
