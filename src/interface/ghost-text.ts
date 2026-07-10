@@ -1,13 +1,18 @@
 /**
- * src/interface/ghost-text.ts — Local-first ghost text engine (P0.17–P0.18).
+ * src/interface/ghost-text.ts — Local-first ghost text engine (P0.17–P0.18)
+ * plus pure helpers for optional budgeted model ghost (P1.5).
  *
  * Pure, synchronous suggestions for Claude Code–class inline ghost complete.
- * Layers (no model calls):
+ * Layers (local; no model calls inside proposeGhost):
  *   1. Empty buffer → optional goal-aware hint (injected)
  *   2. Slash name / slash arg via menu-completion pure seams
  *   3. Path / @-mention via pre-resolved completeChat hits (async caller)
  *   4. History prefix match (recent submitted lines)
  *   5. Recent-accept cache
+ *
+ * Optional model fallback (P1.5) is async + injected: the caller only asks a
+ * model after local layers return null AND `modelGhost` is enabled. Helpers
+ * here stay pure (prompt build, parse, precedence, gate).
  *
  * Fail-soft: never throws. Returns null when nothing confident extends `line`.
  * Only proposes when the suggestion is a strict prefix extension of `line`
@@ -23,12 +28,31 @@ import {
   completeSlashArg,
   fuzzyRank,
 } from './menu-completion.js';
+import {
+  MODEL_GHOST_MAX_SUFFIX,
+  MODEL_GHOST_TIMEOUT_MS,
+  buildModelGhostPrompt,
+  type SuggestGhost,
+} from '../core/model-ghost.js';
+
+export {
+  MODEL_GHOST_TIMEOUT_MS,
+  MODEL_GHOST_MAX_SUFFIX,
+  buildModelGhostPrompt,
+  type SuggestGhost,
+};
 
 /** Default idle debounce before showing ghost in the composer (ms). */
 export const GHOST_DEBOUNCE_MS = 300;
 
 /** Max length for an empty-prompt goal hint. */
 export const GHOST_HINT_MAX = 80;
+
+/**
+ * Minimum typed length before model ghost may fire (empty buffer is allowed —
+ * empty uses goalHints first; model only when those also miss).
+ */
+export const MODEL_GHOST_MIN_PREFIX = 2;
 
 export type GhostSource =
   | 'history'
@@ -37,7 +61,8 @@ export type GhostSource =
   | 'path'
   | 'mention'
   | 'goal-hint'
-  | 'cache';
+  | 'cache'
+  | 'model';
 
 /**
  * A single ghost proposal. `suffix` is the dim inline tail after the typed
@@ -135,6 +160,113 @@ export function applyGhost(
   const tail = value.slice(cursor);
   const next = head + tail;
   return { value: next, cursor: head.length };
+}
+
+// ---------------------------------------------------------------------------
+// Optional model ghost (P1.5) — pure helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Local always wins. Model only when enabled and local is empty. PURE.
+ */
+export function resolveGhostPrecedence(opts: {
+  readonly local: GhostSuggestion | null;
+  readonly model: GhostSuggestion | null;
+  readonly modelEnabled: boolean;
+}): GhostSuggestion | null {
+  if (opts.local !== null) return opts.local;
+  if (opts.modelEnabled && opts.model !== null) return opts.model;
+  return null;
+}
+
+/**
+ * Gate for whether the composer may request a model ghost. PURE + fail-soft.
+ * Requires: toggle on, no local hit, caret-ready prose/empty (not slash/path
+ * multi-candidate territory), and enough prefix (or empty).
+ */
+export function shouldOfferModelGhost(opts: {
+  readonly enabled: boolean;
+  readonly local: GhostSuggestion | null;
+  readonly line: string;
+  /** From classifyCompletion; absent → treat as 'none'. */
+  readonly kind?: string;
+}): boolean {
+  try {
+    if (opts.enabled !== true) return false;
+    if (opts.local !== null) return false;
+    const line = typeof opts.line === 'string' ? opts.line : '';
+    const kind = opts.kind ?? 'none';
+    // Local layers own slash/path/mention/arg completions — never race model.
+    if (kind !== 'none') return false;
+    if (line.length === 0) return true;
+    if (line.length < MODEL_GHOST_MIN_PREFIX) return false;
+    // Skip multi-line compose for model ghost (cheap, single-line only).
+    if (line.includes('\n')) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Parse a model reply into a ghost suggestion. Accepts suffix-only or full-line
+ * replies. PURE + fail-soft → null on garbage.
+ */
+export function parseModelGhostCompletion(
+  line: string,
+  raw: string | undefined,
+): GhostSuggestion | null {
+  try {
+    if (raw === undefined || typeof raw !== 'string') return null;
+    const prefix = typeof line === 'string' ? line : '';
+    // Preserve leading spaces on pure suffixes (" world"); only strip trailing
+    // noise and common wrappers. Full-line replies are rtrimmed after match.
+    let text = raw.replace(/\r\n/g, '\n');
+    if (text.length === 0) return null;
+
+    // Strip common wrappers: ```…```, surrounding quotes (whole reply).
+    const trimmedProbe = text.trim();
+    if (trimmedProbe.startsWith('```')) {
+      const body = trimmedProbe.replace(/^```[a-zA-Z]*\n?/, '').replace(/\n?```$/, '');
+      text = body;
+    } else if (
+      (trimmedProbe.startsWith('"') && trimmedProbe.endsWith('"') && trimmedProbe.length >= 2) ||
+      (trimmedProbe.startsWith("'") && trimmedProbe.endsWith("'") && trimmedProbe.length >= 2)
+    ) {
+      text = trimmedProbe.slice(1, -1);
+    }
+    // Single line only (keep leading space on that line).
+    const nl = text.indexOf('\n');
+    if (nl !== -1) text = text.slice(0, nl);
+    text = text.replace(/\s+$/u, ''); // rtrim only
+    if (text.length === 0) return null;
+
+    let full: string;
+    const asFull = text.trimStart(); // full-line candidates ignore leading pad
+    if (asFull.startsWith(prefix) && asFull.length > prefix.length) {
+      full = asFull;
+    } else if (prefix.length === 0) {
+      full = asFull;
+    } else {
+      // Pure suffix — keep leading whitespace from the model reply.
+      full = prefix + text;
+    }
+
+    // Cap new characters.
+    if (full.length > prefix.length + MODEL_GHOST_MAX_SUFFIX) {
+      full = full.slice(0, prefix.length + MODEL_GHOST_MAX_SUFFIX);
+    }
+    if (!full.startsWith(prefix) || full.length <= prefix.length) return null;
+    // Empty-prompt: also cap absolute length like goal hints.
+    if (prefix.length === 0 && full.length > GHOST_HINT_MAX) {
+      full = full.slice(0, GHOST_HINT_MAX);
+    }
+    const suffix = full.slice(prefix.length);
+    if (suffix.trim().length === 0) return null;
+    return { full, suffix, source: 'model' };
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------

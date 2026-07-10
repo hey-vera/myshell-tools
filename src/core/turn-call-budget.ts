@@ -36,7 +36,9 @@ export type TurnCallPurpose =
   | 'goal-replan'
   | 'autostage'
   | 'meta'
-  | 'research-web';
+  | 'research-web'
+  /** Optional budgeted inline ghost-text completion (P1.5). Discretionary only. */
+  | 'ghost';
 
 export type TurnCallBudgetMode = 'observe' | 'enforce';
 

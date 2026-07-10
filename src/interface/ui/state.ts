@@ -339,6 +339,11 @@ export interface UiSettingsSnapshot {
   readonly codebaseAwareness: boolean;
   /** Whether the shell startup hook is currently installed (set as default). */
   readonly setAsDefault: boolean;
+  /**
+   * Optional budgeted model ghost for Tab complete (P1.5). Default false.
+   * Local ghost layers still run when this is off.
+   */
+  readonly modelGhost: boolean;
 }
 
 /**
