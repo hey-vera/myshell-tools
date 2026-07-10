@@ -157,12 +157,11 @@ import { decideHistoryPolicy } from '../core/turn-directive.js';
 import { availableAfterCooldown, cooldownExpiry } from '../core/cooldown.js';
 import { autoIntensityForTurn, concurrencyCeilingForRegime, deriveBaselineOrder, deriveLiveProviderOrder, regimeForIntensity } from '../core/capacity-allocator.js';
 // routing-memory retained for diagnostics/reporting only (cost/insights), not routing input
-import type { OutputSink, TurnInputSurface, Verbosity } from './render.js';
+import type { OutputSink, Verbosity } from './render.js';
 import {
   canRenderInputBox,
   createTurnInputSurface,
   renderInputPrompt,
-  renderQueuedIndicator,
   renderResumeTranscript,
 } from './render.js';
 import { isStubTitle } from '../infra/conversations.js';
@@ -218,7 +217,13 @@ import {
 } from './menu-auto-mode.js';
 import { levelToMode, migrateMode, levelLabel, nextLevel, isLevel } from '../core/mode-levels.js';
 import type { Level } from '../core/mode-levels.js';
-import { decidePostTurn } from './menu-post-turn.js';
+import {
+  decidePostTurn,
+  formatLiveNotesBlock,
+  mergeLiveNotesIntoEnvironmentContext,
+  parsePreemptiveControlCommand,
+  zombieRunningGoalIds,
+} from './menu-post-turn.js';
 import { planRetryTruncation, recentUserMessages } from './menu-message-redo.js';
 import { completeChat } from './menu-completion.js';
 import {
@@ -488,6 +493,14 @@ export interface MenuContext {
 }
 
 /** Timeout continuation obeys the same oversight level as an explicit /goal. */
+/**
+ * Live background-goal AbortControllers keyed by goalId.
+ * Process-scoped so leaving chat (`/back`) does NOT kill workers — only
+ * explicit pause / worker completion / process exit ends them. `running` in
+ * the store with no entry here is a zombie healed by reconcile on chat enter.
+ */
+const backgroundGoalControllers = new Map<string, AbortController>();
+
 export async function approveTimeoutContinuation(
   oversight: Oversight,
   confirm: Confirm,
@@ -660,48 +673,17 @@ async function promptForAuthBeforeChat(
 const MAX_CONSECUTIVE_QUESTION_TURNS = 3;
 
 // ---------------------------------------------------------------------------
-// Typed-ahead queue — UI chrome notices (verbosity = render chrome only)
+// Live manager notes — UI chrome notices (verbosity = render chrome only)
 // ---------------------------------------------------------------------------
 
 /**
- * Render a dim "queued" hint after a line is typed-ahead during a turn. UI
- * chrome: shown in `normal`/`verbose`, suppressed in `quiet` (it is not
- * data-loss-relevant). Printed on its own line so it never corrupts the spinner.
+ * Quiet single notice when mid-turn prose is captured as a live note (not a
+ * FIFO turn). Shown in `normal`/`verbose`, suppressed in `quiet`. Once per
+ * capture window is enough — callers gate with a local flag.
  */
-function renderQueuedHint(
-  out: OutputSink,
-  verbosity: Verbosity,
-  queueLength: number,
-  preview: string,
-  turnInput?: TurnInputSurface | null,
-): void {
+function renderNotedHint(out: OutputSink, verbosity: Verbosity): void {
   if (verbosity === 'quiet') return;
-  if (turnInput !== undefined && turnInput !== null) {
-    turnInput.setQueued(queueLength);
-    return;
-  }
-  const short = preview.length > 48 ? `${preview.slice(0, 48)}…` : preview;
-  const indicator = renderQueuedIndicator(queueLength, out.color);
-  out.write(dim(`  (${indicator}; ${short})\n`, out.color));
-}
-
-/**
- * Render a dim "discarded N queued" notice. Shown in EVERY verbosity (including
- * `quiet`) because dropping typed-ahead input silently is a data-loss surprise.
- */
-function renderDiscardedQueue(
-  out: OutputSink,
-  count: number,
-  reason: 'interrupt' | 'question' | 'memory',
-): void {
-  if (count <= 0) return;
-  const tail =
-    reason === 'question'
-      ? '; answer the question first'
-      : reason === 'memory'
-        ? '; respond to the memory prompt first'
-        : '';
-  out.write(dim(`  (discarded ${count} queued message${count === 1 ? '' : 's'}${tail})\n`, out.color));
+  out.write(dim('  noted · applies next\n', out.color));
 }
 
 export async function runChatLoop(
@@ -1588,11 +1570,10 @@ export async function runChatLoop(
   })();
 
   let currentAc: AbortController | null = null;
-  const backgroundGoals = new Set<AbortController>();
   let lastReportedHistoryDropCount: number | undefined;
   // Set true when the in-flight turn was interrupted by ESC (distinct from the
-  // Ctrl+C escape model). Read by the post-turn slot to discard the typed-ahead
-  // queue (per decidePostTurn) and print the ESC status once.
+  // Ctrl+C escape model). Read by the post-turn slot to suppress drain and print
+  // the ESC status once.
   let interruptedByEsc = false;
   // DRAFT GOALS (redesign Phase 1): the last IntentFrame captured from the
   // byproduct 'intent' event. Populated ONLY when draftGoalsEnabled() and the
@@ -1600,10 +1581,16 @@ export async function runChatLoop(
   // start of each normal-chat turn. Read by the post-turn draft-goal slot.
   let lastDraftGoalFrame: IntentFrame | null = null;
 
-  // Typed-ahead queue: full lines the user submits DURING a turn. Captured by
-  // the LineReader (single owner — no second stdin consumer), drained FIFO after
-  // a clean settle, discarded on interrupt / before any selector (decidePostTurn).
-  const queuedTurns: string[] = [];
+  // Live manager notes: full lines the user submits DURING a turn. Captured by
+  // the LineReader (single owner — no second stdin consumer). NOT a FIFO of
+  // next turns — notes inject into the next orchestrate/buildDeps context as
+  // "USER NOTES WHILE WORKING" and clear after that turn latches them. Control
+  // lines (`/back`, `/exit`) preempt instead of noting.
+  const liveNotes: string[] = [];
+  // Notes latched for the CURRENT user turn's buildDeps (set at turn start by
+  // latchLiveNotesForTurn; cleared when the turn returns). Multiple buildDeps
+  // calls in the same turn all see the same block.
+  let activeTurnNotesBlock = '';
 
   // Interrupt timestamps — populated on each SIGINT; checked against the
   // 1 500 ms sliding window. Using ctx.clock.now() (not Date.now) so tests
@@ -1627,9 +1614,32 @@ export async function runChatLoop(
       : undefined;
 
   /**
+   * Pull any pending mid-turn notes into `activeTurnNotesBlock` and clear the
+   * live buffer. Appends when the block already holds notes from an earlier
+   * latch in the same user turn (e.g. main turn → question answer). No-op when
+   * the buffer is empty. Call before buildDeps on model paths; clear
+   * `activeTurnNotesBlock` when runOneChatInput returns.
+   */
+  const latchLiveNotesForTurn = (): void => {
+    if (liveNotes.length === 0) return;
+    const block = formatLiveNotesBlock(liveNotes);
+    liveNotes.length = 0;
+    if (block.length === 0) return;
+    if (activeTurnNotesBlock.length === 0) {
+      activeTurnNotesBlock = block;
+      return;
+    }
+    // Append bullet lines under the existing header (avoid a second header).
+    const extra = block.startsWith('USER NOTES WHILE WORKING:\n')
+      ? block.slice('USER NOTES WHILE WORKING:\n'.length)
+      : block;
+    activeTurnNotesBlock = `${activeTurnNotesBlock}\n${extra}`;
+  };
+
+  /**
    * Run ONE model turn with the chat-ux input hooks: a scoped ESC listener
-   * (ESC = interrupt this turn, stay at the prompt) and typed-ahead capture
-   * (full lines submitted mid-turn are queued, not fed to the next prompt).
+   * (ESC = interrupt this turn, stay at the prompt) and mid-turn capture
+   * (control lines preempt; prose becomes live notes for the next turn).
    * Always detaches both in `finally`. Returns runTask's result.
    */
   const runTaskWithInputHooks = async (
@@ -1648,38 +1658,50 @@ export async function runChatLoop(
     // The ANSI overlay TurnInputSurface paints directly to `out` with cursor
     // moves — correct over the legacy renderer, but it would corrupt the Ink
     // render (Ink owns the live region). On the Ink path it stays null; the Ink
-    // StatusBlock/Stream render the spinner + queued indicator instead.
+    // StatusBlock/Stream render the spinner instead.
     const turnInput = inkPath
       ? null
       : createTurnInputSurface(out, { columns: process.stdout.columns });
-    // Typed-ahead capture (only when the real LineReader owns stdin).
+    // Mid-turn capture (only when the real LineReader owns stdin).
+    // Preemptive control: `/back` / `/exit` abort the foreground turn and set
+    // leave signals immediately. Prose → live notes (not a FIFO of next turns).
+    let notedHintShown = false;
     const stopCapture =
       lineReader !== undefined && lineReader !== null
         ? lineReader.beginCapture((captured: string) => {
-            queuedTurns.push(captured);
-            renderQueuedHint(out, verbosity, queuedTurns.length, captured, turnInput);
+            const preempt = parsePreemptiveControlCommand(captured);
+            if (preempt !== null) {
+              liveNotes.length = 0;
+              activeTurnNotesBlock = '';
+              currentAc?.abort();
+              // Both /back and /exit leave chat → home menu (process exit is home Esc).
+              control.menu = true;
+              return;
+            }
+            liveNotes.push(captured);
+            if (!notedHintShown) {
+              notedHintShown = true;
+              renderNotedHint(out, verbosity);
+            }
           })
         : null;
     // Scoped ESC listener (no-op off-TTY / injected-test path).
     const detachEsc =
       turnKeyStdin !== undefined
         ? attachChatTurnKeyListener(out, turnKeyStdin, () => {
-            // ESC now cancels the turn AND exits the app (Slice 4).
-            chatEscHandler();
+            // Mid-turn ESC: cancel THIS foreground turn only; stay in chat.
+            midTurnEscHandler();
           }, () => {
             if (lineReader !== undefined && lineReader !== null) {
               turnInput?.setValue(lineReader.currentLine());
             }
           })
         : (): void => {};
-    // Ink-path interrupt: install a handler the InputBox routes a bare ESC to. It
-    // now delegates to chatEscHandler which cancels the turn AND exits the app
-    // (Slice 4 — not just "stay at the chat prompt" like pre-Slice-4).
-    // Cleared in `finally` so an idle-prompt ESC is a no-op.
-    // No-op off the Ink path (inkSetInterrupt undefined).
+    // Ink-path mid-turn interrupt: abort foreground turn only (no app exit).
+    // Restored to idle-leave on settle so bare ESC between turns leaves chat.
     if (inkSetInterrupt !== undefined) {
       inkSetInterrupt(() => {
-        chatEscHandler();
+        midTurnEscHandler();
       });
     }
     try {
@@ -1696,7 +1718,7 @@ export async function runChatLoop(
       );
     } finally {
       detachEsc();
-      if (inkSetInterrupt !== undefined) inkSetInterrupt(null);
+      installIdleEscLeaveHandler();
       if (stopCapture !== null) stopCapture();
       turnInput?.clear();
     }
@@ -1704,11 +1726,12 @@ export async function runChatLoop(
 
   /**
    * The canonical post-turn slot (MASTER-PLAN MF3 / decidePostTurn). Computes the
-   * ordered actions from the settled turn and runs them: discard typed-ahead
-   * (always, before any selector), question-flow (the existing selector),
-   * memory-approval (Phase-5 stub), drain-queue (clean settle only). The actual
-   * question-flow and drain are wired by the caller via the supplied callbacks so
-   * this helper stays the single ordering authority.
+   * ordered actions from the settled turn and runs them: discard leftover FIFO
+   * typeahead (always, before any selector; empty under live-notes), question-flow,
+   * memory-approval (Phase-5 stub), drain-queue (clean settle only; empty = no-op).
+   * Live manager notes are NOT discarded here — they apply on the next turn.
+   * The actual question-flow and drain are wired by the caller via the supplied
+   * callbacks so this helper stays the single ordering authority.
    */
   const runPostTurnSlot = async (
     finalEvent: Extract<CoreEvent, { type: 'final' }> | undefined,
@@ -1729,36 +1752,32 @@ export async function runChatLoop(
       finalEvent.questions === undefined &&
       finalEvent.memoryProposal !== undefined &&
       finalEvent.memoryProposal.facts.length > 0;
+    // Live-notes path: no FIFO turn queue. Pass queuedCount: 0 so discard/drain
+    // stay structural no-ops while decidePostTurn's pure order is unchanged.
     const actions = decidePostTurn({
       hasQuestions,
       hasMemoryProposal,
-      queuedCount: queuedTurns.length,
+      queuedCount: 0,
       interrupted: interruptedByEsc || control.exit || control.menu,
     });
     for (const action of actions) {
       if (action === 'discard-typeahead') {
-        // Discard before any selector so a queued line can never auto-answer an
-        // unseen question/memory selector. Notice the user it was dropped.
-        if (queuedTurns.length > 0) {
-          const reason = hasQuestions ? 'question' : hasMemoryProposal ? 'memory' : 'interrupt';
-          // Annotate as a data-loss notice when something is dropped that the
-          // user could otherwise expect to run (interrupt, a pending question,
-          // or a pending memory-approval selector). On a clean settle with no
-          // selector, drain-queue runs and there is nothing to discard.
-          if (interruptedByEsc || control.exit || control.menu || hasQuestions || hasMemoryProposal) {
-            renderDiscardedQueue(out, queuedTurns.length, reason);
-            queuedTurns.length = 0;
-          }
+        // Structural guard: mid-turn prose is live notes (never selector input).
+        // Leaving chat drops pending notes so they don't leak into a later session.
+        if (control.exit || control.menu) {
+          liveNotes.length = 0;
+          activeTurnNotesBlock = '';
         }
       } else if (action === 'question-flow') {
         await runQuestionFlow();
       } else if (action === 'memory-approval') {
         // The remember_user Save/Skip/Edit selector. It runs HERE — after
-        // discard-typeahead, before drain-queue (MASTER-PLAN MF3) — so a queued
-        // "1" can never be misread as "Save". Reuses the injected line reader,
-        // never the raw menu input internals.
+        // discard-typeahead, before drain-queue (MASTER-PLAN MF3) — so a mid-turn
+        // "1" can never be misread as "Save" (notes are not fed to the selector).
+        // Reuses the injected line reader, never the raw menu input internals.
         if (runMemoryApprovalFlow !== undefined) await runMemoryApprovalFlow();
       } else if (action === 'drain-queue') {
+        // Legacy FIFO drain — empty under live-notes (callback is a no-op).
         await drainQueue();
       }
     }
@@ -1825,19 +1844,22 @@ export async function runChatLoop(
   // `while (true)` can break immediately even when awaiting readLine().
   let loopBreaker: ((result: 'menu' | 'exit') => void) | null = null;
 
-  // Slice 4 — ESC exits the app from the chat subflow (idle AND mid-turn). One
-  // persistent handler installed for the whole chat-loop lifetime (Ink path) and
-  // reused by the legacy bare-ESC listener mid-turn. It marks the nav stack,
-  // mirrors the SIGINT exit-app branch (control.exit + loopBreaker('exit')), and
-  // aborts any in-flight turn. On a mid-turn ESC the outer loop sees control.exit
-  // in the post-turn slot and returns 'exit'; on an idle ESC loopBreaker('exit')
-  // resolves the readLine race directly.
-  const chatEscHandler = (): void => {
+  // Mid-turn ESC: cancel the foreground turn only (`currentAc`). Stay in chat.
+  // Do NOT set control.exit / requestExit (fixes Slice-4 “ESC exits app mid-chat”).
+  // Background goals keep their own AbortControllers and are not touched.
+  const midTurnEscHandler = (): void => {
     interruptedByEsc = true;
-    getMenuStack().requestExit();
-    control.exit = true;
     currentAc?.abort();
-    loopBreaker?.('exit');
+  };
+
+  // Idle ESC (Ink): leave chat → home menu without aborting background goals.
+  // Installed whenever no mid-turn interrupt is active.
+  const installIdleEscLeaveHandler = (): void => {
+    if (inkSetInterrupt === undefined) return;
+    inkSetInterrupt(() => {
+      control.menu = true;
+      loopBreaker?.('menu');
+    });
   };
 
   // Record rate-limit cooldowns from a completed turn. Cools down EVERY provider
@@ -1927,6 +1949,8 @@ export async function runChatLoop(
   };
 
   process.on('SIGINT', sigintHandler);
+  // Idle Esc leaves chat → menu (Ink). Mid-turn swaps this for cancel-turn only.
+  installIdleEscLeaveHandler();
 
   try {
     while (true) {
@@ -1995,8 +2019,9 @@ export async function runChatLoop(
   } finally {
     process.removeListener('SIGINT', sigintHandler);
     loopBreaker = null;
-    for (const ac of backgroundGoals) ac.abort();
-    backgroundGoals.clear();
+    // Leave chat ≠ kill goals: background workers keep their AbortControllers.
+    // Clear only the idle Esc leave handler so menu/home Esc owns exit again.
+    if (inkSetInterrupt !== undefined) inkSetInterrupt(null);
     // Mark the conversation no longer live FIRST so a still-pending concurrent recap
     // (fired on resume) sees the gate closed and skips its dock/write into the menu.
     conversationLive = false;
@@ -2016,12 +2041,16 @@ export async function runChatLoop(
   return control.result;
 
   // -------------------------------------------------------------------------
-  // runOneChatInput — process a single chat input (prompt OR queued), run its
-  // turn, then drive the canonical post-turn slot (decidePostTurn). Hoisted as a
-  // function declaration so the loop above can call it before its definition;
-  // it closes over the loop's mutable state (currentAc, control.exit/menu, queue).
+  // runOneChatInput — process a single chat input, run its turn, then drive the
+  // canonical post-turn slot (decidePostTurn). Mid-turn notes latched at the
+  // start of a model turn inject into buildDeps; they are never auto-run as
+  // separate turns. Hoisted as a function declaration so the loop above can
+  // call it before its definition; closes over loop mutable state.
   // -------------------------------------------------------------------------
   async function runOneChatInput(line: string): Promise<'continue' | 'menu' | 'exit'> {
+    // Fresh turn: drop any leftover latched block. Pending mid-turn notes live in
+    // `liveNotes` and are latched before the next model buildDeps.
+    activeTurnNotesBlock = '';
     // Slice 5 foundation: `!` prefix detection (menu-build-spec-final.md:382; kern-spec.md:45) — safe guard in input path; no exec/chat behavior touched here.
     if (line.length > 0 && line[0] === '!') {
       const command = line.slice(1).trim();
@@ -2645,11 +2674,20 @@ export async function runChatLoop(
         // Shared pure core with CLI (P2.4 slice 1): routing facts + shipped-on
         // flags + optional prompt contexts. Menu-only extras stay below.
         // Cooldown-filtered authenticatedProviders override the raw env list.
+        // Live manager notes (mid-turn prose) merge into environmentContext so
+        // they ride sequential/hedge/panel via assembleContextBlocks without a
+        // new OrchestrateDeps field. activeTurnNotesBlock is latched once per
+        // user turn and re-used for every buildDeps in that turn.
+        const environmentWithNotes = mergeLiveNotesIntoEnvironmentContext(
+          environmentContext,
+          activeTurnNotesBlock.length > 0 ? activeTurnNotesBlock : undefined,
+        );
+
         const sharedCore = buildSharedOrchestrateCore(mutableCtx.env, {
           authenticatedProviders,
           context: {
             ...(memoryContext !== undefined ? { memoryContext } : {}),
-            ...(environmentContext !== undefined ? { environmentContext } : {}),
+            ...(environmentWithNotes !== undefined ? { environmentContext: environmentWithNotes } : {}),
             ...(toolStateContext.length > 0 ? { toolStateContext } : {}),
             // Structured capability registry (Stage 3) — SAME snapshot the
             // self-awareness summary was derived from (resolveCapabilitySummaryOnce).
@@ -3312,6 +3350,29 @@ export async function runChatLoop(
       await refreshGoalContext();
       await refreshRulesContext();
 
+      // Goal integrity (control-plane PR3): store `running` with no live AC is a
+      // zombie (process restart / silent death). Park + dim notice — never silent.
+      try {
+        const allForHeal = await goalStore.list().catch(() => []);
+        const runningIds = allForHeal.filter((g) => g.state === 'running').map((g) => g.id);
+        const liveIds = new Set(backgroundGoalControllers.keys());
+        const zombies = zombieRunningGoalIds(runningIds, liveIds);
+        if (zombies.length > 0) {
+          for (const zid of zombies) {
+            await goalStore.setState(zid, 'parked').catch(() => null);
+          }
+          await syncBoard();
+          out.write(
+            dim(
+              `  (healed ${zombies.length} orphaned running goal(s) → parked — no live worker)\n`,
+              out.color,
+            ),
+          );
+        }
+      } catch {
+        /* fail-soft: never block the turn on integrity heal */
+      }
+
       // Resume note: if there are active/parked goals from a previous session,
       // surface them so the user knows the chat context is continuous.
       const runningCount = boardSummary.running ?? 0;
@@ -3618,7 +3679,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
             recentUserMessages: recentUser,
           },
           runtime: {
-            backgroundGoals: backgroundGoals.size,
+            backgroundGoals: backgroundGoalControllers.size,
             pressure: currentPressure(),
             sessionConsumption,
           },
@@ -3807,7 +3868,8 @@ Output ONLY valid JSON (no prose, no markdown).`;
                   spawnBackgroundGoal(pid, gtitle, label);
                   launched++;
                 } catch {
-                  /* spawn fail must not block */
+                  // Never leave store `running` with no live AC after a spawn miss.
+                  await goalStore.setState(pid, 'parked').catch(() => null);
                 }
               }
               await syncBoard();
@@ -3829,6 +3891,12 @@ Output ONLY valid JSON (no prose, no markdown).`;
               break;
             }
             case 'pause': {
+              // Park store AND abort the live worker (NL pause is the primary stop).
+              const liveAc = backgroundGoalControllers.get(action.goalId);
+              if (liveAc !== undefined) {
+                liveAc.abort();
+                // Map entry is removed in spawnBackgroundGoal's finally.
+              }
               const after = await goalStore.setState(action.goalId, 'parked').catch(() => null);
               await syncBoard();
               if (after) {
@@ -3845,6 +3913,30 @@ Output ONLY valid JSON (no prose, no markdown).`;
               actionHandled.add('pause');
               break;
             }
+            case 'pause_all': {
+              const running = (await goalStore.list().catch(() => [])).filter(
+                (g) => g.state === 'running',
+              );
+              // Abort every live worker (even if store list is briefly stale).
+              for (const ac of backgroundGoalControllers.values()) {
+                ac.abort();
+              }
+              let paused = 0;
+              for (const g of running) {
+                const after = await goalStore.setState(g.id, 'parked').catch(() => null);
+                if (after) paused += 1;
+              }
+              await syncBoard();
+              out.write(
+                dim(
+                  `  Paused ${paused} running goal(s)${action.reason ? ` — ${action.reason}` : ''}.\n`,
+                  out.color,
+                ),
+              );
+              if (tasteOn && paused > 0) void recordTaste('immediate_edit', 'all goals', 'pause all');
+              actionHandled.add('pause_all');
+              break;
+            }
             case 'bg': {
               const targets = action.goalIds.filter((id) => parkedIds.includes(id));
               const idsToBg = targets.length > 0 ? targets : parkedIds;
@@ -3858,7 +3950,8 @@ Output ONLY valid JSON (no prose, no markdown).`;
                   spawnBackgroundGoal(pid, gtitle, label);
                   launched++;
                 } catch {
-                  /* spawn fail must not block */
+                  // Never leave store `running` with no live AC after a spawn miss.
+                  await goalStore.setState(pid, 'parked').catch(() => null);
                 }
               }
               await syncBoard();
@@ -4083,8 +4176,11 @@ Output ONLY valid JSON (no prose, no markdown).`;
         return runGoalLoop(rawLine, fallbackLabel);
       };
       const spawnBackgroundGoal = (goalId: string, work: string, title: string): void => {
+        // Replace any prior controller for this goal (re-accept / re-bg).
+        const prior = backgroundGoalControllers.get(goalId);
+        if (prior !== undefined) prior.abort();
         const ac = new AbortController();
-        backgroundGoals.add(ac);
+        backgroundGoalControllers.set(goalId, ac);
         void (async () => {
           let verifiedDone = false;
           try {
@@ -4095,22 +4191,29 @@ Output ONLY valid JSON (no prose, no markdown).`;
           } catch {
             /* background run failure must never crash the chat loop */
           } finally {
-            backgroundGoals.delete(ac);
-            if (conversationLive) {
-              try {
+            if (backgroundGoalControllers.get(goalId) === ac) {
+              backgroundGoalControllers.delete(goalId);
+            }
+            // Integrity: never leave store `running` with no live AC (no silent zombie).
+            try {
+              const goal = await goalStore.get(goalId).catch(() => null);
+              if (goal?.state === 'running' && !verifiedDone) {
+                await goalStore.setState(goalId, 'parked').catch(() => null);
+              }
+              if (conversationLive) {
                 await syncBoard();
                 out.write(
                   '\n' +
                     dim(
                       verifiedDone
                         ? `※ Background goal finished: ${title}`
-                        : `※ Background goal paused: ${title}`,
+                        : `※ Background goal parked: ${title}`,
                       out.color,
                     ) +
                     '\n',
                 );
-              } catch { /* fail-soft */ }
-            }
+              }
+            } catch { /* fail-soft */ }
           }
         })();
       };
@@ -4439,6 +4542,8 @@ Output ONLY valid JSON (no prose, no markdown).`;
             answerHistory = [];
             out.write(dim("  Couldn't read prior history — continuing without it.\n", out.color));
           }
+          // Pull notes typed during the question turn into this answer's context.
+          latchLiveNotesForTurn();
           const answerDeps: OrchestrateDeps = buildDeps(
             answerHistory,
             await resolveTurnMemory(answerLine),
@@ -4871,10 +4976,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
           }
           if (control.exit) { control.result = 'exit'; return true; }
           if (control.menu) { control.result = 'menu'; return true; }
-          if (interruptedByEsc && queuedTurns.length > 0) {
-            renderDiscardedQueue(out, queuedTurns.length, 'interrupt');
-            queuedTurns.length = 0;
-          }
+          // ESC: keep live notes for the next chat turn (they are not FIFO turns).
           return false;
         }
 
@@ -5071,10 +5173,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
               if (control.exit) { control.result = 'exit'; return true; }
               if (control.menu) { control.result = 'menu'; return true; }
               if (interruptedByEsc) {
-                if (opts?.background !== true && queuedTurns.length > 0) {
-                  renderDiscardedQueue(out, queuedTurns.length, 'interrupt');
-                  queuedTurns.length = 0;
-                }
+                // Keep live notes for the next chat turn (not FIFO turns to discard).
                 stoppedEarly = true;
                 break;
               }
@@ -5400,12 +5499,8 @@ Output ONLY valid JSON (no prose, no markdown).`;
           if (control.exit) { control.result = 'exit'; return true; }
           if (control.menu) { control.result = 'menu'; return true; }
           // ESC interrupts the goal loop and returns to the chat prompt (it does
-          // not exit/menu). Discard any typed-ahead so it can't run unexpectedly.
+          // not exit/menu). Live notes stay for the next turn (not auto-run).
           if (interruptedByEsc) {
-            if (queuedTurns.length > 0) {
-              renderDiscardedQueue(out, queuedTurns.length, 'interrupt');
-              queuedTurns.length = 0;
-            }
             return false;
           }
 
@@ -6283,6 +6378,11 @@ Output ONLY valid JSON (no prose, no markdown).`;
         return 'continue';
       }
 
+      // Latch mid-turn notes into this turn's buildDeps context, then clear the
+      // live buffer so the next capture window starts fresh. Must run before any
+      // buildDeps call for this user message.
+      latchLiveNotesForTurn();
+
       let deps: OrchestrateDeps | null = null;
       let turnAttachments: ReturnType<typeof resolveImageAttachments> = [];
       const acknowledgedGoal:
@@ -6523,6 +6623,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
             retryHistory = [];
             out.write(dim("  Couldn't read prior history — continuing without it.\n", out.color));
           }
+          latchLiveNotesForTurn();
           const retryDepsBase = buildDeps(
             retryHistory,
             await resolveTurnMemory(line),
@@ -6540,10 +6641,6 @@ Output ONLY valid JSON (no prose, no markdown).`;
           currentAc = null;
           await persistCompletedTurnProvider(retryResult.final);
           if (interruptedByEsc) {
-            if (queuedTurns.length > 0) {
-              renderDiscardedQueue(out, queuedTurns.length, 'interrupt');
-              queuedTurns.length = 0;
-            }
             out.write('\nInterrupted.\n');
             return 'continue';
           }
@@ -6577,12 +6674,8 @@ Output ONLY valid JSON (no prose, no markdown).`;
         !result.final.success &&
         result.final.errorCategory === 'timeout'
       ) {
-        // A confirm/goal-loop branch supersedes the post-turn slot; drop any
-        // typed-ahead so it can't surprise-run after the confirm.
-        if (queuedTurns.length > 0) {
-          renderDiscardedQueue(out, queuedTurns.length, 'interrupt');
-          queuedTurns.length = 0;
-        }
+        // Confirm/goal-loop branch supersedes the post-turn slot. Live notes
+        // stay for the next turn (they are not auto-run as separate turns).
         if (oversight === 'autonomous') {
           out.write(
             '\n  ' + dim('↳ large task — continuing autonomously, step by step…', out.color) + '\n',
@@ -6626,10 +6719,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
       // ORIGINAL task — so sustained work needs no command. Handled BEFORE the
       // generic selector so the offer isn't shown as a numbered list.
       if (result.final?.questions !== undefined && isKeepGoingOffer(result.final.questions)) {
-        if (queuedTurns.length > 0) {
-          renderDiscardedQueue(out, queuedTurns.length, 'interrupt');
-          queuedTurns.length = 0;
-        }
+        // Live notes stay for the next turn (they are not auto-run).
         out.write('\n' + renderDecisionPrompt(
           {
             kind: 'keep-going',
@@ -6661,25 +6751,15 @@ Output ONLY valid JSON (no prose, no markdown).`;
       }
 
       // ---- Post-turn slot (decidePostTurn / MASTER-PLAN MF3) ------------------
-      // The single canonical post-turn order: discard typed-ahead (before any
-      // selector) → question-flow (the ask_user selector) → memory-approval
-      // (the remember_user Save/Skip/Edit selector) → drain-queue (FIFO, clean
-      // settle only). question-flow wires the EXISTING runStructuredQuestionFlow;
-      // memory-approval wires runMemoryApproval (same injected reader); drain
-      // re-enters runOneChatInput per queued line. A queued line can NEVER answer
-      // an unseen selector (discard always precedes both selectors).
+      // Canonical post-turn order: discard leftover FIFO (empty under live-notes)
+      // → question-flow → memory-approval → drain-queue (no-op when empty).
+      // Mid-turn prose is live notes for the NEXT turn — never drained as turns
+      // and never fed to selectors.
       await runPostTurnSlot(
         result.final,
         () => runStructuredQuestionFlow(result.final),
         async () => {
-          while (queuedTurns.length > 0 && !control.exit && !control.menu) {
-            const next = queuedTurns.shift();
-            if (next === undefined) break;
-            // Slice 5: queued drain re-uses runOneChatInput for ! passthrough (menu-build-spec-final.md:416 "Queued-turn drain does not accidentally run..."; kern-spec.md:45)
-            const drainSignal = await runOneChatInput(next);
-            if (drainSignal === 'menu') { control.menu = true; control.result = 'menu'; break; }
-            if (drainSignal === 'exit') { control.exit = true; control.result = 'exit'; break; }
-          }
+          // No mid-turn FIFO turn queue. Live notes inject on the next turn.
         },
         // Memory-approval: only when memory writes are ON and the (already
         // gated) proposal carries facts. Non-TTY ignores proposals (the slot is

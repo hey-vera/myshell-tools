@@ -7,8 +7,8 @@
  * mirrors the legacy readline input box surface:
  *   - the bordered box with the `✦` corner glyph and the `❯ ` caret
  *     (see render.ts `renderInputPrompt` / `createTurnInputSurface`);
- *   - a "⏎ queued (N)" indicator while a model turn is capturing typed-ahead
- *     (render.ts `renderQueuedIndicator`);
+ *   - legacy `setQueued(N)` bridge (mid-turn prose is live notes now — menu no
+ *     longer drives the "⏎ queued (N)" indicator; the API remains for tests);
  *   - cursor movement (left/right, home/end, word-left/right), backspace/delete;
  *   - Up/Down history over previously submitted lines;
  *   - Alt+Enter (a.k.a. Meta+Return) inserts a newline; plain Enter submits.
@@ -97,7 +97,11 @@ export interface InputBoxBridge {
   onSubmit(handler: (line: string) => void): void;
   /** Seed the Up/Down history with previously submitted lines (oldest→newest). */
   seedHistory(lines: readonly string[]): void;
-  /** Set the queued-typeahead count; >0 paints the "⏎ queued (N)" indicator. */
+  /**
+   * Legacy queued-typeahead count. Mid-turn prose is live notes (not a FIFO
+   * turn queue); the chat loop no longer calls this. Kept for bridge/API
+   * compatibility and tests — when set >0 still paints "⏎ queued (N)".
+   */
   setQueued(n: number): void;
   /** Register a subscriber for the queued count (the box). @internal */
   onQueued(handler: (n: number) => void): void;

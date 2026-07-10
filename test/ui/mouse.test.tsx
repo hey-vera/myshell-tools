@@ -129,7 +129,7 @@ test('hitTestLegend: full legend maps menu / mode / panel / interrupt', () => {
   // Middot gap is a miss
   const menuEnd = zones[0]!.end;
   assert.equal(hitTestLegend(menuEnd, columns), null);
-  // "→ panel" segment
+  // "Ctrl+G panel" segment
   const panel = zones.find((z) => z.id === 'panel')!;
   assert.equal(hitTestLegend(panel.start, columns), 'panel');
   assert.equal(hitTestLegend(panel.end - 1, columns), 'panel');

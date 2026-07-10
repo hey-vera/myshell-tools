@@ -10580,11 +10580,14 @@ describe('runChatLoop — ! shell passthrough', () => {
     assert.match(sink.buf, /Usage: !<command>/);
   });
 
-  it('executes only genuinely !-prefixed queued lines during drain', async () => {
+  it('mid-turn capture is live notes — not a FIFO drain of shell/chat turns', async () => {
+    // Product rule: mid-turn Enter is manager notes ("noted · applies next"), not
+    // a queued next turn. `!echo …` captured mid-turn must NOT auto-run as shell;
+    // prose notes inject into the NEXT user turn's orchestrate context.
     const clock = makeFakeClock();
     const store = makeStore(clock);
     const sink = makeSink();
-    const meta = await store.create('queued');
+    const meta = await store.create('live-notes');
     const providerPrompts: string[] = [];
     const shellCalls: string[] = [];
     const provider: Provider = {
@@ -10611,7 +10614,7 @@ describe('runChatLoop — ! shell passthrough', () => {
         },
       },
       commandGate: allowGate,
-      readLine: makeScriptedReader(['first question', '/exit']),
+      readLine: makeScriptedReader(['first question', 'follow-up', '/exit']),
     }, clock, store);
 
     await runChatLoop(
@@ -10619,20 +10622,30 @@ describe('runChatLoop — ! shell passthrough', () => {
       { config: ctx.config, env: ctx.env },
       meta.id,
       sink,
-      makeScriptedReader(['first question', '/exit']),
+      makeScriptedReader(['first question', 'follow-up', '/exit']),
       async () => FAKE_LOGIN_RESULT,
       async () => ctx.env,
       async () => false,
       undefined,
-      makeCapturedLineReader(['!echo queued', 'hello !cmd']),
+      // Captured during the first model turn only (makeCapturedLineReader emits once).
+      makeCapturedLineReader(['!echo queued', 'prefer smaller steps']),
     );
 
     const entries = await store.load(meta.id);
     const userBodies = entries.filter((entry) => entry.role === 'user').map((entry) => entry.content);
-    assert.deepEqual(shellCalls, ['echo queued']);
-    assert.equal(providerPrompts.length, 2, 'initial + normal queued chat turn reach the model');
-    assert.deepEqual(userBodies, ['first question', 'hello !cmd']);
-    assert.ok(sink.buf.includes('shell:echo queued'));
+    // Mid-turn `!echo queued` is a note, not a drained shell command.
+    assert.deepEqual(shellCalls, []);
+    // Two explicit user turns only (no FIFO drain of captured prose).
+    assert.equal(providerPrompts.length, 2, 'only explicit prompt turns reach the model');
+    assert.deepEqual(userBodies, ['first question', 'follow-up']);
+    assert.match(sink.buf, /noted · applies next/);
+    // Second turn receives the latched notes block in orchestrate context.
+    assert.match(
+      providerPrompts[1] ?? '',
+      /USER NOTES WHILE WORKING:[\s\S]*prefer smaller steps/,
+    );
+    // Bang line was noted as text, not executed.
+    assert.match(providerPrompts[1] ?? '', /!echo queued/);
   });
 });
 

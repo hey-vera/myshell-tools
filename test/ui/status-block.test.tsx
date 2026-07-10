@@ -179,7 +179,7 @@ test('StatusBlock shows a "Preparing…" status line when active with no goals/s
   assert.notEqual(frame.trim(), ''); // not an empty box
   assert.match(frame, /Preparing…/);
   assert.doesNotMatch(frame, /Thinking…/);
-  assert.doesNotMatch(frame, /esc to interrupt/);
+  assert.doesNotMatch(frame, /esc cancel turn/);
   assert.doesNotMatch(frame, /GOALS/); // no goals panel until goals arrive
 });
 
@@ -215,7 +215,7 @@ test('StatusLine renders the "Waiting on N models" wording in panel mode', () =>
   assert.match(frame, /Waiting on 1 model/);
   assert.match(frame, /claude/);
   assert.match(frame, /codex/);
-  assert.match(frame, /esc to interrupt/);
+  assert.match(frame, /esc cancel turn/);
 });
 
 test('StatusLine falls back to "Thinking" + an honest work summary when no tool is active', () => {
@@ -235,7 +235,7 @@ test('StatusLine falls back to "Thinking" + an honest work summary when no tool 
   assert.doesNotMatch(frame, /tokens/);
   assert.doesNotMatch(frame, /~1k/);
   assert.match(frame, /· 6s/);
-  assert.match(frame, /esc to interrupt/);
+  assert.match(frame, /esc cancel turn/);
 });
 
 test('StatusLine shows honest stall chrome after ≥12s silence (display-only)', () => {
@@ -294,7 +294,7 @@ test('StatusLine LEADS with the live ACTION and reports honest active, complete,
   assert.match(frame, /✓ 2 complete/);
   assert.match(frame, /2 goals/);
   assert.match(frame, /· 59s/);
-  assert.match(frame, /esc to interrupt/);
+  assert.match(frame, /esc cancel turn/);
   assert.doesNotMatch(frame, /tokens/);
 });
 

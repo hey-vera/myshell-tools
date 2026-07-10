@@ -103,6 +103,11 @@ export function renderInputPrompt(opts: InputPromptOptions = {}): string {
   return `${top}\n│${content}│\n${bottom}\x1b[1A\r│ ❯ `;
 }
 
+/**
+ * Legacy FIFO typeahead indicator. Mid-turn prose is live manager notes now
+ * (`noted · applies next`); the chat loop no longer paints this. Kept pure for
+ * TurnInputSurface/API compatibility and unit tests.
+ */
 export function renderQueuedIndicator(queueLength: number, color = false): string {
   return dim(`⏎ queued (${queueLength})`, color);
 }
@@ -110,6 +115,7 @@ export function renderQueuedIndicator(queueLength: number, color = false): strin
 export interface TurnInputSurface {
   readonly overlay: SpinnerOverlay;
   setValue(value: string): void;
+  /** Legacy; menu no longer sets this for mid-turn prose (live notes instead). */
   setQueued(queueLength: number): void;
   clear(): void;
 }
