@@ -615,10 +615,15 @@ describe('buildControlPanelModel settings', () => {
       learnedTaste: true,
       codebaseAwareness: true,
       setAsDefault: false,
+      modelGhost: false,
     };
     const m = buildControlPanelModel(baseState({ settings: snapshot }));
-    // 8 interactive rows + 1 board read-only = 9
-    assert.strictEqual(m.settings.length, 9);
+    // 9 interactive rows + 1 board read-only = 10
+    assert.strictEqual(m.settings.length, 10);
+    const modelGhost = m.settings.find((r) => r.id === 'model-ghost');
+    assert.ok(modelGhost);
+    assert.strictEqual(modelGhost.kind, 'toggle');
+    assert.strictEqual(modelGhost.value, false);
     // First row: mode (segmented)
     const mode = m.settings[0];
     assert.strictEqual(mode.id, 'mode');

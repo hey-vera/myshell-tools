@@ -274,6 +274,16 @@ function buildSettingsRows(
   idx += 1;
 
   rows.push({
+    id: 'model-ghost',
+    label: 'Model ghost complete',
+    kind: 'toggle',
+    value: snapshot.modelGhost,
+    selected: idx === selectedIndex,
+    note: 'budgeted; local first',
+  });
+  idx += 1;
+
+  rows.push({
     id: 'default-shell',
     label: 'Set as default shell',
     kind: 'action',

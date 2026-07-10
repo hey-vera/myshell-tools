@@ -630,6 +630,7 @@ describe('settings/sync', () => {
       learnedTaste: false,
       codebaseAwareness: true,
       setAsDefault: false,
+      modelGhost: false,
     };
     const st = reduce(initialState, { type: 'settings/sync', settings: snapshot });
     assert.ok(st.settings !== undefined);
@@ -643,12 +644,12 @@ describe('settings/sync', () => {
     const s1: UiSettingsSnapshot = {
       mode: 'auto', oversight: 'autonomous', verbosity: 'verbose',
       colorTheme: 'light', memory: false, learnedTaste: true,
-      codebaseAwareness: false, setAsDefault: true,
+      codebaseAwareness: false, setAsDefault: true, modelGhost: false,
     };
     const s2: UiSettingsSnapshot = {
       mode: 'max', oversight: 'review-all', verbosity: 'quiet',
       colorTheme: 'dark', memory: true, learnedTaste: false,
-      codebaseAwareness: true, setAsDefault: false,
+      codebaseAwareness: true, setAsDefault: false, modelGhost: true,
     };
     const st = reduce(
       reduce(initialState, { type: 'settings/sync', settings: s1 }),

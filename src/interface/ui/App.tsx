@@ -11,6 +11,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Static, Text, useStdout } from 'ink';
 import { InputBox, createInputBoxBridge, type InputBoxBridge } from './InputBox.js';
+import type { SuggestGhost } from '../ghost-text.js';
 import { Stream, CommittedLine } from './Stream.js';
 import { StatusBlock } from './StatusBlock.js';
 import { ControlPanel } from './ControlPanel.js';
@@ -125,6 +126,12 @@ export interface InkAppBridge {
    */
   setChatActive(active: boolean): void;
   /**
+   * Install (or clear with `null`) the optional model-ghost SuggestGhost port
+   * (P1.5). Menu wires a budgeted worker-tier completer when config.modelGhost
+   * is on; clears when off. Fail-soft: absent/null → model path never fires.
+   */
+  setSuggestGhost(fn: SuggestGhost | null): void;
+  /**
    * Read EXACTLY ONE keypress through Ink's OWN input pipeline (no competing raw
    * `process.stdin` listener that would fight Ink). Resolves with a string shaped
    * like the legacy menu-readline.ts `readSingleKey` output so `readMenuKey` /
@@ -213,6 +220,9 @@ export interface InkAppBridge {
   /** @internal set by App on mount */ _setInputInfo?: ((value: InputBoxInfo | null) => void) | undefined;
   /** @internal set by App on mount */ _setChatActive?: ((value: boolean) => void) | undefined;
   /** @internal set by App on mount */ _setUiState?: ((state: UiState) => void) | undefined;
+  /** @internal set by App on mount */ _setSuggestGhost?:
+    | ((fn: SuggestGhost | null) => void)
+    | undefined;
   /** @internal the pending single-key resolver, set by readKey(), consumed (once)
    *  by the InputBox input consumer. Cleared after exactly one key is delivered. */
   _keyResolver?: ((key: string) => void) | null;
@@ -280,6 +290,9 @@ export function createInkAppBridge(): InkAppBridge {
     },
     setChatActive(active: boolean): void {
       bridge._setChatActive?.(active);
+    },
+    setSuggestGhost(fn: SuggestGhost | null): void {
+      bridge._setSuggestGhost?.(fn);
     },
     readKey(): Promise<string> {
       // Drain the menu FIFO before awaiting a new key. A key queued during paint
@@ -569,6 +582,9 @@ function AppBody({
   // region to make room so total dynamic rows <= viewport, ALWAYS. Defaults to the
   // single-line INPUT_ROWS until the first measurement lands.
   const [inputBoxRows, setInputBoxRows] = useState(INPUT_ROWS);
+  // Optional model-ghost port (P1.5). Menu installs via bridge.setSuggestGhost when
+  // config.modelGhost is on; null when off / unmounted. Fail-soft default null.
+  const [suggestGhost, setSuggestGhost] = useState<SuggestGhost | null>(null);
   // Bumped on every SIGWINCH (terminal resize). Ink's useStdout does NOT subscribe
   // to 'resize', so without this the cached columns/rows below would go stale after
   // a resize — the layout cap + InputBox width would never re-measure. The counter
@@ -578,6 +594,7 @@ function AppBody({
   const liveColumns = columns ?? stdout.columns ?? process.stdout.columns ?? 80;
   const liveRows = rows ?? stdout.rows ?? process.stdout.rows ?? 24;
   const controlPanelOpen = uiState?.controlPanel.open === true;
+  const modelGhostEnabled = uiState?.settings?.modelGhost === true;
 
   // Optional mouse tracking (P1.3): enable on real TTY while not suspended; fail-soft.
   // Keyboard remains primary; terminals without mouse simply never emit reports.
@@ -624,12 +641,14 @@ function AppBody({
     bridge._setInputInfo = setInputInfo;
     bridge._setUiState = setUiState;
     bridge._setChatActive = setChatActive;
+    bridge._setSuggestGhost = setSuggestGhost;
     return () => {
       bridge._setLines = undefined;
       bridge._setSuspended = undefined;
       bridge._setInputInfo = undefined;
       bridge._setUiState = undefined;
       bridge._setChatActive = undefined;
+      bridge._setSuggestGhost = undefined;
     };
   }, [bridge]);
 
@@ -832,6 +851,8 @@ function AppBody({
           pressure={uiState?.pressure ?? 0}
           dynamicWorldItems={uiState?.dynamicWorldItems ?? []}
           goalHints={goalHints}
+          modelGhostEnabled={modelGhostEnabled}
+          {...(suggestGhost !== null ? { suggestGhost } : {})}
           onStdinControl={bridge.attachStdinControl}
           onEscape={() => bridge.interrupt()}
           onToggleFullscreenPanel={() => bridge.routeControlPanelAction({ type: 'control-panel/toggle' })}
@@ -876,6 +897,8 @@ function AppBody({
         visible={chatActive}
         suspended={suspended}
         goalHints={goalHints}
+        modelGhostEnabled={modelGhostEnabled}
+        {...(suggestGhost !== null ? { suggestGhost } : {})}
         onStdinControl={bridge.attachStdinControl}
         onEscape={() => bridge.interrupt()}
         onToggleFullscreenPanel={() => bridge.routeControlPanelAction({ type: 'control-panel/toggle' })}
