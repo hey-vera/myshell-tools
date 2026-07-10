@@ -1,6 +1,6 @@
 # myshell-tools — Active project board (orchestrator)
 
-Last updated: 2026-07-10 (tip **#149** forge PR create; package still **3.166.0** until next cut)
+Last updated: 2026-07-10 (release **3.167.0** — Wave 7 absorb + forge create/checks; main includes #152)
 
 ## North star
 One subscription-native chat to rule them all. Elite partner. Not API-key product.
@@ -32,17 +32,19 @@ myshell-tools is **not** Claude Projects and must not become a "create project /
 ## On main (this session — all green merges)
 | PR | Summary |
 |----|---------|
-| #118–#141 | Actualization waves 0–6 core (see history) → tip **3.166.0** |
+| #118–#141 | Actualization waves 0–6 core (see history) → **3.166.0** |
 | #142 | Partner principles absorb plan (Wave 7 spec) |
 | #143 | **W7.1** Built-in partner laws (prompt) |
 | #144 | **W7.3** Account weight UX honesty + routing proof |
 | #145 | **W7.2** Turn routing receipts |
 | #146 | **W7.5** Goal rewatch+ (first-turn context) |
 | #147 | **W7.4** Done=check binding |
-| #148 | Docs: Wave 7 complete |
+| #148 | Docs: Wave 7 absorb complete on board/checklist |
 | #149 | **P1.6** thin GitHub PR create (`gh pr create --fill`, gated) |
+| #150 | Docs: note PR create on P1.6 partial progress |
+| #152 | **P1.6** thin GitHub PR checks (`gh pr checks`, gated NL) |
 
-Main tip: `fb8e7b0` (#149). Package version still **3.166.0** (absorb + create after cut; **3.167.0** cut in flight).
+Package version **3.167.0** (this cut: Wave 7 absorb + #149 create + #152 checks; #150 docs).
 
 ## Checklist honesty (2026-07-10)
 
@@ -50,26 +52,24 @@ Main tip: `fb8e7b0` (#149). Package version still **3.166.0** (absorb + create a
 |------|--------|-------|
 | Wave 0–4 code | **done** | Human acceptance smokes still open |
 | P2.1–2.3, P2.7 | **done** | Checkpoint/undo/verify; local ghost |
-| P1.6 GitHub depth | **partial** | status #137 + create #149; checks/review open |
+| P1.6 GitHub depth | **partial** | status #137 + create #149 + checks #152; review still open |
 | P1.7 GitLab depth | **partial** | thin `glab mr list` #140 |
 | Wave 7 absorb | **code done** | #142–#147; human smoke pending |
-| S.5 Version | **3.166.0** | 3.167.0 cut next |
-| S.6 npm publish | **open** | npm `@latest` still **3.163.1** — user only |
+| S.5 Version | **3.167.0** | cut includes Wave 7 + #149/#152 (+ #150 docs) |
+| S.6 npm publish | **open** | npm `@latest` still older — user only |
 | Acceptance smokes | **open** | Replit/local — code complete ≠ accepted |
 
 ## Open / in flight
-| Track | Notes |
-|-------|--------|
-| forge PR checks | thin `gh pr checks` NL |
-| release 3.167.0 | absorb + create cut |
+(none — #152 merged; release cut pending merge)
 
 ## Next (priority)
-1. **User smoke** post-absorb + forge create (Effort, Shift+Tab, legend/panel, goals+recap, rewatch, routing receipt, Tab ghost, `create a pr` / status, Accounts weight, partner laws, lag)
-2. **3.167.0 cut** then **`npm publish`** (user)
-3. **P1.6** checks/review depth; **P1.7–1.8** GitLab pipelines / other-forge polish
-4. **P1.5** optional budgeted model ghost
-5. **P2.4** shared deps builder (tight contract only)
-6. **S.1** visual polish
+1. **User smoke** post-**3.167.0** (Effort, Shift+Tab, legend/panel, goals+recap, resume rewatch, routing receipt line, Tab ghost, forge/`gh` PR status+create+checks / `glab` MR list, undo, Accounts weight copy, partner laws behavior, lag recovery)
+2. **`npm publish`** (user) for **3.167.0**
+3. **P1.6** remaining GitHub depth: review / richer PR workflows
+4. **P1.7–1.8** GitLab pipelines / other-forge honesty polish
+5. **P1.5** optional budgeted model ghost (toggle; fail-soft)
+6. **P2.4** shared deps builder CLI→menu (only with tight contract — large seam)
+7. **S.1** visual polish
 
 ## Operating rules
 - Branch from origin/main only
