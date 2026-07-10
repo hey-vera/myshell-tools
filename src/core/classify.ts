@@ -544,7 +544,7 @@ const COMMAND_TIER_SIGNALS: readonly CommandTierSignal[] = [
       /\bpwd\b/i,
       /\bwhich\b/i,
       /\bgit\s+(?:status|log|diff|show|branch)\b/i,
-      // GitHub CLI read-only PR inspection (P1.6 thin — status/list/view only).
+      // GitHub CLI read-only PR inspection (P1.6 thin — status/list/view/checks).
       /\bgh\s+pr\s+(?:status|list|view|checks)\b/i,
       /\bstat\b/i,
       /\bfile\b/i,

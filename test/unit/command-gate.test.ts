@@ -36,6 +36,18 @@ const REPRESENTATIVE_FIXTURES: readonly DecisionFixture[] = [
     },
   },
   {
+    name: 'read-only gh pr checks',
+    command: 'gh pr checks',
+    expected: {
+      commandTier: 'read-only',
+      allowed: true,
+      requireConfirmation: false,
+      forbidBackground: false,
+      mustRecord: false,
+      rationale: 'read-only: read-only command; no confirmation or audit record required.',
+    },
+  },
+  {
     name: 'local-write gh pr create',
     command: 'gh pr create --fill',
     expected: {
