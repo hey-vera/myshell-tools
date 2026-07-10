@@ -2,13 +2,16 @@
  * Safe natural-language repo chat handler.
  *
  * This is the interface seam between ordinary user language ("what changed?",
- * "run tests", "undo that", "pr status", "mr status") and repo infrastructure.
- * verify_only and commit execute under commandGate + oversight (same seams as
- * menu/cli verify paths). GitHub PR status (P1.6 thin) runs `gh pr status` when
- * the workspace is GitHub and gh is on PATH. GitLab MR list (P1.7 thin) runs
- * `glab mr list` when the workspace is GitLab and glab is on PATH — honest
- * fail-soft otherwise. Undo plans via checkpoint conflict gate, then applies
- * under oversight + commandGate when safe.
+ * "run tests", "undo that", "pr status", "create a pr", "mr status") and repo
+ * infrastructure. verify_only and commit execute under commandGate + oversight
+ * (same seams as menu/cli verify paths). GitHub PR status (P1.6 thin) runs
+ * `gh pr status` when the workspace is GitHub and gh is on PATH. GitHub PR
+ * create (P1.6 thin extension) runs non-interactive `gh pr create --fill` under
+ * the same gate/oversight posture as commit — never force-push, never invent
+ * base. GitLab MR list (P1.7 thin) runs `glab mr list` when the workspace is
+ * GitLab and glab is on PATH — honest fail-soft otherwise (MR create is out of
+ * scope). Undo plans via checkpoint conflict gate, then applies under oversight
+ * + commandGate when safe.
  */
 
 import { planUndoAiCheckpoint } from '../core/ai-checkpoint.js';
@@ -75,7 +78,9 @@ function handled(
     operation,
     mutatesWorkspace:
       opts?.mutatesWorkspace ??
-      (operation === 'commit_current_ai_change' || operation === 'undo_last_ai_change'),
+      (operation === 'commit_current_ai_change' ||
+        operation === 'undo_last_ai_change' ||
+        operation === 'github_pr_create'),
     message,
   };
 }
@@ -123,6 +128,31 @@ export function githubPrStatusUnavailableMessage(forge: WorkspaceContext): strin
   }
   // github but gh missing
   return 'This is a GitHub repo, but `gh` is not on PATH. Install the GitHub CLI (https://cli.github.com) or check PR status in the browser. I will not pretend gh is available.';
+}
+
+/**
+ * Honest message when forge/tools cannot support GitHub PR create. PURE-ish.
+ * Returns null only when host is GitHub and gh is on PATH.
+ * GitLab MR create is intentionally out of scope — honest degrade only.
+ */
+export function githubPrCreateUnavailableMessage(forge: WorkspaceContext): string | null {
+  if (forge.hostClass === 'github' && forge.tools.gh) return null;
+
+  if (forge.hostClass === 'gitlab') {
+    return forge.tools.glab
+      ? 'This workspace is GitLab — not GitHub. PR create via gh does not apply. GitLab MR create is not wired yet; use `glab mr create` in the shell or the GitLab UI.'
+      : 'This workspace is GitLab — not GitHub. PR create via gh does not apply, and glab is not on PATH. Use the GitLab UI or install glab (https://gitlab.com/gitlab-org/cli).';
+  }
+  if (forge.hostClass === 'other') {
+    return 'This remote is not GitHub — I will not run gh PR create against a non-GitHub forge.';
+  }
+  if (forge.hostClass === 'none') {
+    return forge.gitRoot !== null
+      ? 'Local-only workspace (no remote forge) — there is no GitHub host to open a PR against.'
+      : 'This folder is not a git repo — there is no PR to create.';
+  }
+  // github but gh missing
+  return 'This is a GitHub repo, but `gh` is not on PATH. Install the GitHub CLI (https://cli.github.com) or open a PR in the browser. I will not pretend gh is available.';
 }
 
 /**
@@ -192,6 +222,117 @@ async function resolveForge(deps: RepoChatHandlerDeps): Promise<WorkspaceContext
   return (
     deps.forgeContext ??
     (await detect(deps.cwd).catch(() => null))
+  );
+}
+
+/**
+ * Non-interactive thin create: title/body from commit log via --fill.
+ * No force-push; no invented --base. May still push the current branch if gh
+ * needs to (normal gh behavior) — that is why create is gated like commit.
+ */
+const GH_PR_CREATE_ARGS = ['pr', 'create', '--fill'] as const;
+const GH_PR_CREATE_DISPLAY = 'gh pr create --fill';
+/** Create can push + talk to GitHub; allow more than the status probe budget. */
+const GH_PR_CREATE_TIMEOUT_MS = 60_000;
+
+/**
+ * Resolve forge + gated non-interactive `gh pr create --fill` when GitHub+gh.
+ * Honest degrade for GitLab/other/missing tools. Never hangs on TTY prompts —
+ * if gh cannot fill safely, surfaces the failure + suggested shell command.
+ */
+async function handleGithubPrCreate(deps: RepoChatHandlerDeps): Promise<RepoChatHandled> {
+  const forge = await resolveForge(deps);
+
+  if (forge === null) {
+    return handled(
+      'github_pr_create',
+      'Could not detect workspace forge context just now — try again, or run `gh pr create --fill` in the shell.',
+      { mutatesWorkspace: false },
+    );
+  }
+
+  const unavailable = githubPrCreateUnavailableMessage(forge);
+  if (unavailable !== null) {
+    return handled('github_pr_create', unavailable, { mutatesWorkspace: false });
+  }
+
+  const summary =
+    'PR create intent: run non-interactive `gh pr create --fill` (title/body from commits; default base; no force-push).';
+  const oversight: Oversight = deps.oversight ?? 'checkpoint';
+  let proceed = true;
+  if (oversight !== 'autonomous') {
+    const confirmMsg = `${summary}\n\nProceed with PR create?`;
+    if (deps.commandGate?.confirm) {
+      proceed = await deps.commandGate.confirm(confirmMsg);
+    } else {
+      // Non-autonomous without a confirm seam → honest guidance only (safe).
+      return handled(
+        'github_pr_create',
+        `${summary}\n\nI have not created a PR yet. Confirm in chat, or run:\n  ${GH_PR_CREATE_DISPLAY}\n(Requires branch pushed / commits vs base. Use \`gh pr create --title "…" --body "…"\` if --fill is not enough.)`,
+        { mutatesWorkspace: false },
+      );
+    }
+  }
+  if (!proceed) {
+    return handled('github_pr_create', 'PR create declined by gate.', { mutatesWorkspace: false });
+  }
+
+  const runGh =
+    deps.runGh ??
+    ((args: readonly string[], cwd: string) => defaultRunGh(args, cwd, GH_PR_CREATE_TIMEOUT_MS));
+
+  if (deps.commandGate !== undefined) {
+    const gate = deps.commandGate.gate(GH_PR_CREATE_DISPLAY);
+    const confirmed = await confirmGate(
+      deps.commandGate,
+      gate,
+      'Run `gh pr create --fill` to open a GitHub pull request?',
+    );
+    if (!gate.allowed || confirmed === false) {
+      await recordGate(deps.commandGate, deps.cwd, GH_PR_CREATE_DISPLAY, gate, confirmed, 'denied');
+      return handled(
+        'github_pr_create',
+        gate.allowed
+          ? 'PR create declined by gate.'
+          : 'Command gate denied `gh pr create --fill`.',
+        { mutatesWorkspace: false },
+      );
+    }
+
+    const result = await runGh([...GH_PR_CREATE_ARGS], deps.cwd);
+    await recordGate(deps.commandGate, deps.cwd, GH_PR_CREATE_DISPLAY, gate, confirmed, 'ran');
+    return formatGhPrCreateResult(result);
+  }
+
+  const result = await runGh([...GH_PR_CREATE_ARGS], deps.cwd);
+  return formatGhPrCreateResult(result);
+}
+
+function formatGhPrCreateResult(result: GhRunResult): RepoChatHandled {
+  const out = clipForgeOutput(result.stdout);
+  const err = clipForgeOutput(result.stderr);
+
+  if (result.ok) {
+    if (out.length > 0) {
+      return handled(
+        'github_pr_create',
+        `GitHub PR created (via gh pr create --fill):\n\n${out}`,
+        { mutatesWorkspace: true },
+      );
+    }
+    return handled(
+      'github_pr_create',
+      'gh pr create --fill returned no output. Check `gh pr status` or the GitHub UI to confirm whether a PR was opened.',
+      { mutatesWorkspace: true },
+    );
+  }
+
+  const detail = err.length > 0 ? err : out.length > 0 ? out : 'unknown error';
+  const code = result.exitCode !== null ? ` (exit ${result.exitCode})` : '';
+  return handled(
+    'github_pr_create',
+    `gh pr create --fill failed${code}:\n${detail}\n\nI will not hang on interactive prompts. If title/body or push is needed, run in a real shell:\n  ${GH_PR_CREATE_DISPLAY}\nor:\n  gh pr create --title "…" --body "…"`,
+    { mutatesWorkspace: false },
   );
 }
 
@@ -492,6 +633,9 @@ export async function handleRepoChatIntent(
 
     case 'github_pr_status':
       return handleGithubPrStatus(deps);
+
+    case 'github_pr_create':
+      return handleGithubPrCreate(deps);
 
     case 'gitlab_mr_status':
       return handleGitlabMrStatus(deps, 'gitlab_mr_status');

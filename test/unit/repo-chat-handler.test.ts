@@ -3,6 +3,7 @@
 import { buildAiCheckpoint, hashText, type AiChangeCheckpoint } from '../../src/core/ai-checkpoint.js';
 import type { CommandGateDecision, CommandGatePort } from '../../src/core/command-gate.js';
 import {
+  githubPrCreateUnavailableMessage,
   githubPrStatusUnavailableMessage,
   handleRepoChatIntent,
   type RepoChatHandlerDeps,
@@ -563,6 +564,194 @@ describe('handleRepoChatIntent', () => {
     expect(githubPrStatusUnavailableMessage(githubForge)).toBeNull();
     expect(
       githubPrStatusUnavailableMessage({
+        ...githubForge,
+        tools: { gh: false, glab: false },
+      }),
+    ).toMatch(/not on PATH/i);
+  });
+
+  // -------------------------------------------------------------------------
+  // P1.6 thin extension — GitHub PR create via NL ("create a pr" / "gh pr create")
+  // -------------------------------------------------------------------------
+
+  it('github_pr_create: runs gh pr create --fill when host is GitHub and gh is available', async () => {
+    const ghCalls: Array<{ args: readonly string[]; cwd: string }> = [];
+    const result = await handleRepoChatIntent('create a pr', deps({
+      forgeContext: githubForge,
+      async runGh(args, cwd) {
+        ghCalls.push({ args, cwd });
+        return {
+          ok: true,
+          stdout: 'https://github.com/acme/app/pull/42',
+          stderr: '',
+          exitCode: 0,
+        };
+      },
+      commandGate: {
+        gate: (): CommandGateDecision => ({
+          allowed: true,
+          requireConfirmation: false,
+          commandTier: 'local-write',
+          forbidBackground: false,
+          mustRecord: true,
+          rationale: '',
+        }),
+        async confirm() {
+          return true;
+        },
+      } as CommandGatePort,
+      oversight: 'checkpoint',
+    }));
+
+    expect(result?.operation).toBe('github_pr_create');
+    expect(result?.mutatesWorkspace).toBe(true);
+    expect(result?.message).toContain('GitHub PR created');
+    expect(result?.message).toContain('pull/42');
+    expect(ghCalls).toEqual([{ args: ['pr', 'create', '--fill'], cwd: '/repo' }]);
+  });
+
+  it('github_pr_create: honest message when gh is missing on GitHub host (no theater)', async () => {
+    const ghCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('open a pull request', deps({
+      forgeContext: {
+        ...githubForge,
+        tools: { gh: false, glab: false },
+      },
+      async runGh(args, cwd) {
+        ghCalls.push({ args, cwd });
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(result?.operation).toBe('github_pr_create');
+    expect(result?.message).toMatch(/gh.*not on PATH/i);
+    expect(result?.mutatesWorkspace).toBe(false);
+    expect(ghCalls).toEqual([]);
+  });
+
+  it('github_pr_create: honest degrade on GitLab (MR create out of scope)', async () => {
+    const ghCalls: unknown[] = [];
+    const glabCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('create a pr', deps({
+      forgeContext: {
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
+        hostClass: 'gitlab',
+        primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+        tools: { gh: false, glab: true },
+      },
+      async runGh() {
+        ghCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+      async runGlab() {
+        glabCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(result?.operation).toBe('github_pr_create');
+    expect(result?.message).toMatch(/GitLab/i);
+    expect(result?.message).toMatch(/not wired|MR create/i);
+    expect(ghCalls).toEqual([]);
+    expect(glabCalls).toEqual([]);
+  });
+
+  it('github_pr_create: honest message for wrong/non-GitHub host', async () => {
+    const result = await handleRepoChatIntent('gh pr create', deps({
+      forgeContext: {
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [{ name: 'origin', url: 'git@example.com:acme/app.git', purpose: 'fetch' }],
+        hostClass: 'other',
+        primaryRemoteUrl: 'git@example.com:acme/app.git',
+        tools: { gh: true, glab: false },
+      },
+    }));
+
+    expect(result?.message).toMatch(/not GitHub/i);
+  });
+
+  it('github_pr_create: surfaces gh failure honestly with shell guidance', async () => {
+    const result = await handleRepoChatIntent('create a pr', deps({
+      forgeContext: githubForge,
+      async runGh() {
+        return {
+          ok: false,
+          stdout: '',
+          stderr: 'must be on a branch with commits ahead of base',
+          exitCode: 1,
+        };
+      },
+      oversight: 'autonomous',
+    }));
+
+    expect(result?.message).toContain('gh pr create --fill failed');
+    expect(result?.message).toMatch(/must be on a branch|commits ahead/i);
+    expect(result?.message).toMatch(/will not hang/i);
+    expect(result?.mutatesWorkspace).toBe(false);
+  });
+
+  it('github_pr_create: gate deny does not run gh', async () => {
+    const ghCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('create a pr', deps({
+      forgeContext: githubForge,
+      async runGh() {
+        ghCalls.push(1);
+        return { ok: true, stdout: 'https://example.com/pr/1', stderr: '', exitCode: 0 };
+      },
+      commandGate: {
+        gate: (): CommandGateDecision => ({
+          allowed: false,
+          requireConfirmation: false,
+          commandTier: 'local-write',
+          forbidBackground: false,
+          mustRecord: true,
+          rationale: 'denied in test',
+        }),
+        async confirm() {
+          return true;
+        },
+      } as CommandGatePort,
+      oversight: 'checkpoint',
+    }));
+
+    expect(result?.message).toMatch(/denied/i);
+    expect(ghCalls).toEqual([]);
+  });
+
+  it('github_pr_create: without confirm seam stays preview-only (no hang, no spawn)', async () => {
+    const ghCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('create a pr', deps({
+      forgeContext: githubForge,
+      async runGh() {
+        ghCalls.push(1);
+        return { ok: true, stdout: 'https://example.com/pr/1', stderr: '', exitCode: 0 };
+      },
+      // commandGate present but no confirm — non-autonomous must not spawn
+      commandGate: {
+        gate: (): CommandGateDecision => ({
+          allowed: true,
+          requireConfirmation: false,
+          commandTier: 'local-write',
+          forbidBackground: false,
+          mustRecord: true,
+          rationale: '',
+        }),
+      } as CommandGatePort,
+      oversight: 'checkpoint',
+    }));
+
+    expect(result?.message).toMatch(/have not created a PR/i);
+    expect(result?.message).toMatch(/gh pr create --fill/);
+    expect(ghCalls).toEqual([]);
+  });
+
+  it('githubPrCreateUnavailableMessage: null only when GitHub + gh', () => {
+    expect(githubPrCreateUnavailableMessage(githubForge)).toBeNull();
+    expect(
+      githubPrCreateUnavailableMessage({
         ...githubForge,
         tools: { gh: false, glab: false },
       }),

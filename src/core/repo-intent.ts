@@ -19,6 +19,11 @@ export type RepoOperationIntent =
   | 'status'
   /** NL GitHub PR status (P1.6 thin): "pr status" / "github status" — not local git status. */
   | 'github_pr_status'
+  /**
+   * NL GitHub PR create (P1.6 thin extension): "create a pr" / "open a pull request"
+   * / "gh pr create" — explicit create only; never steals plain "pr status".
+   */
+  | 'github_pr_create'
   /** NL GitLab MR status (P1.7 thin): "mr status" / "gitlab status" — not local git status. */
   | 'gitlab_mr_status';
 
@@ -112,6 +117,22 @@ const VERIFY_RE: readonly RegExp[] = [
   /\blint\b/,
   /\bmake\s+sure\b.*\b(passes|green|works)\b/,
   /\bget\b.*\b(tests?|suite|checks?)\b.*\b(green|passing)\b/,
+];
+
+/**
+ * GitHub PR create phrases (P1.6 thin extension). Explicit create/open only —
+ * must not match "pr status" / "current pr" / plain status language.
+ * Checked before edit verbs so "create a pr for the fix" is not stealable by edit.
+ */
+const GITHUB_PR_CREATE_RE: readonly RegExp[] = [
+  /\bcreate\s+(a\s+|an\s+|the\s+)?(pr|pull[\s-]?request)\b/,
+  /\bopen\s+(a\s+|an\s+|the\s+)?(pr|pull[\s-]?request)\b/,
+  /\bmake\s+(a\s+|an\s+|the\s+)?(pr|pull[\s-]?request)\b/,
+  /\bsubmit\s+(a\s+|an\s+|the\s+)?(pr|pull[\s-]?request)\b/,
+  /\bnew\s+(pr|pull[\s-]?request)\b/,
+  /\bgh\s+pr\s+create\b/,
+  /\bpr\s+create\b/,
+  /\bpull[\s-]?request\s+create\b/,
 ];
 
 /**
@@ -296,6 +317,20 @@ export function inferRepoIntent(task: string): RepoIntent {
       needsVerification: false,
       constraints,
       rationale: 'natural-language commit request',
+    };
+  }
+
+  // Explicit PR create before edit verbs ("create a pr for the fix") and before
+  // PR status ("pr status" must remain status-only — create patterns exclude it).
+  if (hasAny(text, GITHUB_PR_CREATE_RE)) {
+    return {
+      version: 1,
+      operation: 'github_pr_create',
+      confidence: 'high',
+      mutatesWorkspace: true,
+      needsVerification: false,
+      constraints,
+      rationale: 'natural-language GitHub PR create request',
     };
   }
 
