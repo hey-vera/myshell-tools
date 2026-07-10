@@ -4,6 +4,31 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.167.0] - 2026-07-10 — partner principles absorb + thin forge create
+
+Ships Wave 7 partner principles (#142–#147) and thin GitHub PR create (#149) on
+main after **3.166.0** (#141). Acceptances remain human-smoke pending;
+`npm publish` is owner-only.
+
+### Added
+- **Built-in partner laws** — short always-on prompt block: done only with
+  check, anti-goldplate, anti-overplan on trivial turns, grounded claims (#143).
+- **Turn routing receipts** — post-turn chrome line: provider · model · effort
+  · why from actual run fields (#145).
+- **Honest account priority weight UX** — priority/weight balances
+  *within-provider* seats; routing proof in Accounts copy (#144).
+- **Goal rewatch+** — standing goals in first-turn context so the partner
+  re-orients on open, not silent museum mode (#146).
+- **Done=check binding** — `doneCondition` from preflight; goal settle honesty
+  without maker self-grade (#147).
+- **Thin GitHub PR create via NL** — when workspace is GitHub and `gh` is
+  present, explicit create phrases run gated `gh pr create --fill`; honest
+  degrade for GitLab / missing `gh` (#149).
+
+### Changed
+- **Docs board + checklist** — Wave 7 absorb marked code-complete; tip version
+  **3.167.0** (#148).
+
 ## [3.166.0] - 2026-07-09 — checklist completion wave
 
 Ships the complete-checklist-wave on main after **3.165.0** (#140): partner-depth
