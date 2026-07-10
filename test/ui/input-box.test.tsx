@@ -19,6 +19,12 @@ const UP = '\x1b[A';
 const DOWN = '\x1b[B';
 const LEFT = '\x1b[D';
 const RIGHT = '\x1b[C';
+/** xterm CSI with Alt/Meta modifier (Ink → key.meta + left/rightArrow). */
+const ALT_LEFT = '\x1b[1;3D';
+const ALT_RIGHT = '\x1b[1;3C';
+/** xterm CSI with Ctrl modifier (Ink → key.ctrl + left/rightArrow) — word move. */
+const CTRL_LEFT = '\x1b[1;5D';
+const CTRL_RIGHT = '\x1b[1;5C';
 const HOME = '\x01'; // Ctrl+A
 const ALT_ENTER = '\x1b\r'; // Meta+Return
 const TAB = '\t';
@@ -625,7 +631,7 @@ test('NO_COLOR InputBox falls back to plain caret without chip or ANSI', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Slice 4 — empty-buffer Ctrl+G routing
+// Slice 4 / PR1 — always-hot Ctrl+G routing (any buffer)
 // ---------------------------------------------------------------------------
 
 const CTRL_G = '\x07';
@@ -651,7 +657,7 @@ test('Ctrl+G on empty editor invokes onToggleFullscreenPanel once, does NOT subm
   assert.equal(bridge.currentLine(), '', 'Ctrl+G must not insert text');
 });
 
-test('Ctrl+G with non-empty buffer does NOT invoke callback, buffer preserved', async () => {
+test('Ctrl+G with non-empty buffer still invokes callback, buffer preserved', async () => {
   const bridge = createInputBoxBridge();
   let toggleCalls = 0;
   const { stdin } = render(
@@ -667,7 +673,7 @@ test('Ctrl+G with non-empty buffer does NOT invoke callback, buffer preserved', 
   await tick();
   stdin.write(CTRL_G);
   await tick();
-  assert.equal(toggleCalls, 0, 'onToggleFullscreenPanel must not fire on non-empty buffer');
+  assert.equal(toggleCalls, 1, 'onToggleFullscreenPanel must fire with draft present');
   assert.equal(bridge.currentLine(), 'hello', 'buffer must be preserved');
 });
 
@@ -847,12 +853,10 @@ test('empty-buffer Left → calls onEmptyLeft only; onEmptyRight is not called',
   assert.equal(rightCount, 0, 'onEmptyRight must NOT be called on Left press');
 });
 
-test('Ctrl/Meta+Right on empty buffer does NOT call onEmptyRight (falls through)', async () => {
+test('Ctrl+Right on empty buffer does NOT call onEmptyRight (word-move chord)', async () => {
   const bridge = createInputBoxBridge();
   let rightCalled = 0;
-  const submitted: string[] = [];
-  bridge.onSubmit((l) => submitted.push(l));
-  render(
+  const { stdin } = render(
     <InputBox
       bridge={bridge}
       color={true}
@@ -861,14 +865,112 @@ test('Ctrl/Meta+Right on empty buffer does NOT call onEmptyRight (falls through)
       onEmptyRight={() => { rightCalled += 1; }}
     />,
   );
-  // Send \x1b[1;5C which some terminals send for Ctrl+Right. Ink may not parse
-  // it as key.rightArrow && key.ctrl, but the branch only fires when
-  // !key.meta && !key.ctrl, so any chord with a modifier should pass through.
-  // The safe test: the existing word-movement handler branch is unchanged.
-  // We verify that onEmptyRight is not spuriously called on various inputs
-  // that are not bare Right on an empty buffer.
-  assert.equal(rightCalled, 0, 'onEmptyRight must not be called for non-bare Right');
+  stdin.write(CTRL_RIGHT);
+  await tick();
+  assert.equal(rightCalled, 0, 'onEmptyRight must not fire for Ctrl+Right');
   assert.equal(bridge.currentLine(), '', 'buffer must stay empty');
+});
+
+// ---------------------------------------------------------------------------
+// PR1 — always-hot Alt+arrows (nav with draft)
+// ---------------------------------------------------------------------------
+
+test('Alt+Left on empty buffer calls onEmptyLeft', async () => {
+  const bridge = createInputBoxBridge();
+  let leftCalled = 0;
+  const { stdin } = render(
+    <InputBox
+      bridge={bridge}
+      color={true}
+      isTty={true}
+      columns={60}
+      onEmptyLeft={() => { leftCalled += 1; }}
+    />,
+  );
+  stdin.write(ALT_LEFT);
+  await tick();
+  assert.equal(leftCalled, 1, 'Alt+Left must call onEmptyLeft on empty buffer');
+  assert.equal(bridge.currentLine(), '', 'buffer must stay empty');
+});
+
+test('Alt+Right on empty buffer calls onEmptyRight', async () => {
+  const bridge = createInputBoxBridge();
+  let rightCalled = 0;
+  const { stdin } = render(
+    <InputBox
+      bridge={bridge}
+      color={true}
+      isTty={true}
+      columns={60}
+      onEmptyRight={() => { rightCalled += 1; }}
+    />,
+  );
+  stdin.write(ALT_RIGHT);
+  await tick();
+  assert.equal(rightCalled, 1, 'Alt+Right must call onEmptyRight on empty buffer');
+  assert.equal(bridge.currentLine(), '', 'buffer must stay empty');
+});
+
+test('Alt+Left with non-empty buffer calls onEmptyLeft and preserves draft', async () => {
+  const bridge = createInputBoxBridge();
+  let leftCalled = 0;
+  const { stdin } = render(
+    <InputBox
+      bridge={bridge}
+      color={true}
+      isTty={true}
+      columns={60}
+      onEmptyLeft={() => { leftCalled += 1; }}
+    />,
+  );
+  stdin.write('draft text');
+  await tick();
+  stdin.write(ALT_LEFT);
+  await tick();
+  assert.equal(leftCalled, 1, 'Alt+Left must fire with draft present');
+  assert.equal(bridge.currentLine(), 'draft text', 'draft must be preserved');
+});
+
+test('Alt+Right with non-empty buffer calls onEmptyRight and preserves draft', async () => {
+  const bridge = createInputBoxBridge();
+  let rightCalled = 0;
+  const { stdin } = render(
+    <InputBox
+      bridge={bridge}
+      color={true}
+      isTty={true}
+      columns={60}
+      onEmptyRight={() => { rightCalled += 1; }}
+    />,
+  );
+  stdin.write('draft text');
+  await tick();
+  stdin.write(ALT_RIGHT);
+  await tick();
+  assert.equal(rightCalled, 1, 'Alt+Right must fire with draft present');
+  assert.equal(bridge.currentLine(), 'draft text', 'draft must be preserved');
+});
+
+test('Ctrl+Left with non-empty buffer moves by word, does NOT call onEmptyLeft', async () => {
+  const bridge = createInputBoxBridge();
+  let leftCalled = 0;
+  const { stdin } = render(
+    <InputBox
+      bridge={bridge}
+      color={true}
+      isTty={true}
+      columns={60}
+      onEmptyLeft={() => { leftCalled += 1; }}
+    />,
+  );
+  stdin.write('hello world');
+  await tick();
+  stdin.write(CTRL_LEFT);
+  await tick();
+  stdin.write('X');
+  await tick();
+  assert.equal(leftCalled, 0, 'Ctrl+Left must not call onEmptyLeft');
+  assert.equal(bridge.currentLine(), 'hello Xworld', 'Ctrl+Left must word-move then insert');
 });
 
 // ---------------------------------------------------------------------------
