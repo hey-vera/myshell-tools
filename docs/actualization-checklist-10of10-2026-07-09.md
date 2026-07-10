@@ -156,12 +156,12 @@ Auto-adapt means: detect repo remotes + available CLIs (gh/glab/git), adapt lang
 ### Wave 7 → Partner principles absorb (Fable-class; not loop clone)
 Spec: `docs/partner-principles-absorb-2026-07-09.md`
 
-- [ ] **W7.1** Built-in partner laws (prompt): done=check, anti-goldplate, anti-overplan, grounded claims
-- [ ] **W7.2** Turn routing receipts: provider · model · effort · account? · why (actual run)
-- [ ] **W7.3** Account weight UX honesty: within-provider seat balance; proof routing uses weights
-- [ ] **W7.4** Done=check binding: doneCondition + goal/terminal settle cannot skip verify on claimed done
-- [ ] **W7.5** Goal rewatch+: resume + mid-session/first-turn context inject for standing goals
-- [ ] Acceptance: one chat shows *who/why*, never greeds max effort silently, never settles done without check, re-engages parked goals
+- [x] **W7.1** Built-in partner laws (prompt): done=check, anti-goldplate, anti-overplan, grounded claims — #143
+- [x] **W7.2** Turn routing receipts: provider · model · effort · account? · why (actual run) — #145
+- [x] **W7.3** Account weight UX honesty: within-provider seat balance; proof routing uses weights — #144
+- [x] **W7.4** Done=check binding: doneCondition + goal/terminal settle cannot skip verify on claimed done — #147
+- [x] **W7.5** Goal rewatch+: first-turn model context inject for standing goals (resume print kept) — #146
+- [ ] Acceptance: one chat shows *who/why*, never greeds max effort silently, never settles done without check, re-engages parked goals — **code complete; human smoke pending**
 
 ---
 
