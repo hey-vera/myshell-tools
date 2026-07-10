@@ -238,6 +238,38 @@ test('StatusLine falls back to "Thinking" + an honest work summary when no tool 
   assert.match(frame, /esc cancel turn/);
 });
 
+test('StatusLine shows honest stall chrome after ≥12s silence (display-only)', () => {
+  const lastEventAt = 1_000;
+  const state: UiState = {
+    ...initialState,
+    turnActive: true,
+    goals: [goal({ state: 'running', agents: [agent({ state: 'running' })] })],
+    stream: {
+      ...initialState.stream,
+      phase: 'thinking',
+      workLabel: 'Thinking',
+      lastEventAt,
+      lastPulseLabel: 'Thinking',
+    },
+  };
+  // Under threshold: still progressive Thinking…
+  const under = render(
+    <StatusLine state={state} frame="⠙" elapsedSecs={5} nowMs={lastEventAt + 5_000} color={false} />,
+  );
+  assert.match(under.lastFrame() ?? '', /Thinking…/);
+  assert.doesNotMatch(under.lastFrame() ?? '', /stalled/);
+
+  // At/over threshold: honest stall; last known label; silence seconds.
+  const stalled = render(
+    <StatusLine state={state} frame="⠹" elapsedSecs={47} nowMs={lastEventAt + 47_000} color={false} />,
+  );
+  const frame = stalled.lastFrame() ?? '';
+  assert.match(frame, /stalled · last Thinking · 47s/);
+  assert.match(frame, /esc to interrupt/);
+  // Must not invent a progressive verb with ellipsis while stalled.
+  assert.doesNotMatch(frame, /Thinking…/);
+});
+
 test('StatusLine LEADS with the live ACTION and reports honest active, complete, and goal counts', () => {
   const state: UiState = {
     ...initialState,
