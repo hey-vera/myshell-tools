@@ -4,6 +4,42 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.169.0] - 2026-07-10 — live control plane, no queue, model auto-adapt
+
+Ships the live control-plane completion wave (#163–#167) on main after
+**3.168.0** (#162): always-hot nav with draft, honest turn pulse/stall,
+Esc leave / cancel-turn, preemptive control, goal integrity, live notes
+instead of a mid-turn queue, and live model inventory auto-adapt.
+Acceptances remain human-smoke pending; `npm publish` is owner-only.
+
+### Added
+- **Control-plane completion spec** — product contracts + PR DAG for live
+  multi-goal control plane and external-test readiness (#163).
+- **Navigate with draft** — always-hot **Ctrl+G** toggles Control Panel;
+  **Alt+←** / **Alt+→** leave chat / open panel without clearing the composer
+  draft; empty-buffer bare arrows stay menu/panel (#164).
+- **Turn pulse + stall status** — status line tracks real last-event labels
+  (Preparing → Thinking → tool → Responding); after ≥12s silence while turn
+  active shows `stalled · last <label> · Ns` (display-only, no auto-abort)
+  (#165).
+- **Live control plane** — Esc mid-turn cancels the foreground turn only;
+  idle Esc leaves chat → home without aborting background goals; preemptive
+  `/back` and `/exit` mid-turn (not FIFO-stuck); process-scoped goal
+  AbortControllers with spawn integrity + zombie reconcile; NL `pause` aborts
+  + parks; **`pause_all`** parks every running goal (#166).
+- **Live manager notes (no mid-turn queue)** — prose while work runs becomes
+  live notes (`noted · will apply`) injected on the next turn instead of a
+  serial `queued(N)` drain (#166).
+- **Live model auto-adapt** — new models from provider CLI inventory (Codex
+  `models_cache.json`, `opencode models`, `grok models`) without a myshell
+  release; capability refresh on session start + light mid-session re-detect;
+  unknown ids usable with honest unknown capability (no invented tier/effort)
+  (#167).
+
+### Changed
+- **Docs board tip** — package **3.169.0** after live control plane + model
+  auto-adapt wave.
+
 ## [3.168.0] - 2026-07-10 — forge depth, model ghost, polish, shared deps
 
 Ships forge depth (#153–#156, #159), optional model ghost (#154), partner
