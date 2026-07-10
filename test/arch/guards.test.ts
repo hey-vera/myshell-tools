@@ -37,7 +37,7 @@ const SHELL_EXEC_ALLOWLIST = new Set([
   "src/infra/workspace-context.ts",
   // Fail-soft `gh` exec for PR status (gated at interface via CommandGatePort).
   "src/infra/gh-run.ts",
-  // Fail-soft `glab` exec for MR list/status (gated at interface via CommandGatePort).
+  // Fail-soft `glab` exec for MR list/status/create (gated at interface via CommandGatePort).
   "src/infra/glab-run.ts",
 ]);
 

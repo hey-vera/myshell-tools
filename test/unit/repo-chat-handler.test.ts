@@ -6,6 +6,7 @@ import {
   githubPrChecksUnavailableMessage,
   githubPrCreateUnavailableMessage,
   githubPrStatusUnavailableMessage,
+  gitlabMrCreateUnavailableMessage,
   handleRepoChatIntent,
   type RepoChatHandlerDeps,
 } from '../../src/interface/repo-chat-handler.js';
@@ -808,9 +809,9 @@ describe('handleRepoChatIntent', () => {
     expect(ghCalls).toEqual([]);
   });
 
-  it('github_pr_create: honest degrade on GitLab (MR create out of scope)', async () => {
+  it('github_pr_create on GitLab+glab: cross-routes to glab mr create --fill --yes', async () => {
     const ghCalls: unknown[] = [];
-    const glabCalls: unknown[] = [];
+    const glabCalls: Array<{ args: readonly string[]; cwd: string }> = [];
     const result = await handleRepoChatIntent('create a pr', deps({
       forgeContext: {
         cwd: '/repo',
@@ -824,17 +825,36 @@ describe('handleRepoChatIntent', () => {
         ghCalls.push(1);
         return { ok: true, stdout: '', stderr: '', exitCode: 0 };
       },
-      async runGlab() {
-        glabCalls.push(1);
-        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      async runGlab(args, cwd) {
+        glabCalls.push({ args, cwd });
+        return {
+          ok: true,
+          stdout: 'https://gitlab.com/acme/app/-/merge_requests/7',
+          stderr: '',
+          exitCode: 0,
+        };
       },
+      commandGate: {
+        gate: (): CommandGateDecision => ({
+          allowed: true,
+          requireConfirmation: false,
+          commandTier: 'local-write',
+          forbidBackground: false,
+          mustRecord: true,
+          rationale: '',
+        }),
+        async confirm() {
+          return true;
+        },
+      } as CommandGatePort,
+      oversight: 'checkpoint',
     }));
 
     expect(result?.operation).toBe('github_pr_create');
-    expect(result?.message).toMatch(/GitLab/i);
-    expect(result?.message).toMatch(/not wired|MR create/i);
+    expect(result?.message).toMatch(/GitLab MR created/i);
+    expect(result?.message).toContain('merge_requests/7');
     expect(ghCalls).toEqual([]);
-    expect(glabCalls).toEqual([]);
+    expect(glabCalls).toEqual([{ args: ['mr', 'create', '--fill', '--yes'], cwd: '/repo' }]);
   });
 
   it('github_pr_create: honest message for wrong/non-GitHub host', async () => {
@@ -927,7 +947,7 @@ describe('handleRepoChatIntent', () => {
     expect(ghCalls).toEqual([]);
   });
 
-  it('githubPrCreateUnavailableMessage: null only when GitHub + gh', () => {
+  it('githubPrCreateUnavailableMessage: null when GitHub + gh or GitLab + glab', () => {
     expect(githubPrCreateUnavailableMessage(githubForge)).toBeNull();
     expect(
       githubPrCreateUnavailableMessage({
@@ -935,5 +955,225 @@ describe('handleRepoChatIntent', () => {
         tools: { gh: false, glab: false },
       }),
     ).toMatch(/not on PATH/i);
+    expect(
+      githubPrCreateUnavailableMessage({
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
+        hostClass: 'gitlab',
+        primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+        tools: { gh: false, glab: true },
+      }),
+    ).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // P1.7 thin extension — GitLab MR create via NL ("create a mr" / "glab mr create")
+  // -------------------------------------------------------------------------
+
+  const gitlabForge = {
+    cwd: '/repo',
+    gitRoot: '/repo',
+    remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' as const }],
+    hostClass: 'gitlab' as const,
+    primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+    tools: { gh: false, glab: true },
+  };
+
+  it('gitlab_mr_create: runs glab mr create --fill --yes when host is GitLab and glab is available', async () => {
+    const glabCalls: Array<{ args: readonly string[]; cwd: string }> = [];
+    const result = await handleRepoChatIntent('create a mr', deps({
+      forgeContext: gitlabForge,
+      async runGlab(args, cwd) {
+        glabCalls.push({ args, cwd });
+        return {
+          ok: true,
+          stdout: 'https://gitlab.com/acme/app/-/merge_requests/12',
+          stderr: '',
+          exitCode: 0,
+        };
+      },
+      commandGate: {
+        gate: (): CommandGateDecision => ({
+          allowed: true,
+          requireConfirmation: false,
+          commandTier: 'local-write',
+          forbidBackground: false,
+          mustRecord: true,
+          rationale: '',
+        }),
+        async confirm() {
+          return true;
+        },
+      } as CommandGatePort,
+      oversight: 'checkpoint',
+    }));
+
+    expect(result?.operation).toBe('gitlab_mr_create');
+    expect(result?.mutatesWorkspace).toBe(true);
+    expect(result?.message).toContain('GitLab MR created');
+    expect(result?.message).toContain('merge_requests/12');
+    expect(glabCalls).toEqual([{ args: ['mr', 'create', '--fill', '--yes'], cwd: '/repo' }]);
+  });
+
+  it('gitlab_mr_create: honest message when glab is missing on GitLab host (no theater)', async () => {
+    const glabCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('open a merge request', deps({
+      forgeContext: {
+        ...gitlabForge,
+        tools: { gh: false, glab: false },
+      },
+      async runGlab(args, cwd) {
+        glabCalls.push({ args, cwd });
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(result?.operation).toBe('gitlab_mr_create');
+    expect(result?.message).toMatch(/glab.*not on PATH/i);
+    expect(result?.mutatesWorkspace).toBe(false);
+    expect(glabCalls).toEqual([]);
+  });
+
+  it('gitlab_mr_create on GitHub+gh: cross-routes to gh pr create --fill', async () => {
+    const glabCalls: unknown[] = [];
+    const ghCalls: Array<{ args: readonly string[]; cwd: string }> = [];
+    const result = await handleRepoChatIntent('create a merge request', deps({
+      forgeContext: githubForge,
+      async runGlab() {
+        glabCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+      async runGh(args, cwd) {
+        ghCalls.push({ args, cwd });
+        return {
+          ok: true,
+          stdout: 'https://github.com/acme/app/pull/99',
+          stderr: '',
+          exitCode: 0,
+        };
+      },
+      commandGate: {
+        gate: (): CommandGateDecision => ({
+          allowed: true,
+          requireConfirmation: false,
+          commandTier: 'local-write',
+          forbidBackground: false,
+          mustRecord: true,
+          rationale: '',
+        }),
+        async confirm() {
+          return true;
+        },
+      } as CommandGatePort,
+      oversight: 'checkpoint',
+    }));
+
+    expect(result?.operation).toBe('github_pr_create');
+    expect(result?.message).toMatch(/GitHub PR created/i);
+    expect(result?.message).toContain('pull/99');
+    expect(glabCalls).toEqual([]);
+    expect(ghCalls).toEqual([{ args: ['pr', 'create', '--fill'], cwd: '/repo' }]);
+  });
+
+  it('gitlab_mr_create: honest message for wrong/non-GitLab host', async () => {
+    const result = await handleRepoChatIntent('glab mr create', deps({
+      forgeContext: {
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [{ name: 'origin', url: 'git@example.com:acme/app.git', purpose: 'fetch' }],
+        hostClass: 'other',
+        primaryRemoteUrl: 'git@example.com:acme/app.git',
+        tools: { gh: false, glab: true },
+      },
+    }));
+
+    expect(result?.message).toMatch(/not GitLab/i);
+  });
+
+  it('gitlab_mr_create: surfaces glab failure honestly with shell guidance', async () => {
+    const result = await handleRepoChatIntent('create a mr', deps({
+      forgeContext: gitlabForge,
+      async runGlab() {
+        return {
+          ok: false,
+          stdout: '',
+          stderr: 'must be on a branch with commits ahead of target',
+          exitCode: 1,
+        };
+      },
+      oversight: 'autonomous',
+    }));
+
+    expect(result?.message).toContain('glab mr create --fill --yes failed');
+    expect(result?.message).toMatch(/must be on a branch|commits ahead/i);
+    expect(result?.message).toMatch(/will not hang/i);
+    expect(result?.mutatesWorkspace).toBe(false);
+  });
+
+  it('gitlab_mr_create: gate deny does not run glab', async () => {
+    const glabCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('create a mr', deps({
+      forgeContext: gitlabForge,
+      async runGlab() {
+        glabCalls.push(1);
+        return { ok: true, stdout: 'https://example.com/mr/1', stderr: '', exitCode: 0 };
+      },
+      commandGate: {
+        gate: (): CommandGateDecision => ({
+          allowed: false,
+          requireConfirmation: false,
+          commandTier: 'local-write',
+          forbidBackground: false,
+          mustRecord: true,
+          rationale: 'denied in test',
+        }),
+        async confirm() {
+          return true;
+        },
+      } as CommandGatePort,
+      oversight: 'checkpoint',
+    }));
+
+    expect(result?.message).toMatch(/denied/i);
+    expect(glabCalls).toEqual([]);
+  });
+
+  it('gitlab_mr_create: without confirm seam stays preview-only (no hang, no spawn)', async () => {
+    const glabCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('create a mr', deps({
+      forgeContext: gitlabForge,
+      async runGlab() {
+        glabCalls.push(1);
+        return { ok: true, stdout: 'https://example.com/mr/1', stderr: '', exitCode: 0 };
+      },
+      // commandGate present but no confirm — non-autonomous must not spawn
+      commandGate: {
+        gate: (): CommandGateDecision => ({
+          allowed: true,
+          requireConfirmation: false,
+          commandTier: 'local-write',
+          forbidBackground: false,
+          mustRecord: true,
+          rationale: '',
+        }),
+      } as CommandGatePort,
+      oversight: 'checkpoint',
+    }));
+
+    expect(result?.message).toMatch(/have not created an MR/i);
+    expect(result?.message).toMatch(/glab mr create --fill --yes/);
+    expect(glabCalls).toEqual([]);
+  });
+
+  it('gitlabMrCreateUnavailableMessage: null when GitLab + glab or GitHub + gh', () => {
+    expect(gitlabMrCreateUnavailableMessage(gitlabForge)).toBeNull();
+    expect(
+      gitlabMrCreateUnavailableMessage({
+        ...gitlabForge,
+        tools: { gh: false, glab: false },
+      }),
+    ).toMatch(/not on PATH/i);
+    expect(gitlabMrCreateUnavailableMessage(githubForge)).toBeNull();
   });
 });

@@ -42,6 +42,8 @@ const FIXTURES: readonly Fixture[] = [
   { command: 'cp source.txt dest.txt', expected: 'local-write' },
   { command: 'git add src/core/classify.ts', expected: 'local-write' },
   { command: 'git commit -m "checkpoint"', expected: 'local-write' },
+  { command: 'gh pr create --fill', expected: 'local-write' },
+  { command: 'glab mr create --fill --yes', expected: 'local-write' },
   { command: "sed -i 's/foo/bar/' notes.txt", expected: 'local-write' },
   { command: 'echo hello > notes.txt', expected: 'local-write' },
   { command: 'echo hello >> notes.txt', expected: 'local-write' },
