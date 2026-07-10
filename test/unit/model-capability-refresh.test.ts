@@ -395,4 +395,28 @@ describe('refreshCapabilities — detect merge', () => {
       [],
     );
   });
+
+  it('live auto-adapt: unknown detect id merges while fail-soft keeps declarative floor', async () => {
+    const { registry, diagnostics } = await refreshCapabilities(
+      {
+        providers: [
+          {
+            provider: 'codex',
+            authenticated: true,
+            availableModels: ['gpt-5.5', 'gpt-brand-new-ship'],
+          },
+        ],
+        nowIso: NOW,
+      },
+      port(null), // missing cache — declarative + detect only
+    );
+    const ids = registry.codex.map((c) => c.id);
+    assert.ok(ids.includes('gpt-5.5'), 'declarative floor retained');
+    assert.ok(ids.includes('gpt-5.4'), 'declarative sibling retained');
+    assert.ok(ids.includes('gpt-brand-new-ship'), 'new detect id live-adapted');
+    const fresh = registry.codex.find((c) => c.id === 'gpt-brand-new-ship');
+    assert.equal(fresh?.tierHint, undefined, 'never invent tier');
+    assert.deepEqual(fresh?.supportedReasoningEfforts, [], 'never invent effort');
+    assert.ok(diagnostics.some((d) => d.level === 'info'));
+  });
 });

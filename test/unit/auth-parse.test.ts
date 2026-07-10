@@ -17,6 +17,7 @@ import {
   opencodeCredentialCount,
   resolveOpencodeAuthPath,
   parseOpencodeModels,
+  parseCodexModelsCache,
   getInstallCommand,
   credentialFileIndicatesAuth,
   foldRateLimitTier,
@@ -895,5 +896,32 @@ describe('opencodePlanFromAuthJson — only a genuinely-present oauth plan claim
     assert.equal(opencodePlanFromAuthJson('{}'), null);
     assert.equal(opencodePlanFromAuthJson('null'), null);
     assert.equal(opencodePlanFromAuthJson('[]'), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseCodexModelsCache — live Codex inventory from local models_cache.json
+// ---------------------------------------------------------------------------
+
+describe('parseCodexModelsCache — live model auto-adapt', () => {
+  it('returns list-visible slugs and skips hide visibility', () => {
+    const raw = JSON.stringify({
+      fetched_at: '2026-07-08T00:00:00Z',
+      models: [
+        { slug: 'gpt-5.5', visibility: 'list' },
+        { slug: 'gpt-brand-new', visibility: 'list' },
+        { slug: 'codex-auto-review', visibility: 'hide' },
+        { slug: '  ', visibility: 'list' },
+        { visibility: 'list' },
+      ],
+    });
+    assert.deepEqual(parseCodexModelsCache(raw), ['gpt-5.5', 'gpt-brand-new']);
+  });
+
+  it('fail-soft on corrupt / empty input (never throws)', () => {
+    assert.deepEqual(parseCodexModelsCache('not json'), []);
+    assert.deepEqual(parseCodexModelsCache('{}'), []);
+    assert.deepEqual(parseCodexModelsCache(JSON.stringify({ models: 'nope' })), []);
+    assert.doesNotThrow(() => parseCodexModelsCache(''));
   });
 });

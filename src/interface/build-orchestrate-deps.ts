@@ -23,6 +23,7 @@
 import type { EnvironmentStatus } from '../providers/detect.js';
 import type { ProviderId } from '../providers/port.js';
 import type { CapabilityRegistry } from '../core/model-capabilities.js';
+import { routingInventoryFromDetectAndRegistry } from '../core/live-model-inventory.js';
 import { classifyPlan, type PlanInfo } from '../core/policy.js';
 import type { OrchestrateDeps } from '../core/types.js';
 
@@ -213,14 +214,36 @@ export function buildSharedOrchestrateCore(
     readonly context?: OptionalSharedContextInput;
   },
 ): EnvRoutingDepsSlice & ShippedCoreOrchestrateFlags & OptionalSharedContextDeps {
+  const routing = buildEnvRoutingDepsSlice(env, {
+    ...(options?.authenticatedProviders !== undefined
+      ? { authenticatedProviders: options.authenticatedProviders }
+      : {}),
+    ...(options?.planInfos !== undefined ? { planInfos: options.planInfos } : {}),
+  });
+  const contextDeps = buildOptionalSharedContextDeps(options?.context ?? {});
+
+  // Live auto-adapt: when the capability registry is present, expand routing
+  // inventory with detect/codex-cache model ids so newly advertised models are
+  // Auto-routable (worker floor / unknown profile) without a myshell release.
+  // No registry → byte-identical to detect-only inventory.
+  const registry = options?.context?.capabilityRegistry;
+  let availableModels = routing.availableModels;
+  if (registry !== undefined) {
+    const expanded = routingInventoryFromDetectAndRegistry(
+      routing.availableModels ?? {},
+      registry,
+    );
+    if (Object.keys(expanded).length > 0) {
+      availableModels = expanded;
+    }
+  }
+
   return {
-    ...buildEnvRoutingDepsSlice(env, {
-      ...(options?.authenticatedProviders !== undefined
-        ? { authenticatedProviders: options.authenticatedProviders }
-        : {}),
-      ...(options?.planInfos !== undefined ? { planInfos: options.planInfos } : {}),
-    }),
+    ...routing,
+    ...(availableModels !== undefined && Object.keys(availableModels).length > 0
+      ? { availableModels }
+      : {}),
     ...buildShippedCoreOrchestrateFlags(),
-    ...buildOptionalSharedContextDeps(options?.context ?? {}),
+    ...contextDeps,
   };
 }

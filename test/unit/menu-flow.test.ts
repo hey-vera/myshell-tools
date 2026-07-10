@@ -200,6 +200,28 @@ async function waitForSink(
   return sink.buf.includes(substring);
 }
 
+/**
+ * Poll a provider-call sequence until `predicate` holds (or the timeout elapses).
+ * Cold post-turn planning fires `warmUnderstanding` + the planner as concurrent
+ * fire-and-forget work after the worker reply. Goal rows can land before the
+ * background understanding pass has called the mock provider (especially under
+ * Windows CI load), so waiting only on `waitForGoalCount` races the sequence
+ * assert. Poll the signal being asserted — same race class as waitForSink /
+ * the planning-depth birdhouse fix (#70).
+ */
+async function waitForSequence(
+  sequence: readonly string[],
+  predicate: (steps: readonly string[]) => boolean,
+  timeoutMs = 5_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate(sequence)) return true;
+    await delay(10);
+  }
+  return predicate(sequence);
+}
+
 // ---------------------------------------------------------------------------
 // Fake clock
 // ---------------------------------------------------------------------------
@@ -3262,6 +3284,15 @@ describe('startMenu — auto-goal smart autonomy', () => {
       await startMenu(ctx, sink);
 
       await waitForGoalCount(ctx.clock, 1);
+      // Background warm + planner: poll the sequence, not just the goal row.
+      assert.ok(
+        await waitForSequence(
+          sequence,
+          (steps) =>
+            steps.includes('understanding') && steps.some((step) => step.startsWith('planner-')),
+        ),
+        `expected understanding + planner in sequence, got: ${sequence.join(',')}`,
+      );
       assert.equal(sequence[0], 'worker', 'the normal answer path runs before planning');
       assert.ok(sequence.includes('understanding'));
       assert.ok(sequence.some((step) => step.startsWith('planner-')));
@@ -3320,6 +3351,15 @@ describe('startMenu — auto-goal smart autonomy', () => {
       await startMenu(ctx, sink);
 
       await waitForGoalCount(ctx.clock, 2);
+      assert.ok(
+        await waitForSequence(
+          sequence,
+          (steps) =>
+            steps.filter((step) => step === 'planner').length === 2 &&
+            steps.filter((step) => step === 'understanding').length >= 1,
+        ),
+        `expected 2 planners + understanding in sequence, got: ${sequence.join(',')}`,
+      );
       assert.equal(sequence.filter((step) => step === 'planner').length, 2);
       assert.ok(sequence.filter((step) => step === 'understanding').length >= 1);
     });
@@ -3369,6 +3409,14 @@ describe('startMenu — auto-goal smart autonomy', () => {
       await startMenu(ctx, sink);
 
       await waitForGoalCount(ctx.clock, 1);
+      assert.ok(
+        await waitForSequence(
+          sequence,
+          (steps) =>
+            steps.includes('understanding') && steps.some((step) => step.startsWith('planner-')),
+        ),
+        `expected understanding + planner in sequence, got: ${sequence.join(',')}`,
+      );
       assert.equal(sequence[0], 'worker', 'the normal answer path runs before planning');
       assert.ok(sequence.includes('understanding'));
       assert.ok(sequence.some((step) => step.startsWith('planner-')));
@@ -4292,6 +4340,10 @@ describe('startMenu — auto-goal smart autonomy', () => {
       }, undefined, undefined, undefined, dir);
       await startMenu(ctx, sink);
       await waitForGoalCount(ctx.clock, 1);
+      assert.ok(
+        await waitForSequence(sequence, (steps) => steps.includes('understanding')),
+        `expected understanding in sequence, got: ${sequence.join(',')}`,
+      );
       assert.equal(sequence[0], 'worker', 'the normal answer path runs before planning');
       assert.ok(sequence.includes('understanding'), 'understanding pass runs for cold grounding');
       assert.ok(timeoutMs.length >= 1, 'understanding pass receives a timeout');
