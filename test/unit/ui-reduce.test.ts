@@ -22,6 +22,11 @@ import {
   isDebugEnv,
   initialState,
   initialStreamView,
+  derivePulseLabel,
+  isTurnStalled,
+  formatStallStatus,
+  resolveStatusHeadline,
+  STALL_THRESHOLD_MS,
   type Action,
   type AgentRunState,
   type AgentView,
@@ -537,6 +542,121 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
     });
     const afterProse = reduce(verbose, { type: 'stream/prose', text: 'x' });
     assert.equal(afterProse.stream.workLabel, 'manager (codex/gpt-5)');
+  });
+
+  it('turn pulse stamps lastEventAt / lastPulseLabel from stream actions (injected nowMs)', () => {
+    const t0 = 1_000_000;
+    const started = reduce(initialState, { type: 'turn/start' }, t0);
+    assert.equal(started.stream.lastEventAt, t0);
+    assert.equal(started.stream.lastPulseLabel, 'Preparing');
+    assert.equal(derivePulseLabel(started.stream), 'Preparing');
+
+    const t1 = t0 + 500;
+    const thinking = reduce(
+      started,
+      {
+        type: 'tier-start',
+        tier: 'ic',
+        provider: 'claude',
+        model: 'sonnet',
+        attempt: 1,
+        verbosity: 'normal',
+      },
+      t1,
+    );
+    assert.equal(thinking.stream.lastEventAt, t1);
+    assert.equal(thinking.stream.lastPulseLabel, 'Thinking');
+
+    const t2 = t1 + 200;
+    const tool = reduce(
+      thinking,
+      {
+        type: 'stream/tool',
+        name: 'Edit',
+        phase: 'start',
+        verbosity: 'normal',
+        detail: 'src/a.ts',
+      },
+      t2,
+    );
+    assert.equal(tool.stream.lastEventAt, t2);
+    assert.equal(tool.stream.lastPulseLabel, 'editing');
+    assert.equal(derivePulseLabel(tool.stream), 'editing');
+
+    const t3 = t2 + 100;
+    const prose = reduce(tool, { type: 'stream/prose', text: 'Hi' }, t3);
+    assert.equal(prose.stream.lastEventAt, t3);
+    // First prose clears tool? No — currentTool stays until flush-tier; pulse
+    // still prefers the live tool verb (honest: a tool is still the last action
+    // until tier boundary). After flush it falls back to Responding.
+    assert.equal(prose.stream.workLabel, 'Responding');
+    assert.equal(prose.stream.lastPulseLabel, 'editing');
+
+    const flushed = reduce(
+      prose,
+      {
+        type: 'stream/flush-tier',
+        tier: 'ic',
+        success: true,
+        confidence: null,
+        inputTokens: 1,
+        outputTokens: 1,
+        durationMs: 1,
+        panelCandidate: false,
+        verbosity: 'normal',
+      },
+      t3 + 50,
+    );
+    assert.equal(flushed.stream.currentTool, undefined);
+    assert.equal(flushed.stream.lastPulseLabel, 'Responding');
+  });
+
+  it('pure stall helpers: threshold, format, and resolveStatusHeadline', () => {
+    assert.equal(STALL_THRESHOLD_MS, 12_000);
+    assert.equal(isTurnStalled(null, 50_000), false);
+    assert.equal(isTurnStalled(1_000, 1_000 + 11_999), false);
+    assert.equal(isTurnStalled(1_000, 1_000 + 12_000), true);
+    assert.equal(formatStallStatus('Thinking', 47), 'stalled · last Thinking · 47s');
+    assert.equal(formatStallStatus('', 12), 'stalled · last Thinking · 12s');
+
+    const stream: StreamView = {
+      ...initialStreamView,
+      workLabel: 'Thinking',
+      lastEventAt: 1_000,
+      lastPulseLabel: 'Thinking',
+    };
+    // Under threshold → progressive headline (live action wins when present).
+    assert.deepEqual(resolveStatusHeadline(stream, 1_000 + 5_000, 'editing src/a.ts'), {
+      stalled: false,
+      headline: 'editing src/a.ts',
+    });
+    assert.deepEqual(resolveStatusHeadline(stream, 1_000 + 5_000, ''), {
+      stalled: false,
+      headline: 'Thinking',
+    });
+    // At threshold → honest stall; silence seconds from lastEventAt, not invented work.
+    assert.deepEqual(resolveStatusHeadline(stream, 1_000 + 47_000, 'editing src/a.ts'), {
+      stalled: true,
+      headline: 'stalled · last Thinking · 47s',
+    });
+    // No nowMs → never stall (display stays progressive).
+    assert.deepEqual(resolveStatusHeadline(stream, undefined, ''), {
+      stalled: false,
+      headline: 'Thinking',
+    });
+  });
+
+  it('board/sync and chrome do NOT stamp lastEventAt (not stream liveness)', () => {
+    const t0 = 5_000;
+    const started = reduce(initialState, { type: 'turn/start' }, t0);
+    const afterChrome = reduce(started, { type: 'chrome/replace', lines: ['menu'] }, t0 + 20_000);
+    assert.equal(afterChrome.stream.lastEventAt, t0, 'chrome must not count as a pulse event');
+    const afterBoard = reduce(
+      afterChrome,
+      { type: 'board/sync', rows: [], enabled: true },
+      t0 + 30_000,
+    );
+    assert.equal(afterBoard.stream.lastEventAt, t0, 'board/sync must not count as a pulse event');
   });
 
   it('turn/start sets turnActive true and turn/final settles it back to false', () => {

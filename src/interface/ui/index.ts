@@ -18,6 +18,11 @@
 
 export {
   reduce,
+  derivePulseLabel,
+  isTurnStalled,
+  formatStallStatus,
+  resolveStatusHeadline,
+  STALL_THRESHOLD_MS,
 } from './reduce.js';
 export {
   coreEventToActions,
