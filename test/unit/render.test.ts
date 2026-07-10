@@ -58,6 +58,7 @@ describe('input prompt renderer', () => {
   });
 
   it('renders the queued indicator text with the queue count', () => {
+    // Legacy pure helper — chat loop no longer paints mid-turn FIFO queue UX.
     assert.equal(renderQueuedIndicator(2, false), '⏎ queued (2)');
   });
 });
