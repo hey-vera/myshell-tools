@@ -3,29 +3,41 @@
  *
  * This is the interface seam between ordinary user language ("what changed?",
  * "run tests", "undo that", "pr status", "pr checks", "pr review", "create a pr",
- * "mr status", "pipeline status") and repo infrastructure. verify_only and commit
- * execute under commandGate + oversight (same seams as menu/cli verify paths).
- * GitHub PR status (P1.6 thin) runs `gh pr status` when the workspace is GitHub
- * and gh is on PATH. GitHub PR checks (P1.6 thin extension) runs read-only
- * `gh pr checks` for CI/check status (no --watch); on GitLab+glab it runs
- * `glab ci status` instead. GitHub PR review (P1.6 thin extension) runs read-only
- * `gh pr view --comments` for review/comment summary — never approve or
- * request-changes. GitHub PR create (P1.6 thin extension) runs non-interactive
- * `gh pr create --fill` under the same gate/oversight posture as commit — never
- * force-push, never invent base. GitLab MR list (P1.7 thin) runs `glab mr list`
- * when the workspace is GitLab and glab is on PATH. GitLab MR create (P1.7 thin
- * extension) runs non-interactive `glab mr create --fill --yes` under the same
- * gate/oversight posture as PR create. GitLab CI/pipeline status (P1.7 thin
- * extension) runs read-only `glab ci status` (no watch loops) — honest fail-soft
- * otherwise. Undo plans via checkpoint conflict gate, then applies under
- * oversight + commandGate when safe.
+ * "mr status", "pipeline status", "what forge am I on?") and repo infrastructure.
+ *
+ * **Local file/git mastery is first-class (P1.8):** status, diff, test/verify,
+ * commit, and undo do **not** need a forge CLI or remote. They run against the
+ * local working tree regardless of hostClass (github | gitlab | other | none).
+ * Forge-specific NL (PR/MR status/create/checks/review/pipelines) degrades
+ * honestly when the host is other (Bitbucket/Gitea/etc.) or none (local-only) —
+ * never pretends gh/glab apply.
+ *
+ * verify_only and commit execute under commandGate + oversight (same seams as
+ * menu/cli verify paths). GitHub PR status (P1.6 thin) runs `gh pr status` when
+ * the workspace is GitHub and gh is on PATH. GitHub PR checks (P1.6 thin
+ * extension) runs read-only `gh pr checks` for CI/check status (no --watch); on
+ * GitLab+glab it runs `glab ci status` instead. GitHub PR review (P1.6 thin
+ * extension) runs read-only `gh pr view --comments` for review/comment summary —
+ * never approve or request-changes. GitHub PR create (P1.6 thin extension) runs
+ * non-interactive `gh pr create --fill` under the same gate/oversight posture as
+ * commit — never force-push, never invent base. GitLab MR list (P1.7 thin) runs
+ * `glab mr list` when the workspace is GitLab and glab is on PATH. GitLab MR
+ * create (P1.7 thin extension) runs non-interactive `glab mr create --fill --yes`
+ * under the same gate/oversight posture as PR create. GitLab CI/pipeline status
+ * (P1.7 thin extension) runs read-only `glab ci status` (no watch loops) —
+ * honest fail-soft otherwise. Undo plans via checkpoint conflict gate, then
+ * applies under oversight + commandGate when safe.
  */
 
 import { planUndoAiCheckpoint } from '../core/ai-checkpoint.js';
 import type { CommandGatePort, CommandGateDecision } from '../core/command-gate.js';
 import { inferRepoIntent, type RepoOperationIntent } from '../core/repo-intent.js';
 import type { VerifyPort } from '../core/verify.js';
-import type { WorkspaceContext } from '../core/workspace-context.js';
+import {
+  extractRemoteHost,
+  forgeHostLabel,
+  type WorkspaceContext,
+} from '../core/workspace-context.js';
 import type { AiCheckpointStore } from '../infra/ai-checkpoint-store.js';
 import { runGh as defaultRunGh, type GhRunResult } from '../infra/gh-run.js';
 import { runGlab as defaultRunGlab, type GlabRunResult } from '../infra/glab-run.js';
@@ -114,6 +126,87 @@ async function currentTextMap(
 }
 
 /**
+ * P1.8: short other-forge label including remote host when known. PURE.
+ * Example: "other forge (bitbucket.org)".
+ */
+export function otherForgeRemoteDetail(forge: WorkspaceContext): string {
+  const host =
+    forge.primaryRemoteUrl !== null ? extractRemoteHost(forge.primaryRemoteUrl) : null;
+  if (host !== null) return `other forge (${host})`;
+  if (forge.primaryRemoteUrl !== null) return `other forge (${forge.primaryRemoteUrl})`;
+  return 'other forge';
+}
+
+/** Local ops remain first-class without gh/glab (P1.8). PURE constant fragment. */
+const LOCAL_OPS_HINT =
+  'Local status/diff/test/commit/undo still work without a forge CLI.';
+
+/**
+ * Read-only forge identity message (P1.8): hostClass, primary remote, remotes,
+ * tools — never pretends gh/glab apply to other/none. PURE.
+ */
+export function formatWorkspaceForgeMessage(forge: WorkspaceContext): string {
+  const host = forgeHostLabel(forge);
+  const lines: string[] = [`Forge: ${host}`];
+
+  if (forge.gitRoot !== null) {
+    lines.push(`Git root: ${forge.gitRoot}`);
+  }
+  if (forge.primaryRemoteUrl !== null) {
+    lines.push(`Primary remote: ${forge.primaryRemoteUrl}`);
+  }
+
+  if (forge.remotes.length > 0) {
+    const shown = forge.remotes.slice(0, 8);
+    const remoteLines = shown.map((r) => `  ${r.name}\t${r.url}\t(${r.purpose})`).join('\n');
+    const more =
+      forge.remotes.length > shown.length
+        ? `\n  … +${forge.remotes.length - shown.length} more`
+        : '';
+    lines.push(`Remotes (git remote -v style):\n${remoteLines}${more}`);
+  } else if (forge.gitRoot !== null) {
+    lines.push('Remotes: (none)');
+  }
+
+  lines.push(
+    `Tools: gh ${forge.tools.gh ? 'on PATH' : 'not found'}; glab ${
+      forge.tools.glab ? 'on PATH' : 'not found'
+    }`,
+  );
+
+  switch (forge.hostClass) {
+    case 'github':
+      lines.push(
+        forge.tools.gh
+          ? 'Host is GitHub — PR/checks NL can use gh when you ask.'
+          : 'Host is GitHub, but gh is not on PATH — I will not pretend gh is available.',
+      );
+      break;
+    case 'gitlab':
+      lines.push(
+        forge.tools.glab
+          ? 'Host is GitLab — MR/pipeline NL can use glab when you ask.'
+          : 'Host is GitLab, but glab is not on PATH — I will not pretend glab is available.',
+      );
+      break;
+    case 'other':
+      lines.push(
+        `Not GitHub/GitLab — I will not run gh/glab against this remote. Open change requests in the host UI. ${LOCAL_OPS_HINT}`,
+      );
+      break;
+    case 'none':
+      lines.push(
+        forge.gitRoot !== null
+          ? `Local-only (no remote forge). ${LOCAL_OPS_HINT}`
+          : 'Not a git repo — local file work only; no forge or remote PR/MR.',
+      );
+      break;
+  }
+
+  return lines.join('\n');
+}
+
+/**
  * Honest message when forge/tools cannot support GitHub PR status. PURE-ish
  * (no I/O). Returns null when host is GitHub and gh is on PATH (caller may run),
  * or when host is GitLab and glab is on PATH (caller may run glab instead).
@@ -127,11 +220,11 @@ export function githubPrStatusUnavailableMessage(forge: WorkspaceContext): strin
     return 'This workspace is GitLab — not GitHub. gh PR status does not apply, and glab is not on PATH. Use local git or the GitLab UI.';
   }
   if (forge.hostClass === 'other') {
-    return 'This remote is not GitHub — I will not run gh PR status against a non-GitHub forge.';
+    return `This remote is not GitHub (${otherForgeRemoteDetail(forge)}) — I will not run gh PR status against it. Use the host UI for change-request status. ${LOCAL_OPS_HINT}`;
   }
   if (forge.hostClass === 'none') {
     return forge.gitRoot !== null
-      ? 'Local-only workspace (no remote forge) — there is no GitHub PR status to query.'
+      ? `Local-only workspace (no remote forge) — there is no GitHub PR status to query. ${LOCAL_OPS_HINT}`
       : 'This folder is not a git repo — there is no GitHub PR status to query.';
   }
   // github but gh missing
@@ -152,11 +245,11 @@ export function githubPrChecksUnavailableMessage(forge: WorkspaceContext): strin
     return 'This workspace is GitLab — not GitHub. gh PR checks do not apply, and glab is not on PATH. Use the GitLab UI or install glab (https://gitlab.com/gitlab-org/cli) for `glab ci status` / pipelines.';
   }
   if (forge.hostClass === 'other') {
-    return 'This remote is not GitHub — I will not run gh PR checks against a non-GitHub forge.';
+    return `This remote is not GitHub (${otherForgeRemoteDetail(forge)}) — I will not run gh PR checks against it. Use the host UI for CI. ${LOCAL_OPS_HINT}`;
   }
   if (forge.hostClass === 'none') {
     return forge.gitRoot !== null
-      ? 'Local-only workspace (no remote forge) — there are no GitHub PR checks to query.'
+      ? `Local-only workspace (no remote forge) — there are no GitHub PR checks to query. ${LOCAL_OPS_HINT}`
       : 'This folder is not a git repo — there are no GitHub PR checks to query.';
   }
   // github but gh missing
@@ -177,11 +270,11 @@ export function gitlabCiStatusUnavailableMessage(forge: WorkspaceContext): strin
     return 'This workspace is GitHub — not GitLab. Pipeline status via glab does not apply, and gh is not on PATH. Install the GitHub CLI (https://cli.github.com) or check CI in the browser.';
   }
   if (forge.hostClass === 'other') {
-    return 'This remote is not GitLab — I will not run glab CI status against a non-GitLab forge.';
+    return `This remote is not GitLab (${otherForgeRemoteDetail(forge)}) — I will not run glab CI status against it. Use the host UI for CI. ${LOCAL_OPS_HINT}`;
   }
   if (forge.hostClass === 'none') {
     return forge.gitRoot !== null
-      ? 'Local-only workspace (no remote forge) — there is no GitLab pipeline status to query.'
+      ? `Local-only workspace (no remote forge) — there is no GitLab pipeline status to query. ${LOCAL_OPS_HINT}`
       : 'This folder is not a git repo — there is no GitLab pipeline status to query.';
   }
   // gitlab but glab missing
@@ -228,11 +321,11 @@ export function githubPrCreateUnavailableMessage(forge: WorkspaceContext): strin
     return 'This workspace is GitLab — not GitHub. PR create via gh does not apply, and glab is not on PATH. Use the GitLab UI or install glab (https://gitlab.com/gitlab-org/cli), then ask to create a merge request.';
   }
   if (forge.hostClass === 'other') {
-    return 'This remote is not GitHub — I will not run gh PR create against a non-GitHub forge.';
+    return `This remote is not GitHub (${otherForgeRemoteDetail(forge)}) — I will not run gh PR create against it. Open a change request in that host's UI (Bitbucket/Gitea/etc. are not wired). ${LOCAL_OPS_HINT}`;
   }
   if (forge.hostClass === 'none') {
     return forge.gitRoot !== null
-      ? 'Local-only workspace (no remote forge) — there is no GitHub host to open a PR against.'
+      ? `Local-only workspace (no remote forge) — there is no GitHub host to open a PR against. ${LOCAL_OPS_HINT}`
       : 'This folder is not a git repo — there is no PR to create.';
   }
   // github but gh missing
@@ -253,11 +346,11 @@ export function gitlabMrCreateUnavailableMessage(forge: WorkspaceContext): strin
     return 'This workspace is GitHub — not GitLab. MR create via glab does not apply, and gh is not on PATH. Use the GitHub UI or install the GitHub CLI (https://cli.github.com), then ask to create a pull request.';
   }
   if (forge.hostClass === 'other') {
-    return 'This remote is not GitLab — I will not run glab MR create against a non-GitLab forge.';
+    return `This remote is not GitLab (${otherForgeRemoteDetail(forge)}) — I will not run glab MR create against it. Open a change request in that host's UI. ${LOCAL_OPS_HINT}`;
   }
   if (forge.hostClass === 'none') {
     return forge.gitRoot !== null
-      ? 'Local-only workspace (no remote forge) — there is no GitLab host to open an MR against.'
+      ? `Local-only workspace (no remote forge) — there is no GitLab host to open an MR against. ${LOCAL_OPS_HINT}`
       : 'This folder is not a git repo — there is no MR to create.';
   }
   // gitlab but glab missing
@@ -277,11 +370,11 @@ export function gitlabMrStatusUnavailableMessage(forge: WorkspaceContext): strin
       : 'This workspace is GitHub — not GitLab. glab MR status does not apply, and gh is not on PATH. Use local git or the GitHub UI.';
   }
   if (forge.hostClass === 'other') {
-    return 'This remote is not GitLab — I will not run glab MR status against a non-GitLab forge.';
+    return `This remote is not GitLab (${otherForgeRemoteDetail(forge)}) — I will not run glab MR status against it. Use the host UI for change-request status. ${LOCAL_OPS_HINT}`;
   }
   if (forge.hostClass === 'none') {
     return forge.gitRoot !== null
-      ? 'Local-only workspace (no remote forge) — there is no GitLab MR status to query.'
+      ? `Local-only workspace (no remote forge) — there is no GitLab MR status to query. ${LOCAL_OPS_HINT}`
       : 'This folder is not a git repo — there is no GitLab MR status to query.';
   }
   // gitlab but glab missing
@@ -332,6 +425,24 @@ async function resolveForge(deps: RepoChatHandlerDeps): Promise<WorkspaceContext
     deps.forgeContext ??
     (await detect(deps.cwd).catch(() => null))
   );
+}
+
+/**
+ * P1.8 thin: answer "what forge am I on?" / "is this github?" from workspace
+ * context — no gh/glab spawn; remotes + hostClass only.
+ */
+async function handleWorkspaceForge(deps: RepoChatHandlerDeps): Promise<RepoChatHandled> {
+  const forge = await resolveForge(deps);
+  if (forge === null) {
+    return handled(
+      'workspace_forge',
+      'Could not detect workspace forge context just now — try again, or run `git remote -v` in the shell.',
+      { mutatesWorkspace: false },
+    );
+  }
+  return handled('workspace_forge', formatWorkspaceForgeMessage(forge), {
+    mutatesWorkspace: false,
+  });
 }
 
 /**
@@ -1142,6 +1253,9 @@ export async function handleRepoChatIntent(
         { mutatesWorkspace: false },
       );
     }
+
+    case 'workspace_forge':
+      return handleWorkspaceForge(deps);
 
     case 'github_pr_status':
       return handleGithubPrStatus(deps);
