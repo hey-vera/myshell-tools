@@ -68,6 +68,17 @@ const cases: ReadonlyArray<readonly [string, ReturnType<typeof inferRepoIntent>[
   ['show me the pr status', 'github_pr_status'],
   ['how is the pr?', 'github_pr_status'],
   ['current pr', 'github_pr_status'],
+  // P1.6 thin extension — GitHub PR create (must not steal "pr status")
+  ['create a pr', 'github_pr_create'],
+  ['create a pull request', 'github_pr_create'],
+  ['open a pr', 'github_pr_create'],
+  ['open a pull request', 'github_pr_create'],
+  ['make a pr', 'github_pr_create'],
+  ['submit a pull request', 'github_pr_create'],
+  ['new pr', 'github_pr_create'],
+  ['gh pr create', 'github_pr_create'],
+  ['pr create', 'github_pr_create'],
+  ['create a pr for the fix', 'github_pr_create'],
   // P1.7 thin — GitLab MR status
   ['mr status', 'gitlab_mr_status'],
   ["what's the MR status", 'gitlab_mr_status'],
@@ -88,6 +99,8 @@ describe('inferRepoIntent', () => {
     assert.equal(inferRepoIntent('fix the failing test').needsVerification, true);
     assert.equal(inferRepoIntent('what changed?').mutatesWorkspace, false);
     assert.equal(inferRepoIntent('run tests').needsVerification, true);
+    assert.equal(inferRepoIntent('create a pr').mutatesWorkspace, true);
+    assert.equal(inferRepoIntent('pr status').mutatesWorkspace, false);
   });
 
   it('extracts constraints from natural language steering', () => {

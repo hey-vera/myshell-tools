@@ -498,6 +498,9 @@ const COMMAND_TIER_SIGNALS: readonly CommandTierSignal[] = [
       /\bmv\b/i,
       /\bcp\b/i,
       /\bgit\s+(?:add|commit|checkout|switch|stash|tag)\b/i,
+      // GitHub CLI PR create (P1.6 thin): may push the branch + open a remote PR.
+      // Not read-only; mustRecord via local-write. Handler also requires explicit NL + confirm.
+      /\bgh\s+pr\s+create\b/i,
       /(?:^|[^>])>>?\s*\S+/,
       /\bsed\b[^\n;&|]*\s-i(?:\b|['"])/i,
       /\btee\b/i,
