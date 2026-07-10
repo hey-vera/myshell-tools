@@ -1,8 +1,17 @@
 # Partner principles absorb (2026-07-09)
 
-**Status:** ACTIVE — implementation wave after 3.166.0  
+**Status:** CODE COMPLETE on main (2026-07-10) — #142–#147; human smoke still open  
 **North star:** one chat to rule them all (multi-goal, subscription-native).  
 **Not:** loop.sh clone, Claude Projects admin, cron constitution product, API-key theater.
+
+| Slice | PR | Landed |
+|-------|-----|--------|
+| Spec + board | #142 | yes |
+| Partner laws | #143 | yes |
+| Account weight UX | #144 | yes |
+| Routing receipts | #145 | yes |
+| Goal rewatch+ | #146 | yes |
+| Done=check binding | #147 | yes |
 
 ## What we steal (Fable / elite-partner principles) — improved
 

@@ -1,6 +1,6 @@
 # myshell-tools — Active project board (orchestrator)
 
-Last updated: 2026-07-09 (tip **3.166.0**; partner-principles absorb wave open)
+Last updated: 2026-07-10 (tip post-Wave-7 absorb; package still **3.166.0** until next cut)
 
 ## North star
 One subscription-native chat to rule them all. Elite partner. Not API-key product.
@@ -32,65 +32,40 @@ myshell-tools is **not** Claude Projects and must not become a "create project /
 ## On main (this session — all green merges)
 | PR | Summary |
 |----|---------|
-| #118 | Checklist + 3.164.0 |
-| #119 | Clustered chat legend |
-| #120 | Live Effort Mode + correct keys |
-| #121 | Checklist progress P0.1–0.7 |
-| #122 | Preparing → Thinking → Responding |
-| #123 | Control panel nav / escape |
-| #124 | Shift+Tab conversation Effort Mode |
-| #125 | Wave 5b docs lock (Tab + forge) |
-| #126 | Single goals board + recap dock |
-| #127 | Resume partner goal orientation |
-| #128 | Project board (v1) |
-| #129 | Local-first ghost text + Tab accept |
-| #130 | Forge context detector (GH/GL/local) |
-| #131 | Docs: refresh board after #126–#130 |
-| #132 | Wire board goalHints → empty-prompt ghost |
-| #133 | Product truth: multi-goal one-chat, not Claude Projects |
-| #134 | Accounts-only Auto truth (no ambient Pro theater) |
-| #135 | Lag/stale UI watchdog relaunch harden |
-| #136 | Docs: board + checklist sync after #132–#135 |
-| #137 | GitHub PR status via NL when `gh` available |
-| #138 | Optional mouse clicks (panel tabs + legend) |
-| #139 | **3.165.0** release cut |
-| #140 | Complete checklist wave (checkpoints, undo, glab thin, smoke, README honesty) |
-| — | **3.166.0** release cut (this branch) |
+| #118–#141 | Actualization waves 0–6 core (see history) → tip **3.166.0** |
+| #142 | Partner principles absorb plan (Wave 7 spec) |
+| #143 | **W7.1** Built-in partner laws (prompt) |
+| #144 | **W7.3** Account weight UX honesty + routing proof |
+| #145 | **W7.2** Turn routing receipts |
+| #146 | **W7.5** Goal rewatch+ (first-turn context) |
+| #147 | **W7.4** Done=check binding |
 
-Main tip at cut base: `8e66912` (`#140` on `origin/main`). Release branch bumps package + changelog to **3.166.0**.
+Main tip: `c1f23e5` (#147). Package version still **3.166.0** (absorb landed after cut; next cut when ready).
 
-## Checklist honesty (2026-07-09 audit)
+## Checklist honesty (2026-07-10)
 
 | Item | Status | Notes |
 |------|--------|-------|
-| **P1.3** Mouse | **done** | #138 panel tabs + legend; menu-row mouse not required |
-| **P1.4** Panel honesty | **done** | capacity/sync + explicit unknowns (no fake quota %) |
-| **P1.6** GitHub depth | **partial** | status NL #137; create/review still open |
-| **P1.7** GitLab depth | **partial** | thin `glab mr list` #140 |
-| **P2.1** Checkpoint on AI edits | **done** | #140 `captureAiEditCheckpoint` after successful turns |
-| **P2.2** Safe undo apply | **done** | #140 conflict gate + oversight + commandGate |
-| **P2.3** NL verify + commit | **done** | already gated; re-verified |
-| **S.2** Smoke script | **done** | #140 `npm run smoke:checklist` |
-| **S.3** README daily use | **done** | #140 multi-goal honesty; tip **3.166.0** |
-| **S.5** Version | **done** | **3.166.0** this release (after 3.165.0 #139 + #140) |
-| Acceptance smokes | **open** | need human Replit/local — code complete ≠ accepted |
+| Wave 0–4 code | **done** | Human acceptance smokes still open |
+| P2.1–2.3, P2.7 | **done** | Checkpoint/undo/verify; local ghost |
+| P1.6 GitHub depth | **partial** | status NL #137; create/review still open |
+| P1.7 GitLab depth | **partial** | thin `glab mr list` #140 |
+| Wave 7 absorb | **code done** | #142–#147; human smoke pending |
+| S.5 Version | **3.166.0** | Absorb not version-bumped yet |
+| S.6 npm publish | **open** | npm `@latest` still **3.163.1** — user only |
+| Acceptance smokes | **open** | Replit/local — code complete ≠ accepted |
 
 ## Open / in flight
-| Track | Summary | Spec |
-|-------|---------|------|
-| **Absorb** | Partner principles (Fable-class, not loop clone) | `docs/partner-principles-absorb-2026-07-09.md` |
-| PR-A | Built-in partner laws (prompt) | anti-goldplate / done=check / grounded |
-| PR-B | Turn routing receipts | provider·model·effort·account?·why |
-| PR-C | Account weight UX honesty | within-provider seat balance copy + proof |
-| PR-D | Done=check binding | doneCondition + settle honesty |
-| PR-E | Goal rewatch+ | mid-session / first-turn context inject |
+(none after #146/#147)
 
 ## Next (priority)
-1. **Absorb wave** PR-A/B/C parallel → PR-D/E (see absorb doc DAG)
-2. **User smoke** the 3.166.0 build (Effort box, Shift+Tab, legend/panel, goals+recap, resume, Tab ghost, forge/`gh`/`glab` status, undo after edit, Accounts Auto, lag recovery, optional mouse, `smoke:checklist`)
-3. **`npm publish`** (user does this — not agents)
-4. **P1.5** optional budgeted model ghost (toggle; fail-soft; never blocks typing)
-5. **P1.6–1.8** remaining forge depth; P2.4–2.6 only if vision-aligned
+1. **User smoke** post-absorb main (Effort, Shift+Tab, legend/panel, goals+recap, resume rewatch, routing receipt line, Tab ghost, forge/`gh`/`glab`, undo, Accounts weight copy, partner laws behavior, lag recovery)
+2. **`npm publish`** (user) — ideally after optional **3.167.0** cut that includes Wave 7
+3. **P1.6** GitHub depth: thin `gh pr create` (gated) when GitHub+gh — extend status path
+4. **P1.7–1.8** GitLab pipelines / other-forge honesty polish
+5. **P1.5** optional budgeted model ghost (toggle; fail-soft)
+6. **P2.4** shared deps builder CLI→menu (only with tight contract — large seam)
+7. **S.1** visual polish
 
 ## Operating rules
 - Branch from origin/main only
