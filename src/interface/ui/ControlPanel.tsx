@@ -231,6 +231,8 @@ export interface ControlPanelProps {
   readonly state: UiState;
   readonly rows?: number;
   readonly columns?: number;
+  /** Gates cyan title / dim inactive tabs (default true; pass false for NO_COLOR). */
+  readonly color?: boolean;
   readonly onSetSection: (section: ControlPanelSection) => void;
   readonly onHighlightGoal: (goalId: string) => void;
   readonly onScroll: (section: ControlPanelSection, target: 'list' | 'detail' | undefined, delta: number) => void;
@@ -251,6 +253,7 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
     state,
     rows: liveRows = 24,
     columns: liveColumns = 80,
+    color = true,
     onSetSection,
     onHighlightGoal,
     onScroll,
@@ -386,11 +389,12 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
   return (
     <Box flexDirection="column">
       <Box>
-        <Text bold>CONTROL PANEL</Text>
+        {/* S.1: cyan bold title matches StatusBlock panel headers (GOALS/BOARD). */}
+        <Text bold {...(color ? { color: 'cyan' as const } : {})}>CONTROL PANEL</Text>
       </Box>
       {showSummary ? (
         <Box>
-          <Text dimColor>
+          <Text dimColor={color}>
             {model.summaryLine}
           </Text>
         </Box>
@@ -404,7 +408,7 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
               {' '}{sectionLabel(s)}{' '}
             </Text>
           ) : (
-            <Text key={s}>{' '}{sectionLabel(s)}{' '}</Text>
+            <Text key={s} dimColor={color}>{' '}{sectionLabel(s)}{' '}</Text>
           ),
         )}
       </Box>
@@ -414,6 +418,7 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
           model={model}
           scroll={state.controlPanel.statusScroll}
           availableRows={contentRows}
+          color={color}
         />
       ) : model.activeSection === 'goals' ? (
         <GoalsTab
@@ -423,6 +428,7 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
           availableRows={contentRows}
           columns={liveColumns}
           wide={wideLayout}
+          color={color}
         />
       ) : (
         <ControlPanelSettings
@@ -430,11 +436,12 @@ export function ControlPanel(props: ControlPanelProps): React.ReactElement {
           scroll={state.controlPanel.settingsScroll}
           availableRows={contentRows}
           selectedIndex={state.controlPanel.settingsSelectedIndex}
+          color={color}
         />
       )}
 
       {/* Always-visible chrome footer (reserved in fixedRows) — never buried in content. */}
-      <Text dimColor>{buildControlPanelFooterText(liveColumns)}</Text>
+      <Text dimColor={color}>{buildControlPanelFooterText(liveColumns)}</Text>
     </Box>
   );
 }
@@ -450,18 +457,52 @@ interface GoalsTabProps {
   readonly availableRows: number;
   readonly columns: number;
   readonly wide: boolean;
+  readonly color?: boolean;
+}
+
+/** Semantic colour for a goal-list state label (matches StatusBlock board). */
+function goalStateInkProps(
+  state: string,
+  color: boolean,
+): { color?: string; dimColor?: boolean } {
+  if (!color) return {};
+  switch (state) {
+    case 'running':
+      return { color: 'cyan' };
+    case 'done':
+      return { color: 'green' };
+    case 'failed':
+    case 'blocked':
+      return { color: 'red' };
+    case 'queued':
+      return { color: 'yellow' };
+    default:
+      return { dimColor: true };
+  }
 }
 
 function GoalsTab(props: GoalsTabProps): React.ReactElement {
-  const { model, scroll, detailScroll, availableRows, columns, wide } = props;
+  const { model, scroll, detailScroll, availableRows, columns, wide, color = true } = props;
 
   if (model.rows.length === 0) {
     return (
       <Box flexDirection="column">
-        <Text dimColor>No goals yet</Text>
+        <Text dimColor={color}>No goals yet</Text>
       </Box>
     );
   }
+
+  const renderGoalLine = (row: ControlPanelGoalRow, maxTitle: number): React.ReactElement => {
+    const stateProps = row.selected ? {} : goalStateInkProps(row.state, color);
+    return (
+      <Box key={row.id}>
+        <Text bold={row.selected} inverse={row.selected}>
+          {truncate(`${row.glyph} ${row.title}`, maxTitle)}
+        </Text>
+        <Text {...(row.selected ? { inverse: true } : stateProps)}>{`  ${row.state}`}</Text>
+      </Box>
+    );
+  };
 
   if (wide) {
     const listWidth = Math.min(42, Math.floor(columns * 0.42));
@@ -474,34 +515,30 @@ function GoalsTab(props: GoalsTabProps): React.ReactElement {
         <Box width={listWidth} flexDirection="column">
           {slice.rows.map((row, i) =>
             'kind' in row ? (
-              <Text key={`ovf-${i}`} dimColor>{'\u2026'} {row.count} above</Text>
+              <Text key={`ovf-${i}`} dimColor={color}>{'\u2026'} {row.count} above</Text>
             ) : (
-              <Text
-                key={row.id}
-                bold={row.selected}
-                inverse={row.selected}
-              >
-                {truncate(`${row.glyph} ${row.title}`, listWidth - 4)}  {row.state}
-              </Text>
+              renderGoalLine(row, listWidth - 4)
             ),
           )}
           {slice.hiddenAfter > 0 ? (
-            <Text dimColor>{'\u2026'} {slice.hiddenAfter} more</Text>
+            <Text dimColor={color}>{'\u2026'} {slice.hiddenAfter} more</Text>
           ) : null}
         </Box>
         <Box width={detailWidth} flexDirection="column" marginLeft={1}>
           {model.detail === undefined ? (
-            <Text dimColor>Select a goal to see details</Text>
+            <Text dimColor={color}>Select a goal to see details</Text>
           ) : (
             <>
               {detail.hiddenBefore > 0 ? (
-                <Text dimColor>{'\u2026'} {detail.hiddenBefore} lines above</Text>
+                <Text dimColor={color}>{'\u2026'} {detail.hiddenBefore} lines above</Text>
               ) : null}
               {detail.lines.map((line, i) => (
-                <Text key={i}>{truncate(line, detailWidth - 2)}</Text>
+                <Text key={i} dimColor={color && (line.startsWith('  ') || line.startsWith('    '))}>
+                  {truncate(line, detailWidth - 2)}
+                </Text>
               ))}
               {detail.hiddenAfter > 0 ? (
-                <Text dimColor>{'\u2026'} {detail.hiddenAfter} more</Text>
+                <Text dimColor={color}>{'\u2026'} {detail.hiddenAfter} more</Text>
               ) : null}
             </>
           )}
@@ -526,31 +563,27 @@ function GoalsTab(props: GoalsTabProps): React.ReactElement {
       <Box flexDirection="column">
         {slice.rows.map((row, i) =>
           'kind' in row ? (
-            <Text key={`ovf-${i}`} dimColor>{'\u2026'} {row.count} above</Text>
+            <Text key={`ovf-${i}`} dimColor={color}>{'\u2026'} {row.count} above</Text>
           ) : (
-            <Text
-              key={row.id}
-              bold={row.selected}
-              inverse={row.selected}
-            >
-              {truncate(`${row.glyph} ${row.title}`, columns - 6)}  {row.state}
-            </Text>
+            renderGoalLine(row, columns - 6)
           ),
         )}
         {slice.hiddenAfter > 0 ? (
-          <Text dimColor>{'\u2026'} {slice.hiddenAfter} more</Text>
+          <Text dimColor={color}>{'\u2026'} {slice.hiddenAfter} more</Text>
         ) : null}
       </Box>
       {model.detail !== undefined ? (
         <Box flexDirection="column" marginTop={1}>
           {detail.hiddenBefore > 0 ? (
-            <Text dimColor>{'\u2026'} {detail.hiddenBefore} lines above</Text>
+            <Text dimColor={color}>{'\u2026'} {detail.hiddenBefore} lines above</Text>
           ) : null}
           {detail.lines.map((line, i) => (
-            <Text key={i}>{truncate(line, columns - 4)}</Text>
+            <Text key={i} dimColor={color && (line.startsWith('  ') || line.startsWith('    '))}>
+              {truncate(line, columns - 4)}
+            </Text>
           ))}
           {detail.hiddenAfter > 0 ? (
-            <Text dimColor>{'\u2026'} {detail.hiddenAfter} more</Text>
+            <Text dimColor={color}>{'\u2026'} {detail.hiddenAfter} more</Text>
           ) : null}
         </Box>
       ) : null}
@@ -563,20 +596,20 @@ function GoalsTab(props: GoalsTabProps): React.ReactElement {
 // ---------------------------------------------------------------------------
 
 function ControlPanelStatus(
-  { model, scroll, availableRows }:
-  { readonly model: ControlPanelModel; readonly scroll: number; readonly availableRows: number },
+  { model, scroll, availableRows, color = true }:
+  { readonly model: ControlPanelModel; readonly scroll: number; readonly availableRows: number; readonly color?: boolean },
 ): React.ReactElement {
   // Phase 4C: build display lines from structured status rows
-  const lines: string[] = [];
+  const lines: { text: string; heading: boolean }[] = [];
   let lastHeading = '';
   for (const row of model.statusRows) {
     if (row.kind === 'heading') {
       if (row.text !== lastHeading) {
-        lines.push(row.text);
+        lines.push({ text: row.text, heading: true });
         lastHeading = row.text;
       }
     } else {
-      lines.push(row.text);
+      lines.push({ text: row.text, heading: false });
     }
   }
 
@@ -594,13 +627,20 @@ function ControlPanelStatus(
   return (
     <Box flexDirection="column">
       {hiddenBefore > 0 ? (
-        <Text dimColor>{'\u2026'} {hiddenBefore} lines above</Text>
+        <Text dimColor={color}>{'\u2026'} {hiddenBefore} lines above</Text>
       ) : null}
       {lines.slice(start, end).map((line, i) => (
-        <Text key={i}>{line}</Text>
+        <Text
+          key={i}
+          bold={line.heading && color}
+          {...(line.heading && color ? { color: 'cyan' as const } : {})}
+          dimColor={!line.heading && color}
+        >
+          {line.text}
+        </Text>
       ))}
       {hiddenAfter > 0 ? (
-        <Text dimColor>{'\u2026'} {hiddenAfter} more</Text>
+        <Text dimColor={color}>{'\u2026'} {hiddenAfter} more</Text>
       ) : null}
     </Box>
   );
@@ -611,26 +651,30 @@ function ControlPanelStatus(
 // ---------------------------------------------------------------------------
 
 function ControlPanelSettings(
-  { model, scroll, availableRows }:
-  { readonly model: ControlPanelModel; readonly scroll: number; readonly availableRows: number; readonly selectedIndex: number },
+  { model, scroll, availableRows, color = true }:
+  { readonly model: ControlPanelModel; readonly scroll: number; readonly availableRows: number; readonly selectedIndex: number; readonly color?: boolean },
 ): React.ReactElement {
-  const lines: string[] = [];
+  const lines: { text: string; secondary: boolean; selected: boolean }[] = [];
 
   for (const row of model.settings) {
     if (row.kind === 'segmented') {
       const options = row.options.map((o) => o.active ? `[${o.label}]` : ` ${o.label} `).join('');
       const marker = row.selected ? '\u25B8 ' : '  ';
-      lines.push(`${marker}${row.label}: ${options}`);
+      lines.push({ text: `${marker}${row.label}: ${options}`, secondary: false, selected: row.selected });
       if (row.note !== undefined) {
-        lines.push(`  (${row.note})`);
+        lines.push({ text: `  (${row.note})`, secondary: true, selected: false });
       }
     } else if (row.kind === 'toggle' || row.kind === 'action') {
       const marker = row.selected ? '\u25B8 ' : '  ';
       const note = row.note !== undefined ? ` (${row.note})` : '';
-      lines.push(`${marker}${row.label}: ${row.value ? 'on' : 'off'}${note}`);
+      lines.push({
+        text: `${marker}${row.label}: ${row.value ? 'on' : 'off'}${note}`,
+        secondary: false,
+        selected: row.selected,
+      });
     } else {
       // readonly
-      lines.push(`  ${row.label}: ${row.value}`);
+      lines.push({ text: `  ${row.label}: ${row.value}`, secondary: true, selected: false });
     }
   }
 
@@ -648,13 +692,19 @@ function ControlPanelSettings(
   return (
     <Box flexDirection="column">
       {hiddenBefore > 0 ? (
-        <Text dimColor>{'\u2026'} {hiddenBefore} lines above</Text>
+        <Text dimColor={color}>{'\u2026'} {hiddenBefore} lines above</Text>
       ) : null}
       {lines.slice(start, end).map((line, i) => (
-        <Text key={i}>{line}</Text>
+        <Text
+          key={i}
+          bold={line.selected && color}
+          dimColor={line.secondary && color}
+        >
+          {line.text}
+        </Text>
       ))}
       {hiddenAfter > 0 ? (
-        <Text dimColor>{'\u2026'} {hiddenAfter} more</Text>
+        <Text dimColor={color}>{'\u2026'} {hiddenAfter} more</Text>
       ) : null}
     </Box>
   );
