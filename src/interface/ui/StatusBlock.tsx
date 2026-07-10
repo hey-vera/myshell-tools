@@ -102,6 +102,32 @@ function stateColorProps(state: AgentRunState, color: boolean): { color?: string
   }
 }
 
+/**
+ * Semantic Ink colour for a persistent BOARD row state (gated on `color`).
+ * Mirrors {@link stateColorProps} so the board and live GOALS panel share one
+ * success/error/running vocabulary (S.1 visual polish).
+ */
+function boardStateColorProps(
+  state: GoalBoardRow['state'],
+  color: boolean,
+): { color?: string; dimColor?: boolean } {
+  if (!color) return {};
+  switch (state) {
+    case 'running':
+      return { color: 'cyan' };
+    case 'done':
+      return { color: 'green' };
+    case 'failed':
+    case 'blocked':
+      return { color: 'red' };
+    case 'queued':
+      return { color: 'yellow' };
+    case 'parked':
+    case 'superseded':
+      return { dimColor: true };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // TokenMeter
 // ---------------------------------------------------------------------------
@@ -392,13 +418,25 @@ function PanelsImpl({ mode, elapsedSecs, workLabel, liveAction, header = 'GOALS'
               );
             }
             // coalesced-done: a one-line `✓ N done[ · ✗ M failed]` roll-up.
-            const parts: string[] = [];
-            if (row.done > 0) parts.push(`${GLYPHS.success} ${row.done} done`);
-            if (row.failed > 0) parts.push(`${GLYPHS.fail} ${row.failed} failed`);
+            // S.1: success/error glyphs carry semantic color; counts stay dim.
             return (
-              <Text key={`done#${i}`} dimColor={color}>
-                {parts.join(' · ')}
-              </Text>
+              <Box key={`done#${i}`}>
+                {row.done > 0 ? (
+                  <>
+                    <Text {...(color ? { color: 'green' as const } : {})}>{GLYPHS.success}</Text>
+                    <Text dimColor={color}>{` ${row.done} done`}</Text>
+                  </>
+                ) : null}
+                {row.done > 0 && row.failed > 0 ? (
+                  <Text dimColor={color}>{' · '}</Text>
+                ) : null}
+                {row.failed > 0 ? (
+                  <>
+                    <Text {...(color ? { color: 'red' as const } : {})}>{GLYPHS.fail}</Text>
+                    <Text dimColor={color}>{` ${row.failed} failed`}</Text>
+                  </>
+                ) : null}
+              </Box>
             );
           })
         : <Text dimColor={color}>{mode.summary}</Text>}
@@ -475,19 +513,28 @@ export function BoardRow({ row, state, color = true }: BoardRowProps): React.Rea
   // Prefer the live agent count when present; fall back to the synced row count.
   const agents = liveAgents > 0 ? liveAgents : row.agents;
   const progress = row.total > 0 ? `${row.done}/${row.total}` : '';
-  const parts: string[] = [row.glyph, row.title];
-  if (progress.length > 0) parts.push(progress);
-  parts.push('·', row.state);
-  if (agents > 0) parts.push('·', pluralize(agents, 'worker'));
-  if (liveTools > 0) parts.push('·', pluralize(liveTools, 'tool'));
-  if (row.verdict !== undefined && row.verdict.length > 0) parts.push('·', row.verdict);
+  // Meta after the title stays dim secondary text; glyph carries semantic color.
+  const metaParts: string[] = [];
+  if (progress.length > 0) metaParts.push(progress);
+  metaParts.push('·', row.state);
+  if (agents > 0) metaParts.push('·', pluralize(agents, 'worker'));
+  if (liveTools > 0) metaParts.push('·', pluralize(liveTools, 'tool'));
+  if (row.verdict !== undefined && row.verdict.length > 0) metaParts.push('·', row.verdict);
   const indent = '  '.repeat(row.depth ?? 0);
+  const glyphProps = boardStateColorProps(row.state, color);
   // Running goals expand the checklist, so a separate "next:" line would duplicate
   // the active todo. For parked/queued/etc., surface the next real step when known.
   const nextHint = row.state === 'running' ? undefined : boardNextAction(row);
   return (
     <Box flexDirection="column">
-      <Text dimColor={color}>{`${indent}${parts.join(' ')}`}</Text>
+      <Box>
+        {indent.length > 0 ? <Text>{indent}</Text> : null}
+        <Text {...glyphProps}>{row.glyph}</Text>
+        <Text>{` ${row.title}`}</Text>
+        {metaParts.length > 0 ? (
+          <Text dimColor={color}>{` ${metaParts.join(' ')}`}</Text>
+        ) : null}
+      </Box>
       {row.approach ? (
         <Text dimColor={color}>
           {`${indent}   Approach: ${truncateToWidth(row.approach.chosen, 48)}${row.approach.rationale ? ' - ' + truncateToWidth(row.approach.rationale, 40) : ''}`}

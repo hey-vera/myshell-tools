@@ -13,13 +13,20 @@
 import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
-import { renderMainScreen } from '../../src/interface/menu-render.ts';
+import {
+  buildEffortModeSections,
+  formatControlLine,
+  formatHomeSectionHeader,
+  formatRecentRow,
+  renderMainScreen,
+} from '../../src/interface/menu-render.ts';
 import type { MenuContext } from '../../src/interface/menu.ts';
 import type { EnvironmentStatus, ProviderStatus } from '../../src/providers/detect.ts';
 import type { AppConfig } from '../../src/infra/config.ts';
 import type { SpendSummary } from '../../src/infra/insights.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
 import type { ConversationMeta } from '../../src/infra/conversation-store.ts';
+import { stripAnsi } from '../../src/ui/tui.ts';
 
 // ---------------------------------------------------------------------------
 // Minimal fakes
@@ -525,5 +532,66 @@ describe('renderMainScreen — Slice 10 workspace-aware Recent list', () => {
       !out.includes('└─ Newer other ·'),
       `[c] sub-line must NOT name the raw store-first row "Newer other":\n${out}`,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// S.1 — visual polish pure helpers (color-gated; color:false is identity)
+// ---------------------------------------------------------------------------
+
+describe('S.1 visual polish format helpers', () => {
+  it('formatHomeSectionHeader is identity when color is off', () => {
+    assert.equal(formatHomeSectionHeader('Recent (myshell-tools):', false), 'Recent (myshell-tools):');
+  });
+
+  it('formatHomeSectionHeader embeds cyan/bold ANSI when color is on', () => {
+    const out = formatHomeSectionHeader('Recent (myshell-tools):', true);
+    assert.notEqual(out, 'Recent (myshell-tools):');
+    assert.equal(stripAnsi(out), 'Recent (myshell-tools):');
+    assert.ok(out.includes('\x1b['), 'expected ANSI when color is on');
+  });
+
+  it('formatRecentRow dims age + meta only when color is on', () => {
+    const plain = formatRecentRow(1, '12m', 'Menu design', 'codex · auto', false);
+    assert.equal(plain, '[1] 12m  Menu design  codex · auto');
+
+    const colored = formatRecentRow(1, '12m', 'Menu design', 'codex · auto', true);
+    assert.equal(stripAnsi(colored), plain);
+    // Age and provider/effort are dimmed; title stays plain (no ANSI around title alone).
+    assert.ok(colored.includes('Menu design'), 'title present');
+    assert.ok(colored.includes('\x1b[2m'), 'expected dim SGR for secondary fields');
+  });
+
+  it('formatControlLine bolds [key] and dims secondary sub-lines when color is on', () => {
+    assert.equal(formatControlLine('[n] New conversation', false), '[n] New conversation');
+    assert.equal(formatControlLine('    └─ title · 1h', false), '    └─ title · 1h');
+
+    const key = formatControlLine('[n] New conversation', true);
+    assert.equal(stripAnsi(key), '[n] New conversation');
+    assert.ok(key.startsWith('\x1b[1m[n]\x1b[0m'), 'leading [n] is bold');
+
+    const sub = formatControlLine('    └─ title · 1h', true);
+    assert.equal(stripAnsi(sub), '    └─ title · 1h');
+    assert.ok(sub.includes('\x1b[2m'), 'sub-line is dim');
+  });
+
+  it('buildEffortModeSections color:false matches locked plain skeleton text', () => {
+    const { header, footer } = buildEffortModeSections(undefined, false);
+    assert.equal(header[0], 'Effort Mode:  Auto (smart)');
+    assert.ok(header.some((l) => l.includes('smart default')));
+    assert.ok(footer[0]?.includes('m = switch modes'));
+    assert.ok(footer[0]?.includes('Auto (smart)'));
+    for (const line of [...header, ...footer]) {
+      assert.equal(line, stripAnsi(line), 'no ANSI when color is false');
+    }
+  });
+
+  it('buildEffortModeSections color:true keeps visible text, adds hierarchy ANSI', () => {
+    const { header, footer } = buildEffortModeSections('balanced', true);
+    assert.equal(stripAnsi(header[0] ?? ''), 'Effort Mode:  Balanced');
+    assert.ok((header[0] ?? '').includes('\x1b['), 'header has ANSI');
+    assert.ok((footer[0] ?? '').includes('\x1b['), 'footer has ANSI');
+    assert.equal(stripAnsi(footer[0] ?? '').includes('m = switch modes'), true);
+    assert.equal(stripAnsi(footer[0] ?? '').includes('Balanced'), true);
   });
 });
