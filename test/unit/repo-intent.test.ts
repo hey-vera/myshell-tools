@@ -107,6 +107,18 @@ const cases: ReadonlyArray<readonly [string, ReturnType<typeof inferRepoIntent>[
   ['glab mr create', 'gitlab_mr_create'],
   ['mr create', 'gitlab_mr_create'],
   ['create a mr for the fix', 'gitlab_mr_create'],
+  // P1.7 thin extension — GitLab CI/pipeline status (pipeline phrases only;
+  // ambiguous "ci status" remains github_pr_checks — handler routes by forge)
+  ['pipeline status', 'gitlab_ci_status'],
+  ['pipeline list', 'gitlab_ci_status'],
+  ['glab ci status', 'gitlab_ci_status'],
+  ['glab pipeline list', 'gitlab_ci_status'],
+  ['are pipelines green', 'gitlab_ci_status'],
+  ['mr pipeline', 'gitlab_ci_status'],
+  ['gitlab pipeline status', 'gitlab_ci_status'],
+  ['show me the pipelines', 'gitlab_ci_status'],
+  ['how are the pipelines', 'gitlab_ci_status'],
+  ['status of the pipelines', 'gitlab_ci_status'],
 ];
 
 describe('inferRepoIntent', () => {

@@ -35,7 +35,13 @@ export type RepoOperationIntent =
    * NL GitLab MR create (P1.7 thin extension): "create a mr" / "open a merge request"
    * / "glab mr create" — explicit create only; never steals "mr status" / "mr list".
    */
-  | 'gitlab_mr_create';
+  | 'gitlab_mr_create'
+  /**
+   * NL GitLab CI/pipeline status (P1.7 thin extension): "pipeline status" / "glab ci status"
+   * / "are pipelines green" — pipeline phrases only. Ambiguous "ci status" stays
+   * github_pr_checks (handler routes GitLab+glab → glab ci status).
+   */
+  | 'gitlab_ci_status';
 
 export interface RepoIntentConstraint {
   readonly kind:
@@ -183,6 +189,7 @@ const GITHUB_PR_STATUS_RE: readonly RegExp[] = [
  * (so "pr status" / "check the pr status" stay status) and before generic
  * STATUS_RE (so "ci status" / "check status" do not collapse to local git status).
  * Must not match create ("create a pr") or plain "status" / "git status".
+ * Ambiguous "ci status" stays here; handler routes GitLab+glab → glab ci status.
  */
 const GITHUB_PR_CHECKS_RE: readonly RegExp[] = [
   /\bpr\s+checks\b/,
@@ -197,6 +204,29 @@ const GITHUB_PR_CHECKS_RE: readonly RegExp[] = [
   /\bare\s+(the\s+)?(checks?|ci)\s+(green|passing|ok|good|failing|failed|red)\b/,
   /\b(show|get|list)\s+(me\s+)?(the\s+)?(pr\s+|pull[\s-]?request\s+)?checks\b/,
   /\bhow\s+are\s+(the\s+)?checks\b/,
+];
+
+/**
+ * GitLab CI / pipeline phrases (P1.7 thin extension). Pipeline-specific only —
+ * never steals ambiguous "ci status" (that stays github_pr_checks; handler
+ * cross-routes on GitLab). Checked before github_pr_checks so "pipeline status"
+ * is not mis-attributed, and before generic STATUS_RE.
+ */
+const GITLAB_CI_STATUS_RE: readonly RegExp[] = [
+  /\bpipeline\s+status\b/,
+  /\bpipeline\s+list\b/,
+  /\bpipelines?\s+status\b/,
+  /\bglab\s+ci\s+status\b/,
+  /\bglab\s+pipeline\s+list\b/,
+  /\bglab\s+ci\b/,
+  /\bgitlab\s+(ci|pipeline)\s+status\b/,
+  /\bgitlab\s+pipelines?\b/,
+  /\bmr\s+pipeline\b/,
+  /\bmerge[\s-]?request\s+pipeline\b/,
+  /\bare\s+(the\s+)?pipelines?\s+(green|passing|ok|good|failing|failed|red)\b/,
+  /\b(show|get|list|check)\s+(me\s+)?(the\s+)?pipelines?\b/,
+  /\bhow\s+are\s+(the\s+)?pipelines?\b/,
+  /\bstatus\s+of\s+(the\s+)?pipelines?\b/,
 ];
 
 /**
@@ -445,7 +475,21 @@ export function inferRepoIntent(task: string): RepoIntent {
     };
   }
 
+  // Pipeline-specific phrases before ambiguous "ci status" (github_pr_checks).
+  if (hasAny(text, GITLAB_CI_STATUS_RE)) {
+    return {
+      version: 1,
+      operation: 'gitlab_ci_status',
+      confidence: 'high',
+      mutatesWorkspace: false,
+      needsVerification: false,
+      constraints,
+      rationale: 'natural-language GitLab CI / pipeline status request',
+    };
+  }
+
   // CI/check status after PR status (so "pr status" wins) and before generic status.
+  // Ambiguous "ci status" / "pr checks" — handler routes GitLab+glab → glab ci status.
   if (hasAny(text, GITHUB_PR_CHECKS_RE)) {
     return {
       version: 1,
