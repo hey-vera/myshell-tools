@@ -109,6 +109,41 @@ describe('routingInventoryFromDetectAndRegistry', () => {
     );
     assert.deepEqual(inv, { claude: ['opus', 'sonnet'] });
   });
+
+  it('does not re-emit canonical ids for declarative entries only tagged detect via alias', () => {
+    // Layer 2 tags declarative `sonnet` with `detect` when detect advertises the
+    // alias `claude-sonnet-4-6`. Expansion must keep the advertised alias only —
+    // not invent a second candidate (`sonnet`) that flips VN session-hash ties.
+    const registry: CapabilityRegistry = {
+      claude: [
+        {
+          provider: 'claude',
+          id: 'sonnet',
+          aliases: ['claude-sonnet-4-6'],
+          supportedReasoningEfforts: [],
+          source: ['declarative', 'detect'],
+        },
+        cap('claude', 'haiku', ['declarative']),
+      ],
+      codex: [
+        {
+          provider: 'codex',
+          id: 'gpt-5.4',
+          aliases: [],
+          supportedReasoningEfforts: [],
+          source: ['declarative', 'detect'],
+        },
+      ],
+      opencode: [],
+      grok: [],
+    };
+    const inv = routingInventoryFromDetectAndRegistry(
+      { claude: ['claude-sonnet-4-6'], codex: ['gpt-5.4'] },
+      registry,
+    );
+    assert.deepEqual(inv.claude, ['claude-sonnet-4-6']);
+    assert.deepEqual(inv.codex, ['gpt-5.4']);
+  });
 });
 
 describe('withUpdatedAvailableModels', () => {

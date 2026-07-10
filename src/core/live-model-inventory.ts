@@ -64,15 +64,32 @@ export function unionModelIds(
 const PROVIDER_IDS: readonly ProviderId[] = ['claude', 'codex', 'opencode', 'grok'];
 
 /**
+ * True when a registry row is a real Layer-2 live discovery that should expand
+ * routing inventory beyond detect's advertised list:
+ *   - pure detect additions (source has `detect`, no `declarative`) — new CLI ids
+ *   - codex-cache contributions (may list models before detect mirrors them)
+ *
+ * Declarative rows that merely gained a `detect` tag because an *alias* appeared
+ * in availableModels must NOT re-emit their canonical id. That would invent a
+ * second routing candidate for the same model and flip VN session-hash ties
+ * (e.g. detect `claude-sonnet-4-6` tagging declarative `sonnet`).
+ */
+function isLiveDiscoverySource(source: readonly string[]): boolean {
+  if (source.includes('codex-cache')) return true;
+  return source.includes('detect') && !source.includes('declarative');
+}
+
+/**
  * Build routing inventory from detection + capability registry.
  *
  * Includes:
  *   - every id advertised by detect (installed providers),
- *   - every registry id whose `source` includes a live contributor (`detect` or
- *     `codex-cache`) so Layer 2 discoveries enter Auto route even when not yet
+ *   - registry ids that are true live Layer-2 discoveries (pure `detect` or
+ *     `codex-cache`) so newly shipped models enter Auto route even when not yet
  *     mirrored into ProviderStatus.availableModels.
  *
- * Never invents tier/effort — ids only. Pure.
+ * Never invents tier/effort — ids only. Pure. Does not re-emit canonical ids for
+ * declarative entries only tagged `detect` via alias match.
  */
 export function routingInventoryFromDetectAndRegistry(
   availableFromDetect: Partial<Record<ProviderId, readonly string[]>>,
@@ -85,7 +102,7 @@ export function routingInventoryFromDetectAndRegistry(
   for (const p of PROVIDER_IDS) {
     const fromDetect = availableFromDetect[p];
     const fromRegistry = registry[p]
-      .filter((c) => c.source.includes('detect') || c.source.includes('codex-cache'))
+      .filter((c) => isLiveDiscoverySource(c.source))
       .map((c) => c.id);
     const merged = unionModelIds(fromDetect, fromRegistry);
     if (merged.length > 0) out[p] = merged;
