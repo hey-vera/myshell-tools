@@ -9,9 +9,12 @@ import assert from 'node:assert/strict';
 import type { Goal } from '../../src/core/goal-todo.ts';
 import type { RoadmapItem } from '../../src/core/work-contract.ts';
 import {
+  buildGoalRewatchContext,
   buildResumeGoalOrientation,
   isResumePartnerGoal,
+  mergeGoalRewatchIntoContext,
   selectResumePartnerGoals,
+  GOAL_REWATCH_CONTEXT_HEADER,
   RESUME_GOAL_ORIENTATION_MAX_CHARS,
 } from '../../src/core/resume-goal-orientation.ts';
 
@@ -244,5 +247,87 @@ describe('buildResumeGoalOrientation', () => {
     assert.ok(line !== null);
     assert.match(line!, /Workspace parked work/);
     assert.match(line!, /Ship the fix/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Standing rewatch context inject (PR-E — first-turn partner context)
+// ---------------------------------------------------------------------------
+
+describe('buildGoalRewatchContext', () => {
+  it('returns null when there is nothing to rewatch', () => {
+    assert.equal(buildGoalRewatchContext([], SCOPE), null);
+    assert.equal(
+      buildGoalRewatchContext([makeGoal({ state: 'done' })], SCOPE),
+      null,
+    );
+  });
+
+  it('wraps the orientation line in a short partner-context header', () => {
+    const g = makeGoal({
+      roadmap: [
+        makeItem({ id: 't1', text: 'Sketch plan', status: 'done' }),
+        makeItem({ id: 't2', text: 'Write expiry tests', status: 'pending' }),
+      ],
+    });
+    const block = buildGoalRewatchContext([g], SCOPE);
+    assert.ok(block !== null);
+    assert.ok(block!.startsWith(GOAL_REWATCH_CONTEXT_HEADER));
+    assert.match(block!, /Parked/);
+    assert.match(block!, /Auth JWT migration/);
+    assert.match(block!, /Write expiry tests/);
+    assert.match(block!, /Resume, drop, or adjust/);
+    // Header + body: multi-line block for the model, still compact.
+    assert.ok(block!.includes('\n'));
+    const body = block!.slice(GOAL_REWATCH_CONTEXT_HEADER.length).trim();
+    assert.ok(body.length <= RESUME_GOAL_ORIENTATION_MAX_CHARS);
+  });
+
+  it('never invents foreign goals in the inject form', () => {
+    const foreign = makeGoal({
+      conversationId: 'conv-other',
+      projectKey: 'other#zzz',
+      title: 'Secret foreign goal',
+    });
+    assert.equal(buildGoalRewatchContext([foreign], SCOPE), null);
+  });
+
+  it('surfaces blocked goals so the model can unblock/ask', () => {
+    const g = makeGoal({
+      state: 'blocked',
+      title: 'Deploy pipeline',
+      roadmap: [makeItem({ id: 't1', text: 'Prod credentials', status: 'blocked' })],
+    });
+    const block = buildGoalRewatchContext([g], SCOPE);
+    assert.ok(block !== null);
+    assert.match(block!, /STANDING GOALS REWATCH/);
+    assert.match(block!, /Blocked/);
+    assert.match(block!, /Unblock, drop, or adjust/);
+  });
+});
+
+describe('mergeGoalRewatchIntoContext', () => {
+  const REWATCH =
+    `${GOAL_REWATCH_CONTEXT_HEADER}\nParked: “Auth JWT”. Resume, drop, or adjust?`;
+  const PLAN = 'CURRENT GOALS (your plan — you own these):\n1. Auth JWT — parked';
+
+  it('returns plan unchanged when rewatch is null/empty', () => {
+    assert.equal(mergeGoalRewatchIntoContext(PLAN, null), PLAN);
+    assert.equal(mergeGoalRewatchIntoContext(PLAN, undefined), PLAN);
+    assert.equal(mergeGoalRewatchIntoContext(PLAN, '   '), PLAN);
+    assert.equal(mergeGoalRewatchIntoContext('', null), '');
+  });
+
+  it('returns rewatch alone when plan is empty', () => {
+    assert.equal(mergeGoalRewatchIntoContext('', REWATCH), REWATCH);
+    assert.equal(mergeGoalRewatchIntoContext('   ', REWATCH), REWATCH);
+  });
+
+  it('prepends rewatch before CURRENT GOALS for first-turn inject', () => {
+    const merged = mergeGoalRewatchIntoContext(PLAN, REWATCH);
+    assert.ok(merged.startsWith(GOAL_REWATCH_CONTEXT_HEADER));
+    assert.ok(merged.includes(PLAN));
+    assert.ok(merged.indexOf('STANDING GOALS REWATCH') < merged.indexOf('CURRENT GOALS'));
+    assert.match(merged, /\n\nCURRENT GOALS/);
   });
 });

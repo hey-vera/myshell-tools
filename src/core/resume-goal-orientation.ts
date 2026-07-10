@@ -1,12 +1,17 @@
 /**
  * src/core/resume-goal-orientation.ts — pure partner orientation for parked /
- * inactive goals on conversation resume (P0.16).
+ * inactive goals on conversation resume (P0.16) + standing rewatch context
+ * inject for the first model turn (PR-E goal rewatch+).
  *
  * On resume the chat already shows a ※ recap of *where the thread was*. This
  * helper adds a brief natural line about *open goals the partner should engage*
  * (status + next action or resume/drop/adjust), so the tool does not look stuck
  * next to parked work. PURE: no I/O, no wall clock, no randomness — the menu
  * loads real goals from the goal store and calls this once per resume session.
+ *
+ * Standing rewatch+: the same selection also shapes a short SYSTEM/context
+ * block ({@link buildGoalRewatchContext}) so the *model* sees parked/blocked
+ * goals on the first turn after open — not only a one-shot dim user line.
  *
  * Distinct from Goal Steward (flag-gated interactive audit with a 30-day stale
  * window): this is always-available orientation for any live parked/inactive
@@ -210,5 +215,56 @@ export function buildResumeGoalOrientation(
     return capped.length > 0 ? capped : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Header for the standing-goals rewatch context block (first-turn partner
+ * inject). Kept short so the model can act without a wall of ceremony.
+ */
+export const GOAL_REWATCH_CONTEXT_HEADER =
+  'STANDING GOALS REWATCH (open work — engage; resume, drop, adjust, or act when relevant):';
+
+/**
+ * Build a short partner-context block for standing goals rewatch, or `null`
+ * when there is nothing to address. Reuses {@link buildResumeGoalOrientation}
+ * for the body so the user-facing dim line and model inject stay consistent.
+ * PURE; never invents goals; never throws.
+ *
+ * Intended for **first model turn after conversation open** (session latch in
+ * menu) — not every turn (board + CURRENT GOALS already carry ongoing plan).
+ */
+export function buildGoalRewatchContext(
+  goals: readonly Goal[],
+  scope: ResumeGoalOrientationScope,
+): string | null {
+  try {
+    const line = buildResumeGoalOrientation(goals, scope);
+    if (line === null) return null;
+    const block = `${GOAL_REWATCH_CONTEXT_HEADER}\n${line}`;
+    return block.trim().length > 0 ? block : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Prepend a standing rewatch block onto the CURRENT GOALS plan string for a
+ * one-shot first-turn inject. Empty/null rewatch leaves plan unchanged; empty
+ * plan with rewatch yields rewatch alone. Pure; never throws.
+ */
+export function mergeGoalRewatchIntoContext(
+  planContext: string,
+  rewatchContext: string | null | undefined,
+): string {
+  try {
+    const plan = typeof planContext === 'string' ? planContext.trim() : '';
+    const rewatch =
+      typeof rewatchContext === 'string' ? rewatchContext.trim() : '';
+    if (rewatch.length === 0) return plan;
+    if (plan.length === 0) return rewatch;
+    return `${rewatch}\n\n${plan}`;
+  } catch {
+    return typeof planContext === 'string' ? planContext : '';
   }
 }
