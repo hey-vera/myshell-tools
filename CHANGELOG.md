@@ -6,9 +6,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [3.167.0] - 2026-07-10 — partner principles absorb + thin forge create
 
-Ships Wave 7 partner principles (#142–#147) and thin GitHub PR create (#149) on
-main after **3.166.0** (#141). Acceptances remain human-smoke pending;
-`npm publish` is owner-only.
+Ships Wave 7 partner principles (#142–#147) and thin GitHub forge depth
+(create #149, checks #152) on main after **3.166.0** (#141). Acceptances
+remain human-smoke pending; `npm publish` is owner-only.
 
 ### Added
 - **Built-in partner laws** — short always-on prompt block: done only with
@@ -24,10 +24,13 @@ main after **3.166.0** (#141). Acceptances remain human-smoke pending;
 - **Thin GitHub PR create via NL** — when workspace is GitHub and `gh` is
   present, explicit create phrases run gated `gh pr create --fill`; honest
   degrade for GitLab / missing `gh` (#149).
+- **Thin GitHub PR checks via NL** — when workspace is GitHub and `gh` is
+  present, ask about check/CI status; gated `gh pr checks` with honest
+  degrade for GitLab / missing `gh` (#152).
 
 ### Changed
 - **Docs board + checklist** — Wave 7 absorb marked code-complete; tip version
-  **3.167.0** (#148).
+  **3.167.0** (#148, #150).
 
 ## [3.166.0] - 2026-07-09 — checklist completion wave
 
