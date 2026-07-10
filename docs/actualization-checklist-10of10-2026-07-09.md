@@ -149,8 +149,8 @@ Auto-adapt means: detect repo remotes + available CLIs (gh/glab/git), adapt lang
 - [x] **S.2** Checklist smoke script (`npm run smoke:checklist`) — Effort/legend/panel/Library markers; fail-soft without TTY. Full PTY remains `smoke:pty*`.
 - [x] **S.3** README honest daily-use status updated (multi-goal chat; not API-key product)
 - [x] **S.4** Full CI green on main (ubuntu/macos/windows) — keep green; tip post-#155
-- [x] **S.5** Version bump + CHANGELOG — **3.167.0** (#151); next cut **3.168.0** for post-absorb wave
-- [ ] **S.6** `npm publish` ready (user confirms publish)
+- [x] **S.5** Version bump + CHANGELOG — **3.168.0** (forge depth / ghost / polish; prior **3.167.0** #151 Wave 7)
+- [ ] **S.6** `npm publish` ready (user confirms publish) — only remaining ship step after human smoke
 - [ ] Acceptance: Josh can `npm i -g myshell-tools@latest` and love the daily drive — **human publish + Replit smoke pending**
 
 ### Wave 7 → Partner principles absorb (Fable-class; not loop clone)

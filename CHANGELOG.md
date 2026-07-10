@@ -4,6 +4,40 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.168.0] - 2026-07-10 — forge depth, model ghost, polish, shared deps
+
+Ships forge depth (#153–#156, #159), optional model ghost (#154), partner
+continuity + stewardship (#157), shared orchestrate deps slice 1 (#158), and
+S.1 visual polish (#160) on main after **3.167.0** (#151; Wave 7 was in that
+cut). Acceptances remain human-smoke pending; `npm publish` is owner-only.
+
+### Added
+- **Thin GitLab MR create via NL** — when workspace is GitLab and `glab` is
+  present, explicit create phrases run gated `glab mr create --fill --yes`;
+  honest degrade for GitHub / missing `glab` (#153).
+- **Optional budgeted model ghost** — Tab complete may use a tiny worker-tier
+  subscription-native suggestion when local ghost has none; `modelGhost`
+  default **off** (#154).
+- **Thin GitLab CI/pipeline status via NL** — when workspace is GitLab and
+  `glab` is present, pipeline/CI phrases run read-only `glab ci status` (#155).
+- **Thin GitHub PR review view via NL** — when workspace is GitHub and `gh` is
+  present, review/feedback phrases run read-only `gh pr view --comments`;
+  never approve/request-changes (#156).
+- **Partner continuity + goal stewardship act slice** — completion-truth chrome
+  when real completion results exist; parallel goal stewardship that can act
+  (P2.5–2.6) (#157).
+- **Shared orchestrate deps builder (slice 1)** — pure env routing facts and
+  shipped-on flags shared between CLI `run` and menu (P2.4 partial) (#158).
+- **Honest other-forge / local-only degrade (P1.8)** — PR/MR/CI intents name the
+  remote host, refuse gh/glab theater, and keep local git ops first-class;
+  `workspace_forge` identity questions (#159).
+
+### Changed
+- **S.1 visual polish** — semantic color, denser hierarchy, and dim secondary
+  text on home + chat chrome without product redesign (#160).
+- **Docs board tip** — package **3.168.0** after forge depth + ghost + polish
+  wave.
+
 ## [3.167.0] - 2026-07-10 — partner principles absorb + thin forge create
 
 Ships Wave 7 partner principles (#142–#147) and thin GitHub forge depth
