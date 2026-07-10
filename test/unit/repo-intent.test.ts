@@ -118,6 +118,18 @@ const cases: ReadonlyArray<readonly [string, ReturnType<typeof inferRepoIntent>[
   ['glab mr create', 'gitlab_mr_create'],
   ['mr create', 'gitlab_mr_create'],
   ['create a mr for the fix', 'gitlab_mr_create'],
+  // P1.8 thin — workspace forge identity (must not steal git status / pr status)
+  ['what forge am I on?', 'workspace_forge'],
+  ['what forge are we on', 'workspace_forge'],
+  ['which forge', 'workspace_forge'],
+  ['is this github?', 'workspace_forge'],
+  ['is this gitlab', 'workspace_forge'],
+  ['are we on github?', 'workspace_forge'],
+  ['forge host', 'workspace_forge'],
+  ['git remote -v', 'workspace_forge'],
+  ['show remotes', 'workspace_forge'],
+  ['list the remotes', 'workspace_forge'],
+  ['what remote is this', 'workspace_forge'],
 ];
 
 describe('inferRepoIntent', () => {
@@ -138,6 +150,7 @@ describe('inferRepoIntent', () => {
     assert.equal(inferRepoIntent('mr status').mutatesWorkspace, false);
     assert.equal(inferRepoIntent('pr checks').mutatesWorkspace, false);
     assert.equal(inferRepoIntent('ci status').mutatesWorkspace, false);
+    assert.equal(inferRepoIntent('what forge am I on?').mutatesWorkspace, false);
     assert.equal(inferRepoIntent('pr review').mutatesWorkspace, false);
     assert.equal(inferRepoIntent('review comments').mutatesWorkspace, false);
   });
