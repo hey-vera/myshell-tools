@@ -27,6 +27,7 @@ import type { Mode } from '../core/policy.js';
 import { levelLabel, LEVEL_DESC, migrateMode } from '../core/mode-levels.js';
 import type { Level } from '../core/mode-levels.js';
 import { sectionBox, titleBox } from '../ui/tui.js';
+import { bold, cyan, dim, label } from '../ui/theme.js';
 import type { OutputSink } from './render.js';
 import type { MenuContext } from './menu.js';
 import type { Goal } from '../core/goal-todo.js';
@@ -82,17 +83,22 @@ function wrapWords(text: string, width: number): string[] {
  *
  * Header: `Effort Mode:  <label>` + LEVEL_DESC lines (wrapped to width 48).
  * Footer: `m = switch modes` left + current short label right-aligned.
+ *
+ * When `color` is true: cyan/bold title + mode, dim description + switch hint.
+ * When false (NO_COLOR / tests): byte-identical to the locked skeleton.
  */
 export function buildEffortModeSections(
   mode: Mode | string | null | undefined,
+  color = false,
 ): { header: string[]; footer: string[] } {
   const level: Level = migrateMode(mode);
   const short = effortModeShortLabel(mode);
-  const headerLine = `Effort Mode:  ${short}`;
-  const descLines = wrapWords(LEVEL_DESC[level], EFFORT_BOX_WIDTH);
+  // Visual hierarchy: label + mode read as primary; description is secondary.
+  const headerLine = `${bold(cyan('Effort Mode:', color), color)}  ${bold(short, color)}`;
+  const descLines = wrapWords(LEVEL_DESC[level], EFFORT_BOX_WIDTH).map((l) => dim(l, color));
   const left = 'm = switch modes';
   const gap = Math.max(1, EFFORT_BOX_WIDTH - left.length - short.length);
-  const footerLine = left + ' '.repeat(gap) + short;
+  const footerLine = dim(left, color) + ' '.repeat(gap) + cyan(short, color);
   return {
     header: [headerLine, ...descLines],
     footer: [footerLine],
@@ -104,8 +110,48 @@ export function renderEffortModeBox(
   mode: Mode | string | null | undefined,
   color: boolean,
 ): string {
-  const { header, footer } = buildEffortModeSections(mode);
+  const { header, footer } = buildEffortModeSections(mode, color);
   return sectionBox([header, footer], { width: EFFORT_BOX_WIDTH, color });
+}
+
+// ---------------------------------------------------------------------------
+// Home visual-polish helpers (S.1) — pure, color-gated
+// ---------------------------------------------------------------------------
+
+/**
+ * Section header for home lists (`Recent (…):`). Cyan-bold when color is on;
+ * identity when off so locked golden strings stay byte-identical. PURE.
+ */
+export function formatHomeSectionHeader(text: string, color: boolean): string {
+  return label(text, color);
+}
+
+/**
+ * One Recent-list row with dim secondary fields (age + provider/effort) when
+ * color is on. Key index and title stay normal weight for scannability. PURE.
+ *
+ * Shape: `[n] <age>  <titleColumn>  <providerEffort>`
+ */
+export function formatRecentRow(
+  index: number,
+  age: string,
+  titleColumn: string,
+  providerEffort: string,
+  color: boolean,
+): string {
+  return `[${index}] ${dim(age, color)}  ${titleColumn}  ${dim(providerEffort, color)}`;
+}
+
+/**
+ * Control-list line polish: bold the leading `[key]` token when color is on;
+ * dim indented secondary lines (e.g. `    └─ …`). Identity when color is off. PURE.
+ */
+export function formatControlLine(line: string, color: boolean): string {
+  if (!color) return line;
+  if (line.startsWith('    ') || line.startsWith('\t')) return dim(line, color);
+  const m = line.match(/^(\[[^\]]+\])(.*)$/);
+  if (m === null) return line;
+  return `${bold(m[1] ?? '', color)}${m[2] ?? ''}`;
 }
 // ---------------------------------------------------------------------------
 // Pure helpers (Slice 1 scoped)
@@ -188,6 +234,7 @@ function renderRecentRows(
   metas: readonly ConversationMeta[],
   nowMs: number,
   currentWorkspaceRoot: string | null | undefined,
+  color = false,
 ): string[] {
   const ordered = orderRecentForRender(metas, currentWorkspaceRoot);
   const normCurrent =
@@ -213,7 +260,7 @@ function renderRecentRows(
     const titleColumn = !isCurrent && hasLocation
       ? `${workspaceLabel(m.workspaceRoot as string)} · ${m.title}`
       : m.title;
-    return `[${idx}] ${age}  ${titleColumn}  ${providerEffort}`;
+    return formatRecentRow(idx, age, titleColumn, providerEffort, color);
   });
 }
 
@@ -228,6 +275,7 @@ function renderControls(
   nowMs: number,
   authed: boolean,
   currentWorkspaceRoot: string | null | undefined,
+  color = false,
 ): string {
   const lines: string[] = [];
   const ordered = orderRecentForRender(metas, currentWorkspaceRoot);
@@ -260,7 +308,7 @@ function renderControls(
     lines.push(`[a] ${accountsLabel}`);
     lines.push('[q] Quit');
   }
-  return lines.join('\n');
+  return lines.map((l) => formatControlLine(l, color)).join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -285,8 +333,10 @@ export async function renderMainScreen(
 ): Promise<void> {
   out.write('\n');
 
+  const color = out.color;
+
   // 1. Effort Mode box — live from config.mode (blank line after for section rhythm).
-  out.write(renderEffortModeBox(mutableCtx.config.mode, out.color) + '\n\n');
+  out.write(renderEffortModeBox(mutableCtx.config.mode, color) + '\n\n');
 
   // 2. Recent (<current workspace label>): — one list, no workspace split.
   //
@@ -298,33 +348,35 @@ export async function renderMainScreen(
   // behavior so locked-Slice-1 render assertions stay byte-identical.
   const authed = hasAnyAuthenticatedProvider(mutableCtx.env);
   const currentRoot = currentWorkspaceRoot ?? ctx.cwd;
-  const label = workspaceLabel(currentRoot);
-  out.write(`Recent (${label}):\n`);
+  const wsLabel = workspaceLabel(currentRoot);
+  // S.1: cyan-bold section header when color is on (identity when off).
+  out.write(formatHomeSectionHeader(`Recent (${wsLabel}):`, color) + '\n');
 
   const nowMs = ctx.clock.now();
   if (listsLoading) {
-    out.write('  loading…\n');
+    out.write(dim('  loading…', color) + '\n');
   } else if (metas.length === 0) {
-    out.write(authed ? 'No conversations yet.\n' : 'Sign in to start conversations.\n');
+    const empty = authed ? 'No conversations yet.' : 'Sign in to start conversations.';
+    out.write(dim(empty, color) + '\n');
   } else {
-    const rows = renderRecentRows(metas, nowMs, currentRoot);
+    const rows = renderRecentRows(metas, nowMs, currentRoot, color);
     for (const row of rows) out.write(`  ${row}\n`);
   }
   out.write('\n');
 
   // 3. Session Manager centered titleBox (sized to text).
-  out.write(titleBox('Session Manager', { padding: 6, color: out.color }) + '\n\n');
+  out.write(titleBox('Session Manager', { padding: 6, color }) + '\n\n');
 
   // 4. Flat controls (state-dependent). The [c] Continue-last sub-line names the
   // FIRST RENDERED row (current-workspace-first order), so it always matches
   // the `[1]` row above it — the locked mockup shows `[c]`'s sub-line equal to
   // row `[1]`, and the render/dispatch invariant says visible order == dispatch
   // order ([c] is the conceptual `[0]`).
-  out.write(renderControls(metas, nowMs, authed, currentRoot) + '\n\n');
+  out.write(renderControls(metas, nowMs, authed, currentRoot, color) + '\n\n');
 
   // 5. Choice prompt. 6. Root footer via shared nav-footer pattern (P0.11 light).
   // Same glyphs as locked skeleton (`ESC to exit`); dimmed when color is on so
   // it reads as chrome, not a crammed control row.
   out.write('Choice: ▌\n');
-  out.write(navFooterText('exit-only', out.color) + '\n');
+  out.write(navFooterText('exit-only', color) + '\n');
 }

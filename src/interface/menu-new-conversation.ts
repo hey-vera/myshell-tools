@@ -37,6 +37,7 @@ import type { EnvironmentStatus } from '../providers/detect.js';
 import type { OutputSink } from './render.js';
 import { readMenuKey, NAV_ESC, NAV_LEFT, getMenuStack } from './menu-key-confirm.js';
 import { titleBox } from '../ui/tui.js';
+import { dim } from '../ui/theme.js';
 import { nodeRepoScanPort } from '../infra/repo-scan.js';
 import { resolveWorkspaceRoot } from './workspace.js';
 import { runWorkspacePicker } from './workspace-picker.js';
@@ -44,7 +45,7 @@ import { runModeSelect } from './menu-settings.js';
 import { resolveAutoMode } from './menu-auto-mode.js';
 import { readSubscriptions } from '../infra/subscriptions.js';
 import { navFooterText } from './ui/nav-footer.js';
-import { renderEffortModeBox } from './menu-render.js';
+import { formatControlLine, renderEffortModeBox } from './menu-render.js';
 
 /** The screen's outcome handed back to the `[n]` handler in menu.ts. */
 export type NewConversationOutcome =
@@ -83,14 +84,16 @@ export async function runNewConversationScreen(
       // An Effort Mode ESC (runModeSelect calls requestExit on ESC) surfaces here.
       if (getMenuStack().exitRequested) return { kind: 'exit' };
 
+      const color = out.color;
       out.write('\n');
-      out.write(renderEffortModeBox(mutableCtx.config.mode, out.color) + '\n\n');
-      out.write(titleBox('New Conversation', { padding: 6, color: out.color }) + '\n\n');
-      out.write('         [1] Current\n');
-      out.write(`             ${currentRoot}\n\n`);
-      out.write('[2] Pick workspace...\n\n');
+      out.write(renderEffortModeBox(mutableCtx.config.mode, color) + '\n\n');
+      out.write(titleBox('New Conversation', { padding: 6, color }) + '\n\n');
+      // S.1: bold key tokens + dim path secondary (identity when color off).
+      out.write('         ' + formatControlLine('[1] Current', color) + '\n');
+      out.write(dim(`             ${currentRoot}`, color) + '\n\n');
+      out.write(formatControlLine('[2] Pick workspace...', color) + '\n\n');
       out.write('Choice: ▌\n');
-      out.write(navFooterText('back-and-exit', out.color) + '\n');
+      out.write(navFooterText('back-and-exit', color) + '\n');
 
       const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
 

@@ -781,6 +781,7 @@ function AppBody({
                 state={uiState}
                 rows={liveRows}
                 columns={liveColumns}
+                color={color}
                 onSetSection={(section) => { bridge.routeControlPanelAction({ type: 'control-panel/set-section', section }); }}
                 onHighlightGoal={(goalId) => { bridge.routeControlPanelAction({ type: 'control-panel/highlight-goal', goalId }); }}
                 onScroll={(section, target, delta) => {
