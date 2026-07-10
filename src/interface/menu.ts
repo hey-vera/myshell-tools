@@ -214,7 +214,11 @@ import {
 } from './menu-auto-mode.js';
 import { levelToMode, migrateMode, levelLabel, nextLevel, isLevel } from '../core/mode-levels.js';
 import type { Level } from '../core/mode-levels.js';
-import { decidePostTurn } from './menu-post-turn.js';
+import {
+  decidePostTurn,
+  parsePreemptiveControlCommand,
+  zombieRunningGoalIds,
+} from './menu-post-turn.js';
 import { planRetryTruncation, recentUserMessages } from './menu-message-redo.js';
 import { completeChat } from './menu-completion.js';
 import {
@@ -484,6 +488,14 @@ export interface MenuContext {
 }
 
 /** Timeout continuation obeys the same oversight level as an explicit /goal. */
+/**
+ * Live background-goal AbortControllers keyed by goalId.
+ * Process-scoped so leaving chat (`/back`) does NOT kill workers — only
+ * explicit pause / worker completion / process exit ends them. `running` in
+ * the store with no entry here is a zombie healed by reconcile on chat enter.
+ */
+const backgroundGoalControllers = new Map<string, AbortController>();
+
 export async function approveTimeoutContinuation(
   oversight: Oversight,
   confirm: Confirm,
@@ -1556,7 +1568,6 @@ export async function runChatLoop(
   })();
 
   let currentAc: AbortController | null = null;
-  const backgroundGoals = new Set<AbortController>();
   let lastReportedHistoryDropCount: number | undefined;
   // Set true when the in-flight turn was interrupted by ESC (distinct from the
   // Ctrl+C escape model). Read by the post-turn slot to discard the typed-ahead
@@ -1621,9 +1632,19 @@ export async function runChatLoop(
       ? null
       : createTurnInputSurface(out, { columns: process.stdout.columns });
     // Typed-ahead capture (only when the real LineReader owns stdin).
+    // Preemptive control: `/back` / `/exit` abort the foreground turn and set
+    // leave signals immediately — never FIFO-queue forever behind a long turn.
     const stopCapture =
       lineReader !== undefined && lineReader !== null
         ? lineReader.beginCapture((captured: string) => {
+            const preempt = parsePreemptiveControlCommand(captured);
+            if (preempt !== null) {
+              queuedTurns.length = 0;
+              currentAc?.abort();
+              // Both /back and /exit leave chat → home menu (process exit is home Esc).
+              control.menu = true;
+              return;
+            }
             queuedTurns.push(captured);
             renderQueuedHint(out, verbosity, queuedTurns.length, captured, turnInput);
           })
@@ -1632,22 +1653,19 @@ export async function runChatLoop(
     const detachEsc =
       turnKeyStdin !== undefined
         ? attachChatTurnKeyListener(out, turnKeyStdin, () => {
-            // ESC now cancels the turn AND exits the app (Slice 4).
-            chatEscHandler();
+            // Mid-turn ESC: cancel THIS foreground turn only; stay in chat.
+            midTurnEscHandler();
           }, () => {
             if (lineReader !== undefined && lineReader !== null) {
               turnInput?.setValue(lineReader.currentLine());
             }
           })
         : (): void => {};
-    // Ink-path interrupt: install a handler the InputBox routes a bare ESC to. It
-    // now delegates to chatEscHandler which cancels the turn AND exits the app
-    // (Slice 4 — not just "stay at the chat prompt" like pre-Slice-4).
-    // Cleared in `finally` so an idle-prompt ESC is a no-op.
-    // No-op off the Ink path (inkSetInterrupt undefined).
+    // Ink-path mid-turn interrupt: abort foreground turn only (no app exit).
+    // Restored to idle-leave on settle so bare ESC between turns leaves chat.
     if (inkSetInterrupt !== undefined) {
       inkSetInterrupt(() => {
-        chatEscHandler();
+        midTurnEscHandler();
       });
     }
     try {
@@ -1664,7 +1682,7 @@ export async function runChatLoop(
       );
     } finally {
       detachEsc();
-      if (inkSetInterrupt !== undefined) inkSetInterrupt(null);
+      installIdleEscLeaveHandler();
       if (stopCapture !== null) stopCapture();
       turnInput?.clear();
     }
@@ -1793,19 +1811,22 @@ export async function runChatLoop(
   // `while (true)` can break immediately even when awaiting readLine().
   let loopBreaker: ((result: 'menu' | 'exit') => void) | null = null;
 
-  // Slice 4 — ESC exits the app from the chat subflow (idle AND mid-turn). One
-  // persistent handler installed for the whole chat-loop lifetime (Ink path) and
-  // reused by the legacy bare-ESC listener mid-turn. It marks the nav stack,
-  // mirrors the SIGINT exit-app branch (control.exit + loopBreaker('exit')), and
-  // aborts any in-flight turn. On a mid-turn ESC the outer loop sees control.exit
-  // in the post-turn slot and returns 'exit'; on an idle ESC loopBreaker('exit')
-  // resolves the readLine race directly.
-  const chatEscHandler = (): void => {
+  // Mid-turn ESC: cancel the foreground turn only (`currentAc`). Stay in chat.
+  // Do NOT set control.exit / requestExit (fixes Slice-4 “ESC exits app mid-chat”).
+  // Background goals keep their own AbortControllers and are not touched.
+  const midTurnEscHandler = (): void => {
     interruptedByEsc = true;
-    getMenuStack().requestExit();
-    control.exit = true;
     currentAc?.abort();
-    loopBreaker?.('exit');
+  };
+
+  // Idle ESC (Ink): leave chat → home menu without aborting background goals.
+  // Installed whenever no mid-turn interrupt is active.
+  const installIdleEscLeaveHandler = (): void => {
+    if (inkSetInterrupt === undefined) return;
+    inkSetInterrupt(() => {
+      control.menu = true;
+      loopBreaker?.('menu');
+    });
   };
 
   // Record rate-limit cooldowns from a completed turn. Cools down EVERY provider
@@ -1895,6 +1916,8 @@ export async function runChatLoop(
   };
 
   process.on('SIGINT', sigintHandler);
+  // Idle Esc leaves chat → menu (Ink). Mid-turn swaps this for cancel-turn only.
+  installIdleEscLeaveHandler();
 
   try {
     while (true) {
@@ -1963,8 +1986,9 @@ export async function runChatLoop(
   } finally {
     process.removeListener('SIGINT', sigintHandler);
     loopBreaker = null;
-    for (const ac of backgroundGoals) ac.abort();
-    backgroundGoals.clear();
+    // Leave chat ≠ kill goals: background workers keep their AbortControllers.
+    // Clear only the idle Esc leave handler so menu/home Esc owns exit again.
+    if (inkSetInterrupt !== undefined) inkSetInterrupt(null);
     // Mark the conversation no longer live FIRST so a still-pending concurrent recap
     // (fired on resume) sees the gate closed and skips its dock/write into the menu.
     conversationLive = false;
@@ -3273,6 +3297,29 @@ export async function runChatLoop(
       await refreshGoalContext();
       await refreshRulesContext();
 
+      // Goal integrity (control-plane PR3): store `running` with no live AC is a
+      // zombie (process restart / silent death). Park + dim notice — never silent.
+      try {
+        const allForHeal = await goalStore.list().catch(() => []);
+        const runningIds = allForHeal.filter((g) => g.state === 'running').map((g) => g.id);
+        const liveIds = new Set(backgroundGoalControllers.keys());
+        const zombies = zombieRunningGoalIds(runningIds, liveIds);
+        if (zombies.length > 0) {
+          for (const zid of zombies) {
+            await goalStore.setState(zid, 'parked').catch(() => null);
+          }
+          await syncBoard();
+          out.write(
+            dim(
+              `  (healed ${zombies.length} orphaned running goal(s) → parked — no live worker)\n`,
+              out.color,
+            ),
+          );
+        }
+      } catch {
+        /* fail-soft: never block the turn on integrity heal */
+      }
+
       // Resume note: if there are active/parked goals from a previous session,
       // surface them so the user knows the chat context is continuous.
       const runningCount = boardSummary.running ?? 0;
@@ -3579,7 +3626,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
             recentUserMessages: recentUser,
           },
           runtime: {
-            backgroundGoals: backgroundGoals.size,
+            backgroundGoals: backgroundGoalControllers.size,
             pressure: currentPressure(),
             sessionConsumption,
           },
@@ -3768,7 +3815,8 @@ Output ONLY valid JSON (no prose, no markdown).`;
                   spawnBackgroundGoal(pid, gtitle, label);
                   launched++;
                 } catch {
-                  /* spawn fail must not block */
+                  // Never leave store `running` with no live AC after a spawn miss.
+                  await goalStore.setState(pid, 'parked').catch(() => null);
                 }
               }
               await syncBoard();
@@ -3790,6 +3838,12 @@ Output ONLY valid JSON (no prose, no markdown).`;
               break;
             }
             case 'pause': {
+              // Park store AND abort the live worker (NL pause is the primary stop).
+              const liveAc = backgroundGoalControllers.get(action.goalId);
+              if (liveAc !== undefined) {
+                liveAc.abort();
+                // Map entry is removed in spawnBackgroundGoal's finally.
+              }
               const after = await goalStore.setState(action.goalId, 'parked').catch(() => null);
               await syncBoard();
               if (after) {
@@ -3806,6 +3860,30 @@ Output ONLY valid JSON (no prose, no markdown).`;
               actionHandled.add('pause');
               break;
             }
+            case 'pause_all': {
+              const running = (await goalStore.list().catch(() => [])).filter(
+                (g) => g.state === 'running',
+              );
+              // Abort every live worker (even if store list is briefly stale).
+              for (const ac of backgroundGoalControllers.values()) {
+                ac.abort();
+              }
+              let paused = 0;
+              for (const g of running) {
+                const after = await goalStore.setState(g.id, 'parked').catch(() => null);
+                if (after) paused += 1;
+              }
+              await syncBoard();
+              out.write(
+                dim(
+                  `  Paused ${paused} running goal(s)${action.reason ? ` — ${action.reason}` : ''}.\n`,
+                  out.color,
+                ),
+              );
+              if (tasteOn && paused > 0) void recordTaste('immediate_edit', 'all goals', 'pause all');
+              actionHandled.add('pause_all');
+              break;
+            }
             case 'bg': {
               const targets = action.goalIds.filter((id) => parkedIds.includes(id));
               const idsToBg = targets.length > 0 ? targets : parkedIds;
@@ -3819,7 +3897,8 @@ Output ONLY valid JSON (no prose, no markdown).`;
                   spawnBackgroundGoal(pid, gtitle, label);
                   launched++;
                 } catch {
-                  /* spawn fail must not block */
+                  // Never leave store `running` with no live AC after a spawn miss.
+                  await goalStore.setState(pid, 'parked').catch(() => null);
                 }
               }
               await syncBoard();
@@ -4044,8 +4123,11 @@ Output ONLY valid JSON (no prose, no markdown).`;
         return runGoalLoop(rawLine, fallbackLabel);
       };
       const spawnBackgroundGoal = (goalId: string, work: string, title: string): void => {
+        // Replace any prior controller for this goal (re-accept / re-bg).
+        const prior = backgroundGoalControllers.get(goalId);
+        if (prior !== undefined) prior.abort();
         const ac = new AbortController();
-        backgroundGoals.add(ac);
+        backgroundGoalControllers.set(goalId, ac);
         void (async () => {
           let verifiedDone = false;
           try {
@@ -4056,22 +4138,29 @@ Output ONLY valid JSON (no prose, no markdown).`;
           } catch {
             /* background run failure must never crash the chat loop */
           } finally {
-            backgroundGoals.delete(ac);
-            if (conversationLive) {
-              try {
+            if (backgroundGoalControllers.get(goalId) === ac) {
+              backgroundGoalControllers.delete(goalId);
+            }
+            // Integrity: never leave store `running` with no live AC (no silent zombie).
+            try {
+              const goal = await goalStore.get(goalId).catch(() => null);
+              if (goal?.state === 'running' && !verifiedDone) {
+                await goalStore.setState(goalId, 'parked').catch(() => null);
+              }
+              if (conversationLive) {
                 await syncBoard();
                 out.write(
                   '\n' +
                     dim(
                       verifiedDone
                         ? `※ Background goal finished: ${title}`
-                        : `※ Background goal paused: ${title}`,
+                        : `※ Background goal parked: ${title}`,
                       out.color,
                     ) +
                     '\n',
                 );
-              } catch { /* fail-soft */ }
-            }
+              }
+            } catch { /* fail-soft */ }
           }
         })();
       };

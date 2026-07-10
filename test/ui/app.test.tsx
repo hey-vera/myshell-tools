@@ -160,7 +160,7 @@ test('BottomLegend renders with chatActive=true and no fullscreen panel', async 
   assert.ok(plainFrame.includes('\u2190 menu'), `legend must show "← menu", got:\n${plainFrame}`);
   assert.ok(plainFrame.includes('Shift+Tab mode'), `legend must show "Shift+Tab mode", got:\n${plainFrame}`);
   assert.ok(plainFrame.includes('\u2192 panel'), `legend must show "→ panel", got:\n${plainFrame}`);
-  assert.ok(plainFrame.includes('Esc interrupt'), `legend must show "Esc interrupt", got:\n${plainFrame}`);
+  assert.ok(plainFrame.includes('Esc leave'), `legend must show "Esc leave", got:\n${plainFrame}`);
   // Not edge-padded: control panel affordance must not be exiled far right.
   assert.ok(!/\u2190 menu {10,}/.test(plainFrame), `legend must be clustered (no large gap after menu), got:\n${plainFrame}`);
 });
@@ -206,5 +206,5 @@ test('BottomLegend narrow terminal keeps back + panel only', async () => {
   assert.ok(plainFrame.includes('\u2190 menu'), `narrow legend must show "← menu", got:\n${plainFrame}`);
   assert.ok(plainFrame.includes('\u2192 panel'), `narrow legend must show "→ panel", got:\n${plainFrame}`);
   assert.ok(!plainFrame.includes('Shift+Tab mode'), `narrow legend omits mode, got:\n${plainFrame}`);
-  assert.ok(!plainFrame.includes('Esc interrupt'), `narrow legend omits interrupt, got:\n${plainFrame}`);
+  assert.ok(!plainFrame.includes('Esc leave'), `narrow legend omits leave, got:\n${plainFrame}`);
 });

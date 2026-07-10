@@ -75,3 +75,28 @@ export function decidePostTurn(inputs: PostTurnInputs): readonly PostTurnAction[
 
   return actions;
 }
+
+/**
+ * Preemptive control commands captured mid-turn (control-plane PR3).
+ * Only `/back` and `/exit` (trim + case-insensitive) preempt the foreground
+ * turn — prose and other slash commands still FIFO-queue.
+ */
+export type PreemptiveControlCommand = 'back' | 'exit';
+
+export function parsePreemptiveControlCommand(line: string): PreemptiveControlCommand | null {
+  const t = line.trim().toLowerCase();
+  if (t === '/back') return 'back';
+  if (t === '/exit') return 'exit';
+  return null;
+}
+
+/**
+ * Store goals marked `running` that have no live AbortController are zombies
+ * (process restart, silent spawn death). Pure filter for reconcile-on-enter.
+ */
+export function zombieRunningGoalIds(
+  runningGoalIds: readonly string[],
+  liveControllerIds: ReadonlySet<string>,
+): string[] {
+  return runningGoalIds.filter((id) => !liveControllerIds.has(id));
+}

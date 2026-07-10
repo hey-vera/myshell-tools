@@ -11,7 +11,7 @@
 import type { ControlPanelSection } from './state.js';
 
 /** Kept in lockstep with BottomLegend FULL/NARROW (avoid import cycle). */
-const FULL_LEGEND = '\u2190 menu  \u00b7  Shift+Tab mode  \u00b7  \u2192 panel  \u00b7  Esc interrupt';
+const FULL_LEGEND = '\u2190 menu  \u00b7  Shift+Tab mode  \u00b7  \u2192 panel  \u00b7  Esc leave';
 const NARROW_LEGEND = '\u2190 menu  \u00b7  \u2192 panel';
 const NARROW_COLUMNS = 60;
 
@@ -175,7 +175,7 @@ const LEGEND_SEGMENT_ACTIONS: Readonly<Record<string, LegendClickAction>> = {
   '\u2190 menu': 'menu',
   'Shift+Tab mode': 'mode',
   '\u2192 panel': 'panel',
-  'Esc interrupt': 'interrupt',
+  'Esc leave': 'interrupt',
 };
 
 /**

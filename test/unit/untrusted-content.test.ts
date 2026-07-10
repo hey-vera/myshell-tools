@@ -270,4 +270,50 @@ describe('typed post-model invariants', () => {
     });
     assert.deepEqual(allowed.actions, [{ kind: 'accept', goalIds: ['g1'] }]);
   });
+
+  it('pause_all requires pause + all/every language in the user line', () => {
+    const decision: MetaDecision = {
+      intent: 'pause_goal',
+      confidence: 0.9,
+      rationale: 'user wants everything parked',
+      actions: [{ kind: 'pause_all', reason: 'research' }],
+    };
+    const denied = authorizeMetaDecision(decision, 'pause goal g1', {
+      knownGoalIds: ['g1'],
+      parkedGoalIds: [],
+    });
+    assert.deepEqual(denied.actions, undefined);
+
+    const allowed = authorizeMetaDecision(decision, 'pause all while I research', {
+      knownGoalIds: ['g1'],
+      parkedGoalIds: [],
+    });
+    assert.deepEqual(allowed.actions, [{ kind: 'pause_all', reason: 'research' }]);
+
+    const every = authorizeMetaDecision(decision, 'pause every goal', {
+      knownGoalIds: ['g1'],
+      parkedGoalIds: [],
+    });
+    assert.deepEqual(every.actions, [{ kind: 'pause_all', reason: 'research' }]);
+  });
+
+  it('single pause still requires a known goal id', () => {
+    const decision: MetaDecision = {
+      intent: 'pause_goal',
+      confidence: 0.9,
+      rationale: 'pause one',
+      actions: [{ kind: 'pause', goalId: 'g1' }],
+    };
+    const denied = authorizeMetaDecision(decision, 'pause this', {
+      knownGoalIds: ['other'],
+      parkedGoalIds: [],
+    });
+    assert.deepEqual(denied.actions, undefined);
+
+    const allowed = authorizeMetaDecision(decision, 'pause this', {
+      knownGoalIds: ['g1'],
+      parkedGoalIds: [],
+    });
+    assert.deepEqual(allowed.actions, [{ kind: 'pause', goalId: 'g1' }]);
+  });
 });

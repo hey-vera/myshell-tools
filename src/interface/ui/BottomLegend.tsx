@@ -22,7 +22,7 @@ export interface BottomLegendProps {
 }
 
 /** Clustered chat key legend — no edge-padding that exiles control panel right. */
-const FULL_LEGEND = '\u2190 menu  \u00b7  Shift+Tab mode  \u00b7  \u2192 panel  \u00b7  Esc interrupt';
+const FULL_LEGEND = '\u2190 menu  \u00b7  Shift+Tab mode  \u00b7  \u2192 panel  \u00b7  Esc leave';
 /** Narrow terminals keep the essential back + panel affordances. */
 const NARROW_LEGEND = '\u2190 menu  \u00b7  \u2192 panel';
 /** Columns below this threshold drop mode/interrupt hints. */

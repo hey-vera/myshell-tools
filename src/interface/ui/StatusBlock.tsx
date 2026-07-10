@@ -640,7 +640,7 @@ function SpinnerStatusLine({ state, elapsedSecs, color = true }: SpinnerStatusLi
 }
 
 /**
- * The live status line under the panels: `⠹ <verb> · Ns   esc to interrupt`. The
+ * The live status line under the panels: `⠹ <verb> · Ns   esc cancel turn`. The
  * verb mirrors render.ts's spinnerLabel exactly:
  *   - panel mode → panelLabel() ("Waiting on N models · claude ✓ · codex …" /
  *     "Synthesizing N answers…");
@@ -663,7 +663,7 @@ export function StatusLine({ state, frame, elapsedSecs, color = true }: StatusLi
       <Box>
         <Text {...(color ? { color: 'cyan' as const } : {})}>{frame}</Text>
         <Text>{` ${verb}${elapsed}`}</Text>
-        <Text dimColor={color}>{'   esc to interrupt'}</Text>
+        <Text dimColor={color}>{'   esc cancel turn'}</Text>
       </Box>
     );
   }
@@ -690,7 +690,7 @@ export function StatusLine({ state, frame, elapsedSecs, color = true }: StatusLi
       <Text {...(color ? { color: 'cyan' as const } : {})}>{frame}</Text>
       <Text>{` ${headline}…`}</Text>
       {detail.length > 0 ? (
-        <Text dimColor={color}>{` · ${detail}${summary.active > 0 || summary.complete > 0 || summary.goals !== undefined ? '   esc to interrupt' : ''}`}</Text>
+        <Text dimColor={color}>{` · ${detail}${summary.active > 0 || summary.complete > 0 || summary.goals !== undefined ? '   esc cancel turn' : ''}`}</Text>
       ) : null}
     </Box>
   );

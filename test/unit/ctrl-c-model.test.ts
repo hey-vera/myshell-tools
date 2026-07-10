@@ -22,7 +22,11 @@ import {
   interpretInterrupt,
   interpretChatKey,
 } from '../../src/interface/menu-display.ts';
-import { decidePostTurn } from '../../src/interface/menu-post-turn.ts';
+import {
+  decidePostTurn,
+  parsePreemptiveControlCommand,
+  zombieRunningGoalIds,
+} from '../../src/interface/menu-post-turn.ts';
 import type { PostTurnAction, PostTurnInputs } from '../../src/interface/menu-post-turn.ts';
 
 // ---------------------------------------------------------------------------
@@ -504,5 +508,45 @@ describe('decidePostTurn', () => {
       'discard-typeahead',
       'memory-approval',
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Control-plane PR3 — preemptive /back|/exit + zombie goal integrity
+// ---------------------------------------------------------------------------
+
+describe('parsePreemptiveControlCommand', () => {
+  it('recognizes /back and /exit trim + case-insensitive', () => {
+    assert.equal(parsePreemptiveControlCommand('/back'), 'back');
+    assert.equal(parsePreemptiveControlCommand('  /BACK  '), 'back');
+    assert.equal(parsePreemptiveControlCommand('/exit'), 'exit');
+    assert.equal(parsePreemptiveControlCommand('\t/Exit'), 'exit');
+  });
+
+  it('does not preempt prose or other slash commands', () => {
+    assert.equal(parsePreemptiveControlCommand('please /back later'), null);
+    assert.equal(parsePreemptiveControlCommand('/help'), null);
+    assert.equal(parsePreemptiveControlCommand('/goals'), null);
+    assert.equal(parsePreemptiveControlCommand('back'), null);
+    assert.equal(parsePreemptiveControlCommand(''), null);
+  });
+});
+
+describe('zombieRunningGoalIds', () => {
+  it('returns running ids with no live AbortController', () => {
+    const live = new Set(['live-1', 'live-2']);
+    assert.deepEqual(zombieRunningGoalIds(['live-1', 'dead-a', 'live-2', 'dead-b'], live), [
+      'dead-a',
+      'dead-b',
+    ]);
+  });
+
+  it('returns empty when every running goal has a live controller', () => {
+    const live = new Set(['a', 'b']);
+    assert.deepEqual(zombieRunningGoalIds(['a', 'b'], live), []);
+  });
+
+  it('returns all running when no controllers are live', () => {
+    assert.deepEqual(zombieRunningGoalIds(['x', 'y'], new Set()), ['x', 'y']);
   });
 });
