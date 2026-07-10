@@ -23,6 +23,7 @@ type MetaIntent =
 export type MetaAction =
   | { readonly kind: 'accept'; readonly goalIds: readonly string[] }
   | { readonly kind: 'pause'; readonly goalId: string; readonly reason?: string }
+  | { readonly kind: 'pause_all'; readonly reason?: string }
   | { readonly kind: 'bg'; readonly goalIds: readonly string[] }
   | {
       readonly kind: 'adjust';
@@ -92,6 +93,12 @@ function parseAction(raw: unknown): MetaAction | null {
         ? { kind, goalId, ...(typeof raw.reason === 'string' ? { reason: raw.reason } : {}) }
         : null;
     }
+    case 'pause_all': {
+      return {
+        kind: 'pause_all',
+        ...(typeof raw.reason === 'string' ? { reason: raw.reason } : {}),
+      };
+    }
     case 'bg': {
       const goalIds = Array.isArray(raw.goalIds)
         ? raw.goalIds.filter((x): x is string => typeof x === 'string')
@@ -138,6 +145,11 @@ function lineAuthorizes(kind: MetaAction['kind'], userLine: string): boolean {
       return /\b(?:accept|approve|looks good|go ahead|start all|start the plan|unblocked)\b/i.test(line);
     case 'pause':
       return /\b(?:pause|hold off|stop|park)\b/i.test(line);
+    case 'pause_all':
+      return (
+        /\b(?:pause|hold off|stop|park)\b/i.test(line) &&
+        /\b(?:all|every|everything)\b/i.test(line)
+      );
     case 'bg':
       return /\b(?:bg|background|in the background)\b/i.test(line);
     case 'adjust':
@@ -174,6 +186,7 @@ export function authorizeMetaDecision(
       case 'pause':
       case 'adjust':
         return known.has(action.goalId) ? [action] : [];
+      case 'pause_all':
       case 'clarify':
       case 'new_plan':
         return [action];
@@ -222,7 +235,7 @@ Available intents:
 - "accept_plan": user accepts the last proposed plan (e.g. "accept", "go", "looks good", "start all", "unblocked"). Action: { "kind": "accept", "goalIds": ["..."] }
 - "adjust_plan": user changes a named goal/plan (e.g. "pause goal 3 and change to JWT", "drop the auth step", "add a test for X"). Action: { "kind": "adjust", "goalId": "...", "patch": { title?, state?, approach?, tags?, roadmapPatch?: { add?, edit?, remove?, reorder? } }, "note": "..." }
 - "bg_directive": user wants work in the background (e.g. "bg the tests", "work on docs in background"). Action: { "kind": "bg", "goalIds": ["..."] }
-- "pause_goal": user pauses a goal (e.g. "pause goal 3", "hold off on auth"). Action: { "kind": "pause", "goalId": "...", "reason": "..." }
+- "pause_goal": user pauses a goal (e.g. "pause goal 3", "hold off on auth", "pause all", "pause every goal"). Action: { "kind": "pause", "goalId": "...", "reason": "..." } OR { "kind": "pause_all", "reason": "..." } when they mean every running goal
 - "new_plan": user asks for a plan for new work (e.g. "plan the auth project"). Action: { "kind": "new_plan", "title": "...", "prompt": "..." }
 - "clarify": you need one sharp question before acting. Action: { "kind": "clarify", "question": "..." }
 - "normal_chat": none of the above — fall through to normal chat.
