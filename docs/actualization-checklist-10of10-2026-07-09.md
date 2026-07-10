@@ -139,7 +139,7 @@ Auto-adapt means: detect repo remotes + available CLIs (gh/glab/git), adapt lang
 
 - [x] **P0.19** Workspace context detector: git root, remotes, host class (github|gitlab|other|none), available tools (gh/glab) — #130
 - [x] **P0.20** Partner NL fluency per context (PR/MR/pipeline language; local-only honesty) — #130 (vocabulary + ENVIRONMENT merge; full workflow depth = P1.6–1.8)
-- [~] **P1.6** GitHub workflow depth: **status NL landed (#137)** (`gh pr status` when GitHub+gh). Create/review/checks depth still open.
+- [~] **P1.6** GitHub workflow depth: **status** (#137 `gh pr status`) + **create** (#149 `gh pr create --fill`, gated). Checks/review still open.
 - [~] **P1.7** GitLab workflow depth: **thin MR list** (`glab mr list` when GitLab+glab; honest PATH/host fallback). Pipeline/create depth still open.
 - [ ] **P1.8** Other forge + pure local paths: no false gh; local file/git mastery remains first-class (detector + honest degrade partially covered by #130 + status handlers)
 - [ ] Acceptance: open a GitHub repo, GitLab repo, random remote, and a non-git folder — partner *knows* which world it is in — **code complete for detect + thin status; human smoke pending**
