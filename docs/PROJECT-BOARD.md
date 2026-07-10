@@ -1,79 +1,57 @@
 # myshell-tools — Active project board (orchestrator)
 
-Last updated: 2026-07-10 (release **3.167.0** — Wave 7 absorb + forge create/checks; main includes #152)
+Last updated: 2026-07-10 (tip post-checklist code wave; package **3.167.0**, **3.168.0** cut next)
 
 ## North star
 One subscription-native chat to rule them all. Elite partner. Not API-key product.
-Tab ghost-complete + auto-adaptive GitHub/GitLab/other/local mastery are locked requirements.
 
 
 ## Product truth (owner-corrected 2026-07-09) — do NOT drift
 
 myshell-tools is **not** Claude Projects and must not become a "create project / paste brief / drop PDFs" product.
 
-**What we are:**
-- One chat that rules long-term development: plans, code, goals, research, parallel work — **built through conversation**, not pre-loaded brand kits.
-- **Minimal effort, high output**: the partner digests context from the live workspace, chat history, goals, taste, memory, forge — user does not re-brief every morning.
-- **Multi-concern by design**: many goals/tasks in parallel is a core superpower, not a smell. Isolation of concerns is *internal orchestration* (goal DAG, board, routing), not "one Claude Project per topic."
-
-**What we steal from Claude Projects articles (principles only):**
-- Standing preferences that persist (taste/rules/memory) without retyping
-- Dense signal over junk context (curate what we inject; do not dump)
-- Layered prefs (global vs workspace vs conversation) when they reduce friction
-
-**What we reject:**
-- Manual project-admin as the product (upload 20 files, write ROLE/NEVER templates to start)
-- One-concern-per-workspace as a user-facing rule
-- Bridging gaps by cloning web-chat product surfaces that fight the terminal agent vision
-
-**Bar for any upgrade:** Does this make one-chat multi-goal daily drive better with *less* user effort? If not, cut.
+**What we are:** multi-goal one-chat daily drive built through conversation.  
+**Bar:** less user effort → better daily drive. Else cut.
 
 
-## On main (this session — all green merges)
+## On main (recent)
 | PR | Summary |
 |----|---------|
-| #118–#141 | Actualization waves 0–6 core (see history) → **3.166.0** |
-| #142 | Partner principles absorb plan (Wave 7 spec) |
-| #143 | **W7.1** Built-in partner laws (prompt) |
-| #144 | **W7.3** Account weight UX honesty + routing proof |
-| #145 | **W7.2** Turn routing receipts |
-| #146 | **W7.5** Goal rewatch+ (first-turn context) |
-| #147 | **W7.4** Done=check binding |
-| #148 | Docs: Wave 7 absorb complete on board/checklist |
-| #149 | **P1.6** thin GitHub PR create (`gh pr create --fill`, gated) |
-| #150 | Docs: note PR create on P1.6 partial progress |
-| #152 | **P1.6** thin GitHub PR checks (`gh pr checks`, gated NL) |
+| #142–#147 | Wave 7 partner principles absorb |
+| #149 | GH PR create thin |
+| #151 | **3.167.0** release |
+| #152 | GH PR checks |
+| #153 | GitLab MR create |
+| #154 | Optional model ghost (default off) |
+| #155 | GitLab CI/pipeline status |
+| #156 | GH PR review view |
+| #157 | P2.5–2.6 continuity + stewardship |
+| #158 | Shared deps builder slice 1 |
+| #159 | P1.8 other/local forge honesty |
+| #160 | S.1 visual polish |
 
-Package version **3.167.0** (this cut: Wave 7 absorb + #149 create + #152 checks; #150 docs).
+Main tip includes #155. Package still **3.167.0** until 3.168.0 cut.
 
-## Checklist honesty (2026-07-10)
 
-| Item | Status | Notes |
-|------|--------|-------|
-| Wave 0–4 code | **done** | Human acceptance smokes still open |
-| P2.1–2.3, P2.7 | **done** | Checkpoint/undo/verify; local ghost |
-| P1.6 GitHub depth | **partial** | status #137 + create #149 + checks #152; review still open |
-| P1.7 GitLab depth | **partial** | thin `glab mr list` #140 |
-| Wave 7 absorb | **code done** | #142–#147; human smoke pending |
-| S.5 Version | **3.167.0** | cut includes Wave 7 + #149/#152 (+ #150 docs) |
-| S.6 npm publish | **open** | npm `@latest` still older — user only |
-| Acceptance smokes | **open** | Replit/local — code complete ≠ accepted |
+## Checklist honesty
+
+| Item | Status |
+|------|--------|
+| Waves 0–7 **code** | **done** |
+| P1.5–1.8 forge/ghost | **done** |
+| P2.4–2.6 | **done** (thin slices; not full r7 theater) |
+| S.1–S.5 | **done** (S.5 at 3.167.0; 3.168.0 pending) |
+| **All wave Acceptance lines** | **open — human smoke** |
+| **S.6 npm publish** | **open — user only** (npm still 3.163.1) |
 
 ## Open / in flight
-(none — #152 merged; release cut pending merge)
+(none product)
 
 ## Next (priority)
-1. **User smoke** post-**3.167.0** (Effort, Shift+Tab, legend/panel, goals+recap, resume rewatch, routing receipt line, Tab ghost, forge/`gh` PR status+create+checks / `glab` MR list, undo, Accounts weight copy, partner laws behavior, lag recovery)
-2. **`npm publish`** (user) for **3.167.0**
-3. **P1.6** remaining GitHub depth: review / richer PR workflows
-4. **P1.7–1.8** GitLab pipelines / other-forge honesty polish
-5. **P1.5** optional budgeted model ghost (toggle; fail-soft)
-6. **P2.4** shared deps builder CLI→menu (only with tight contract — large seam)
-7. **S.1** visual polish
+1. **User smoke** full checklist acceptance (Replit + local)
+2. **3.168.0 cut** then **`npm publish`** (user)
+3. Optional deeper: shared-deps slice 2, full r7 durable log, PR approve mutations — only if vision-aligned
 
 ## Operating rules
-- Branch from origin/main only
-- Isolation worktree for parallel agents
-- Pause agents before force-push base
-- Merge only full green CI
+- Branch from origin/main only · merge only full green CI
 - Checklist: docs/actualization-checklist-10of10-2026-07-09.md
