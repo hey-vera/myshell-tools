@@ -1056,6 +1056,95 @@ test('Shift+Tab still cycles mode when ghost is present (does not accept ghost)'
 });
 
 // ---------------------------------------------------------------------------
+// Optional model ghost (P1.5) — gated off by default; local wins when both
+// ---------------------------------------------------------------------------
+
+test('model ghost stays off by default even when suggestGhost is wired', async () => {
+  const bridge = createInputBoxBridge();
+  bridge.onSubmit(() => {});
+  let calls = 0;
+  const { lastFrame, stdin } = render(
+    <InputBox
+      bridge={bridge}
+      color={true}
+      isTty={true}
+      columns={80}
+      ghostDebounceMs={0}
+      // modelGhostEnabled omitted → false
+      suggestGhost={async () => {
+        calls += 1;
+        return ' from the model';
+      }}
+    />,
+  );
+  // Unique prefix with no local history match
+  stdin.write('zzunique');
+  await ghostTick();
+  await ghostTick(); // allow any accidental async model path
+  assert.equal(calls, 0, 'suggestGhost must not fire when modelGhostEnabled is off');
+  assert.ok(!plain(lastFrame()).includes('from the model'));
+});
+
+test('model ghost fires only when enabled and local empty; Tab accepts', async () => {
+  const bridge = createInputBoxBridge();
+  bridge.onSubmit(() => {});
+  let calls = 0;
+  const { lastFrame, stdin } = render(
+    <InputBox
+      bridge={bridge}
+      color={true}
+      isTty={true}
+      columns={80}
+      ghostDebounceMs={0}
+      modelGhostEnabled={true}
+      suggestGhost={async (line) => {
+        calls += 1;
+        assert.equal(line, 'zzunique');
+        return ' from the model';
+      }}
+    />,
+  );
+  stdin.write('zzunique');
+  await ghostTick();
+  await ghostTick();
+  assert.ok(calls >= 1, 'suggestGhost must fire when enabled + local miss');
+  assert.ok(
+    plain(lastFrame()).includes('from the model'),
+    `expected model ghost suffix, got:\n${lastFrame()}`,
+  );
+  stdin.write(TAB);
+  await tick();
+  assert.equal(bridge.currentLine(), 'zzunique from the model');
+});
+
+test('local history ghost wins over model even when modelGhost enabled', async () => {
+  const bridge = createInputBoxBridge();
+  bridge.seedHistory(['test the migration']);
+  bridge.onSubmit(() => {});
+  let modelCalls = 0;
+  const { lastFrame, stdin } = render(
+    <InputBox
+      bridge={bridge}
+      color={true}
+      isTty={true}
+      columns={80}
+      ghostDebounceMs={0}
+      modelGhostEnabled={true}
+      suggestGhost={async () => {
+        modelCalls += 1;
+        return ' from the model';
+      }}
+    />,
+  );
+  stdin.write('test the');
+  await ghostTick();
+  await ghostTick();
+  assert.equal(modelCalls, 0, 'model must not fire when local history matches');
+  assert.ok(plain(lastFrame()).includes('migration'), 'local history ghost must show');
+  assert.ok(!plain(lastFrame()).includes('from the model'));
+});
+
+// ---------------------------------------------------------------------------
 // Phase 5: insertText — imperative text insertion into the composer
 // ---------------------------------------------------------------------------
 
