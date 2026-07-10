@@ -141,7 +141,6 @@ import {
   planDisplayLabel,
   tunePolicyForMaxSubTier,
 } from '../core/policy.js';
-import type { PlanInfo } from '../core/policy.js';
 import type { Mode } from '../core/policy.js';
 import { planNativeSession } from '../core/native-session.js';
 import { decideHistoryPolicy } from '../core/turn-directive.js';
@@ -184,6 +183,10 @@ import type { SystemModel } from '../core/understanding.js';
 import { verifyStage } from '../core/work-call.js';
 import { isRecapStale, recapEligible, type RecapResult } from '../core/recap.js';
 import { buildPreflightDeps } from './preflight-deps.js';
+import {
+  collectEnvRoutingFacts,
+  buildSharedOrchestrateCore,
+} from './build-orchestrate-deps.js';
 import type { IntentFrame } from '../core/intent.js';
 import { deriveDraftGoalSkeleton } from '../core/draft-goal.js';
 import { shouldShowFirstTouch, markSeen, FIRST_TOUCH_LINES } from '../core/first-touch.js';
@@ -2446,46 +2449,20 @@ export async function runChatLoop(
         // un-sheddable core answer always runs.
         const shedPlan = currentShedPlan();
 
-        const availableModels: Partial<Record<ProviderId, readonly string[]>> = {};
-        if (mutableCtx.env.claude.installed && mutableCtx.env.claude.availableModels.length > 0) {
-          availableModels['claude'] = mutableCtx.env.claude.availableModels;
-        }
-        if (mutableCtx.env.codex.installed && mutableCtx.env.codex.availableModels.length > 0) {
-          availableModels['codex'] = mutableCtx.env.codex.availableModels;
-        }
-        if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0) {
-          availableModels['opencode'] = mutableCtx.env.opencode.availableModels;
-        }
-        if (mutableCtx.env.grok.installed && mutableCtx.env.grok.availableModels.length > 0) {
-          availableModels['grok'] = mutableCtx.env.grok.availableModels;
-        }
-
-        // Collect authenticated providers from the live env so route() prefers
-        // signed-in providers over signed-out ones. Uses mutableCtx.env so
-        // post-login re-detection is reflected without restart.
-        const authedAll: ProviderId[] = [];
-        if (mutableCtx.env.claude.authenticated) authedAll.push('claude');
-        if (mutableCtx.env.codex.authenticated) authedAll.push('codex');
-        if (mutableCtx.env.opencode.authenticated) authedAll.push('opencode');
-        if (mutableCtx.env.grok.authenticated) authedAll.push('grok');
+        // Shared pure env→routing facts (P2.4 slice 1). Same collector as CLI
+        // `run` so availableModels / authed ids / planInfos cannot drift.
+        const envRouting = collectEnvRoutingFacts(mutableCtx.env);
 
         // Bias away from providers that recently hit a rate limit this session,
         // so a second signed-in provider absorbs the load. Never strands the user:
         // if every authed provider is cooling down, the full list is returned.
+        // Cooldown is menu/session-owned — not part of the shared pure slice.
         const authenticatedProviders = availableAfterCooldown(
-          authedAll,
+          envRouting.authenticatedProviders,
           providerCooldownUntil,
           ctx.clock.now(),
         );
-
-        // Observed plan classification per authenticated provider — an immutable
-        // snapshot for adaptive flagship admission (core/flagship.ts), which vetoes
-        // auto-opening the flagship on an observed `free` plan. Never fabricated:
-        // providers whose CLI reports no plan classify to confidence 'none'.
-        const planInfos: Partial<Record<ProviderId, PlanInfo>> = {};
-        for (const p of [mutableCtx.env.claude, mutableCtx.env.codex, mutableCtx.env.opencode, mutableCtx.env.grok]) {
-          if (p.authenticated) planInfos[p.id] = classifyPlan(p.plan);
-        }
+        const availableModels = envRouting.availableModels;
 
         // Native session plan — unconditional (shipped-on). Pure decision
         // (never null). Orchestrate uses the provider's native session for
@@ -2603,6 +2580,25 @@ export async function runChatLoop(
           ...(turnCallBudget !== undefined ? { turnCallBudget } : {}),
         });
 
+        // Shared pure core with CLI (P2.4 slice 1): routing facts + shipped-on
+        // flags + optional prompt contexts. Menu-only extras stay below.
+        // Cooldown-filtered authenticatedProviders override the raw env list.
+        const sharedCore = buildSharedOrchestrateCore(mutableCtx.env, {
+          authenticatedProviders,
+          context: {
+            ...(memoryContext !== undefined ? { memoryContext } : {}),
+            ...(environmentContext !== undefined ? { environmentContext } : {}),
+            ...(toolStateContext.length > 0 ? { toolStateContext } : {}),
+            // Structured capability registry (Stage 3) — SAME snapshot the
+            // self-awareness summary was derived from (resolveCapabilitySummaryOnce).
+            ...(caps.registry !== undefined ? { capabilityRegistry: caps.registry } : {}),
+            // Latency-Hedged Escalation delay port — only when hedging is enabled.
+            ...(mutableCtx.config.hedge === true
+              ? { sleep: (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms)) }
+              : {}),
+          },
+        });
+
         return {
           clock: ctx.clock,
           session: (() => {
@@ -2618,8 +2614,6 @@ export async function runChatLoop(
             };
           })(),
           ledger: turnLedger,
-          cacheAccountingV2: true,
-          accountAux: true,
           intentVersionId,
           ...(intentStore !== undefined ? { intentStore } : {}),
           policy,
@@ -2647,30 +2641,16 @@ export async function runChatLoop(
                 },
               }
             : {}),
-          ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
-          ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
-          ...(Object.keys(planInfos).length > 0 ? { planInfos } : {}),
-          // Structured capability registry (Stage 3) — the SAME snapshot the
-          // self-awareness summary was derived from (resolveCapabilitySummaryOnce),
-          // REUSED here so orchestrate's route()/selectReasoningEffort can use it.
-          // Absent → no capability context, no effort flag (unchanged routing).
-          ...(caps.registry !== undefined ? { capabilityRegistry: caps.registry } : {}),
+          ...sharedCore,
           vendorNeutralEnabled: true,
-
-
-
           draftGoals: true,
           ...(nativeSession.length > 0 ? { nativeSession } : {}),
           // Evidence receipt: always passes the captured per-turn ledger snapshot
           // so accept-stage / work-call can assemble the proof-of-done receipt.
-          evidenceReceiptV2: true,
+          // (evidenceReceiptV2 / nativeSessionsPromote ride sharedCore.)
           receiptLedgerSnapshot: () => receiptLedgerEntries,
           ...(providerCooldownUntil.size > 0 ? { cooldownUntil: providerCooldownUntil } : {}),
           ...(Object.keys(sessionConsumption).length > 0 ? { sessionTokensForReceipt: sessionConsumption } : {}),
-          // Native session promotion: pass the flag so work-call can emit telemetry.
-          // Existing config.nativeSessions===true continues unchanged (effective-
-          // enabled helper already combined them above for planNativeSession).
-          nativeSessionsPromote: true,
           ...(turnCallBudget !== undefined ? { turnCallBudget } : {}),
           ...preflightDeps,
           // UNIFIED PREFLIGHT (rank-7). Set ONLY when the unify flag is ON; absent
@@ -2709,22 +2689,13 @@ export async function runChatLoop(
           // default is derived from the effective mode. Threaded once per turn so
           // it rides sequential, hedge, AND panel prompts via assembleContextBlocks.
           partnerStyle: resolvePartnerStyle(mutableCtx.config, effectiveMode),
-          // Latency-Hedged Escalation needs an injected delay port (so its timing
-          // stays out of the pure core). Provide a setTimeout-based impl only when
-          // hedging is enabled — when off, the dep is absent and planHedge returns
-          // null, so the sequential path is unchanged.
-          ...(mutableCtx.config.hedge === true
-            ? { sleep: (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms)) }
-            : {}),
-          // USER MEMORY block (Phase 4, §7) — present only when memory is on AND
-          // facts survived the inject-time gate + relevance selection.
-          ...(memoryContext !== undefined && memoryContext.length > 0 ? { memoryContext } : {}),
           // LEARNED-TASTE playbook block + ask-vs-proceed dial (Phase-7 free layer).
           // Present ONLY when the taste flag is ON and the distill produced a
           // non-empty playbook / non-zero bias (resolveTurnTaste returns {} when the
           // flag is off → byte-identical prompts + unmoved engagement). The block
           // rides sequential/hedge/panel via assembleContextBlocks; memoryBias feeds
           // EngagementSignals.memoryBias (the wired-but-unfed dial).
+          // (memoryContext / sleep / environmentContext / toolStateContext ride sharedCore.)
           ...(taste?.tasteContext !== undefined && taste.tasteContext.length > 0
             ? { tasteContext: taste.tasteContext }
             : {}),
@@ -2754,15 +2725,6 @@ export async function runChatLoop(
           // '' otherwise → byte-identical). Rides sequential, hedge, AND panel prompts
           // via assembleContextBlocks (rendered right after CURRENT GOALS).
           ...(rulesContext.length > 0 ? { rulesContext } : {}),
-          // ENVIRONMENT / repo-map orientation block (E1) — gathered once per
-          // session, present only when codebase awareness is on AND the scan
-          // produced a non-empty block (fail-soft → '' otherwise).
-          ...(environmentContext !== undefined && environmentContext.length > 0
-            ? { environmentContext }
-            : {}),
-          // TOOL-STATE / ABOUT block (tool self-awareness) — present only when the
-          // pure renderer produced a non-empty block (it always does given a version).
-          ...(toolStateContext.length > 0 ? { toolStateContext } : {}),
           // PERFORMANCE GOVERNOR — unconditional (shipped-on admission/budget coordination).
           // pressure/budget checks remain the real safety controls.
           governorEnabled: true,
@@ -2852,9 +2814,7 @@ export async function runChatLoop(
             const block = currentUnderstandingContext();
             return block.length > 0 ? { understandingContext: block } : {};
           })(),
-          // BLOCKED STATE (MYSHELL_BLOCKED_STATE_V1) — unconditional. The
-          // orchestrator may emit blocked finals instead of failed ones.
-          blockedStateV1: true,
+          // blockedStateV1 rides sharedCore (shipped-on).
           // CORRECTION FORK (always on) — correction detection runs against
           // prior intent versions; a detected correction creates a child
           // IntentVersion and supersedes invalid descendants.

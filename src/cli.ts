@@ -22,10 +22,8 @@ import type { CommandGatePort } from './core/command-gate.js';
 import {
   DEFAULT_POLICY,
   POLICY_PRESETS,
-  classifyPlan,
   tunePolicyForMaxSubTier,
 } from './core/policy.js';
-import type { PlanInfo } from './core/policy.js';
 import type { LedgerEntry, LedgerWriter, OrchestrateDeps } from './core/types.js';
 import type { OutputSink } from './interface/render.js';
 import { runTask } from './interface/run.js';
@@ -73,6 +71,7 @@ import { syncConversationMirror } from './infra/session-mirror.js';
 import { replitPersistentEnv } from './infra/credentials.js';
 import { helperSandbox, sandboxForEnvironment } from './infra/sandbox.js';
 import { buildPreflightDeps } from './interface/preflight-deps.js';
+import { buildSharedOrchestrateCore } from './interface/build-orchestrate-deps.js';
 import { dim as dimText } from './ui/theme.js';
 import { defaultStateDir, evaluateHealth, probeLedgerWritable, probeStateWritable } from './infra/health.js';
 import { planStateMigration, runStateMigration } from './infra/state-migration.js';
@@ -280,37 +279,18 @@ function buildDeps(
   // buildDeps; the env var path is sufficient for the run surface.
   const providers = buildAuthenticatedProviders(cwd, env, process.env);
 
-  // Populate advertised model lists from detection so route() can prefer a
-  // model the provider CLI actually has. Only include installed providers.
-  const availableModels: Partial<Record<import('./providers/port.js').ProviderId, readonly string[]>> = {};
-  if (env.claude.installed && env.claude.availableModels.length > 0) {
-    availableModels['claude'] = env.claude.availableModels;
-  }
-  if (env.codex.installed && env.codex.availableModels.length > 0) {
-    availableModels['codex'] = env.codex.availableModels;
-  }
-  if (env.opencode.installed && env.opencode.availableModels.length > 0) {
-    availableModels['opencode'] = env.opencode.availableModels;
-  }
-  if (env.grok.installed && env.grok.availableModels.length > 0) {
-    availableModels['grok'] = env.grok.availableModels;
-  }
-
-  // Collect authenticated providers so route() can prefer signed-in providers
-  // over signed-out ones, preventing wasted attempts on unauthenticated installs.
-  const authenticatedProviders: import('./providers/port.js').ProviderId[] = [];
-  if (env.claude.authenticated) authenticatedProviders.push('claude');
-  if (env.codex.authenticated) authenticatedProviders.push('codex');
-  if (env.opencode.authenticated) authenticatedProviders.push('opencode');
-  if (env.grok.authenticated) authenticatedProviders.push('grok');
-
-  // Observed plan per authenticated provider — snapshot for adaptive flagship
-  // admission (free-plan veto). Never fabricated (null plan → confidence 'none').
-  const planInfos: Partial<Record<import('./providers/port.js').ProviderId, PlanInfo>> = {};
-  if (env.claude.authenticated) planInfos['claude'] = classifyPlan(env.claude.plan);
-  if (env.codex.authenticated) planInfos['codex'] = classifyPlan(env.codex.plan);
-  if (env.opencode.authenticated) planInfos['opencode'] = classifyPlan(env.opencode.plan);
-  if (env.grok.authenticated) planInfos['grok'] = classifyPlan(env.grok.plan);
+  // Shared pure core (P2.4 slice 1): env → routing facts + shipped-on flags +
+  // optional prompt contexts. Menu uses the same helpers so new core fields
+  // land once. Path-owned: ledger/session/providers/policy/sandbox.
+  const sharedCore = buildSharedOrchestrateCore(env, {
+    context: {
+      ...(capabilityRegistry !== undefined ? { capabilityRegistry } : {}),
+      ...(sleep !== undefined ? { sleep } : {}),
+      ...(memoryContext !== undefined ? { memoryContext } : {}),
+      ...(environmentContext !== undefined ? { environmentContext } : {}),
+      ...(toolStateContext !== undefined ? { toolStateContext } : {}),
+    },
+  });
 
   const ledger = createLedger({ cwd });
   const session = createSessionWriter({ cwd, id: systemClock.uuid() });
@@ -330,8 +310,6 @@ function buildDeps(
     clock: systemClock,
     session,
     ledger: turnLedger,
-    cacheAccountingV2: true,
-    accountAux: true,
     intentVersionId,
     intentStore,
     policy,
@@ -339,22 +317,8 @@ function buildDeps(
     cwd,
     sandbox: sandboxForEnvironment('workspace-write'),
     timeoutMs,
-    ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
-    ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
-    ...(Object.keys(planInfos).length > 0 ? { planInfos } : {}),
-    ...(capabilityRegistry !== undefined ? { capabilityRegistry } : {}),
-    ...(sleep !== undefined ? { sleep } : {}),
-    ...(memoryContext !== undefined && memoryContext.length > 0 ? { memoryContext } : {}),
-    ...(environmentContext !== undefined && environmentContext.length > 0
-      ? { environmentContext }
-      : {}),
-    ...(toolStateContext !== undefined && toolStateContext.length > 0
-      ? { toolStateContext }
-      : {}),
-    blockedStateV1: true,
-    evidenceReceiptV2: true,
+    ...sharedCore,
     receiptLedgerSnapshot: () => receiptLedgerEntries,
-    nativeSessionsPromote: true,
   };
 }
 
