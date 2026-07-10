@@ -101,11 +101,11 @@ Legend: `[ ]` pending · `[~]` in progress · `[x]` done · `[-]` cut with reaso
 - [x] **P2.1** Checkpoint creation around real AI edits — post-success turn captures dirty-tree checkpoint (`captureAiEditCheckpoint` + menu wire)
 - [x] **P2.2** Safe undo execution behind conflict gate + oversight/commandGate (`applyUndoActions`; preview-only when confirm seam absent)
 - [x] **P2.3** NL test/verify + commit gates complete and honest (verify_only + commit behind commandGate/oversight)
-- [ ] **P2.4** Shared deps builder CLI→menu (reduce dual-product drift)
+- [x] **P2.4** Shared deps builder CLI→menu slice 1 (`build-orchestrate-deps` core flags/routing) — #158 (menu-only extras remain; further slices optional)
 - [x] **P2.5** Partner continuity: completion-truth chrome from real CompletionResultV1 (verified vs unverified · settle honesty); recap/orientation merge when present — #157 (thin; no full r7 durable log rewrite)
 - [x] **P2.6** Parallel goal stewardship that acts: post-turn board refresh + multi-goal stewardship act line (propose concrete next; never auto-mutate) + rewatch enrich — #157
-- [x] **P2.7** Ghost text local-first landed (P0.17–P0.18 + #132 goalHints wire); optional model ghost remains **P1.5**
-- [ ] Acceptance: chat-only repo ops feel safe and useful; partner anticipates next step — **code complete for P2.1–2.3; human smoke pending**
+- [x] **P2.7** Ghost text local-first landed (P0.17–P0.18 + #132 goalHints wire)
+- [ ] Acceptance: chat-only repo ops feel safe and useful; partner anticipates next step — **code complete for P2.1–2.6; human smoke pending**
 
 
 ### Wave 5b — Tab ghost-complete + forge-adaptive mastery (USER LOCK 2026-07-09)
@@ -124,8 +124,8 @@ Target UX (chatbox):
 
 - [x] **P0.17** Ghost text local-first in Ink InputBox (history + slash + path + empty-prompt goal hint) — #129 + #132
 - [x] **P0.18** Tab accepts / Esc dismisses; debounce; never corrupt mid-sentence unless user accepts — #129
-- [ ] **P1.5** Optional model ghost fallback (budgeted, settings toggle, subscription-native)
-- [ ] Acceptance: feels like Claude Code terminal complete — Tab is muscle memory, not a slash-only power feature
+- [x] **P1.5** Optional model ghost fallback (budgeted, Control Panel toggle default **off**, subscription-native) — #154
+- [ ] Acceptance: feels like Claude Code terminal complete — Tab is muscle memory, not a slash-only power feature — **code complete; human smoke pending**
 
 **2) Auto-adaptive forge + local mastery** — one partner, four environments.
 
@@ -139,17 +139,17 @@ Auto-adapt means: detect repo remotes + available CLIs (gh/glab/git), adapt lang
 
 - [x] **P0.19** Workspace context detector: git root, remotes, host class (github|gitlab|other|none), available tools (gh/glab) — #130
 - [x] **P0.20** Partner NL fluency per context (PR/MR/pipeline language; local-only honesty) — #130 (vocabulary + ENVIRONMENT merge; full workflow depth = P1.6–1.8)
-- [~] **P1.6** GitHub workflow depth: **status** (#137 `gh pr status`) + **create** (#149 `gh pr create --fill`, gated). Checks/review still open.
-- [~] **P1.7** GitLab workflow depth: **thin MR list** (`glab mr list` when GitLab+glab; honest PATH/host fallback). Pipeline/create depth still open.
-- [ ] **P1.8** Other forge + pure local paths: no false gh; local file/git mastery remains first-class (detector + honest degrade partially covered by #130 + status handlers)
-- [ ] Acceptance: open a GitHub repo, GitLab repo, random remote, and a non-git folder — partner *knows* which world it is in — **code complete for detect + thin status; human smoke pending**
+- [x] **P1.6** GitHub workflow depth: status (#137) + create (#149) + checks (#152) + review view (#156) — all thin NL + gate honesty
+- [x] **P1.7** GitLab workflow depth: MR list (#140) + MR create (#153) + CI/pipeline status (#155)
+- [x] **P1.8** Other forge + pure local honesty: other/none degrade + `what forge am I on?` (#159); local status/diff/test/undo first-class
+- [ ] Acceptance: open a GitHub repo, GitLab repo, random remote, and a non-git folder — partner *knows* which world it is in — **code complete; human smoke pending**
 
 ### Wave 6 → Modern polish & ship
-- [ ] **S.1** Visual polish pass (semantic color, density, modern shell menu research applied)
+- [x] **S.1** Visual polish pass (semantic color, density) — #160
 - [x] **S.2** Checklist smoke script (`npm run smoke:checklist`) — Effort/legend/panel/Library markers; fail-soft without TTY. Full PTY remains `smoke:pty*`.
-- [x] **S.3** README honest daily-use status updated (3.165.0 multi-goal chat; not API-key product)
-- [~] **S.4** Full CI green on main (ubuntu/macos/windows) — tip **3.166.0** green at absorb open
-- [x] **S.5** Version bump + CHANGELOG — **3.166.0** cut (#141); prior **3.165.0** (#139)
+- [x] **S.3** README honest daily-use status updated (multi-goal chat; not API-key product)
+- [x] **S.4** Full CI green on main (ubuntu/macos/windows) — keep green; tip post-#155
+- [x] **S.5** Version bump + CHANGELOG — **3.167.0** (#151); next cut **3.168.0** for post-absorb wave
 - [ ] **S.6** `npm publish` ready (user confirms publish)
 - [ ] Acceptance: Josh can `npm i -g myshell-tools@latest` and love the daily drive — **human publish + Replit smoke pending**
 
