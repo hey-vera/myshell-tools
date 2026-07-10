@@ -1064,12 +1064,39 @@ describe('ui reduce — final', () => {
     assert.deepEqual(lines(s), ['✓ done', receipt]);
   });
 
+  it('appends completion-truth chrome after routing receipt when present', () => {
+    const receipt = 'claude \u00b7 opus';
+    const truth = 'check: unverified · answered · not settled (answered)';
+    const s = reduce(
+      initialState,
+      finalAction({ routingReceipt: receipt, completionTruth: truth }),
+    );
+    assert.deepEqual(lines(s), ['✓ done', receipt, truth]);
+  });
+
+  it('appends completion-truth alone when no routing receipt', () => {
+    const truth = 'check: verified · done · settled (verified)';
+    const s = reduce(initialState, finalAction({ completionTruth: truth }));
+    assert.deepEqual(lines(s), ['✓ done', truth]);
+  });
+
   it('suppresses routing receipt in quiet mode', () => {
     const s = reduce(
       initialState,
       finalAction({
         verbosity: 'quiet',
         routingReceipt: 'claude \u00b7 opus',
+      }),
+    );
+    assert.deepEqual(lines(s), []);
+  });
+
+  it('suppresses completion-truth chrome in quiet mode', () => {
+    const s = reduce(
+      initialState,
+      finalAction({
+        verbosity: 'quiet',
+        completionTruth: 'check: unverified · answered',
       }),
     );
     assert.deepEqual(lines(s), []);
@@ -1485,6 +1512,96 @@ describe('coreEventToActions — mapping fidelity', () => {
       (a as Extract<Action, { type: 'turn/final' }>).routingReceipt,
       receipt,
     );
+  });
+
+  it('maps final.completionResult onto turn/final.completionTruth when present', () => {
+    const [a] = coreEventToActions(
+      {
+        type: 'final',
+        success: true,
+        output: 'ok',
+        tier: 'ic',
+        totalCostUsd: 0,
+        sessionId: 'S',
+        attempts: 1,
+        completionResult: {
+          version: 1,
+          id: 'cr-1',
+          turnId: 't1',
+          sessionId: 'S',
+          createdAt: '2026-07-10T00:00:00.000Z',
+          scope: 'conversation',
+          terminal: 'answered',
+          objective: 'task',
+          doneCondition: null,
+          output: 'ok',
+          success: true,
+          bestEffort: true,
+          verification: {
+            status: 'unverified',
+            testEvidence: { status: 'not-needed' },
+            repair: {
+              attempted: false,
+              attempts: 0,
+              maxAttempts: 1,
+              retestedAfterLastRepair: false,
+              finalAttemptChangedPaths: [],
+            },
+            factualClaims: [],
+            obligationsSatisfied: [],
+            obligationsUnmet: [],
+            ruleCodes: ['not-applicable'],
+          },
+          deliveryQuality: {
+            status: 'passed',
+            checked: true,
+            issues: [],
+            nextActionNamed: false,
+            userVisibleSummary: 'ok',
+          },
+          worktree: {
+            baseline: 'unknown',
+            baselineEntries: [],
+            changedByAssistant: [],
+            excludedPreExisting: [],
+            concurrentUserEdits: [],
+            conflictPaths: [],
+          },
+          goalSettlement: {
+            allowed: false,
+            state: 'none',
+            reason: 'answered',
+          },
+          replayPolicy: {
+            replay: 'repair-only',
+            reason: 'done-requires-check',
+          },
+          receipt: { lines: [] },
+          upstream: {},
+        },
+      },
+      'normal',
+    );
+    const truth = (a as Extract<Action, { type: 'turn/final' }>).completionTruth;
+    assert.ok(typeof truth === 'string' && truth.length > 0);
+    assert.match(truth, /check: unverified/);
+    assert.match(truth, /answered/);
+  });
+
+  it('omits completionTruth on turn/final when completionResult absent', () => {
+    const [a] = coreEventToActions(
+      {
+        type: 'final',
+        success: true,
+        output: 'ok',
+        tier: 'ic',
+        totalCostUsd: 0,
+        sessionId: 'S',
+        attempts: 1,
+      },
+      'normal',
+    );
+    assert.ok(!('completionTruth' in (a as object)));
   });
 
   it('omits routingReceipt on turn/final when absent or empty', () => {

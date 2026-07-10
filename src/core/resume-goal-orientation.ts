@@ -1,7 +1,8 @@
 /**
  * src/core/resume-goal-orientation.ts — pure partner orientation for parked /
  * inactive goals on conversation resume (P0.16) + standing rewatch context
- * inject for the first model turn (PR-E goal rewatch+).
+ * inject for the first model turn (PR-E goal rewatch+) + P2.6 stewardship act
+ * proposals (concrete next step; never silent museum; never auto-mutates).
  *
  * On resume the chat already shows a ※ recap of *where the thread was*. This
  * helper adds a brief natural line about *open goals the partner should engage*
@@ -12,6 +13,10 @@
  * Standing rewatch+: the same selection also shapes a short SYSTEM/context
  * block ({@link buildGoalRewatchContext}) so the *model* sees parked/blocked
  * goals on the first turn after open — not only a one-shot dim user line.
+ *
+ * Stewardship act (P2.6): {@link buildGoalStewardshipActLine} proposes a
+ * concrete next step after turn-end or on multi-goal rewatch. Propose only —
+ * do NOT auto-mutate goals without gates.
  *
  * Distinct from Goal Steward (flag-gated interactive audit with a 30-day stale
  * window): this is always-available orientation for any live parked/inactive
@@ -242,6 +247,15 @@ export function buildGoalRewatchContext(
     const line = buildResumeGoalOrientation(goals, scope);
     if (line === null) return null;
     const block = `${GOAL_REWATCH_CONTEXT_HEADER}\n${line}`;
+    // P2.6: when multiple goals need attention, fold a concrete stewardship act
+    // line so the model can pick one to act on (not a silent multi-goal museum).
+    // Single-goal rewatch already carries next-step + resume/drop/adjust.
+    const proposals = selectGoalStewardshipActProposals(goals, scope);
+    if (proposals.length >= 2) {
+      const act = buildGoalStewardshipActLine(goals, scope);
+      const withAct = mergeStewardshipActIntoRewatch(block, act);
+      if (withAct !== null && withAct.trim().length > 0) return withAct;
+    }
     return block.trim().length > 0 ? block : null;
   } catch {
     return null;
@@ -267,4 +281,169 @@ export function mergeGoalRewatchIntoContext(
   } catch {
     return typeof planContext === 'string' ? planContext : '';
   }
+}
+
+// ---------------------------------------------------------------------------
+// P2.6 — Parallel goal stewardship that acts (propose, never silent museum)
+// ---------------------------------------------------------------------------
+
+/** Hard cap so a post-turn stewardship line stays orientation-sized. */
+export const GOAL_STEWARDSHIP_ACT_MAX_CHARS = 240;
+
+/** How many goals to name in a multi-goal stewardship line. */
+const STEWARD_NAME_CAP = 2;
+
+/**
+ * Risk band for a stewardship proposal. `low` = parked/queued with a clear
+ * next step (partner may propose acting). `needs-user` = blocked or unclear
+ * (partner proposes unblock/review only). Never auto-mutates goals.
+ */
+export type GoalStewardshipRisk = 'low' | 'needs-user';
+
+/** One concrete next-step proposal for an open goal. PURE data only. */
+export interface GoalStewardshipActProposal {
+  readonly goalId: string;
+  readonly title: string;
+  readonly state: GoalState;
+  readonly nextAction: string | undefined;
+  readonly risk: GoalStewardshipRisk;
+}
+
+/**
+ * Build act-proposals for in-scope partner goals that need attention.
+ * PURE: never mutates goals; never invents next steps (only real roadmap text).
+ *
+ * - parked/queued with a clear next step → low risk (propose "say go" / act)
+ * - blocked → needs-user (propose unblock)
+ * - running without a next step still surfaces (keep going / adjust)
+ * - terminal goals excluded via {@link selectResumePartnerGoals}
+ */
+export function selectGoalStewardshipActProposals(
+  goals: readonly Goal[],
+  scope: ResumeGoalOrientationScope,
+): GoalStewardshipActProposal[] {
+  try {
+    const selected = selectResumePartnerGoals(goals, scope);
+    const out: GoalStewardshipActProposal[] = [];
+    for (const g of selected) {
+      const next = nextStepText(g);
+      const risk: GoalStewardshipRisk =
+        g.state === 'blocked' || next === undefined ? 'needs-user' : 'low';
+      // Running without a next still has a clear keep-going posture → low if
+      // we have any next step; otherwise needs-user (ask what's next).
+      const runningRisk: GoalStewardshipRisk =
+        g.state === 'running' && next === undefined ? 'needs-user' : risk;
+      out.push({
+        goalId: g.id,
+        title: g.title,
+        state: g.state,
+        nextAction: next,
+        risk: g.state === 'running' ? runningRisk : risk,
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * One user-facing stewardship line that proposes a concrete next step (or
+ * multi-goal attention), or `null` when nothing to steward. NEVER mutates
+ * goals — only shapes caller-supplied store snapshots. Pure; never throws.
+ *
+ * Prefer emitting after a successful turn when ≥1 open goals need attention,
+ * and folding into rewatch context so the partner is not a silent museum.
+ */
+export function buildGoalStewardshipActLine(
+  goals: readonly Goal[],
+  scope: ResumeGoalOrientationScope,
+): string | null {
+  try {
+    const proposals = selectGoalStewardshipActProposals(goals, scope);
+    const first = proposals[0];
+    if (first === undefined) return null;
+    const body =
+      proposals.length === 1
+        ? formatOneStewardshipAct(first)
+        : formatManyStewardshipActs(proposals);
+    const capped = capStewardship(body);
+    return capped.length > 0 ? capped : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Enrich a rewatch context block with a concrete stewardship act line when
+ * present. Pure; never invents; leaves rewatch unchanged when act is null.
+ */
+export function mergeStewardshipActIntoRewatch(
+  rewatchContext: string | null | undefined,
+  actLine: string | null | undefined,
+): string | null {
+  try {
+    const rewatch =
+      typeof rewatchContext === 'string' ? rewatchContext.trim() : '';
+    const act = typeof actLine === 'string' ? actLine.trim() : '';
+    if (rewatch.length === 0 && act.length === 0) return null;
+    if (act.length === 0) return rewatch.length > 0 ? rewatch : null;
+    if (rewatch.length === 0) {
+      return `${GOAL_REWATCH_CONTEXT_HEADER}\n${act}`;
+    }
+    // Avoid duplicating when rewatch body already carries the same next text.
+    if (rewatch.includes(act)) return rewatch;
+    return `${rewatch}\nSteward next: ${act}`;
+  } catch {
+    return typeof rewatchContext === 'string' ? rewatchContext : null;
+  }
+}
+
+function formatOneStewardshipAct(p: GoalStewardshipActProposal): string {
+  const title = quoteTitle(p.title);
+  if (p.state === 'blocked') {
+    const need =
+      p.nextAction !== undefined
+        ? ` — needs: ${shortNext(p.nextAction)}`
+        : ' — needs input';
+    return `Steward: blocked ${title}${need}. Unblock or adjust — not auto-acting.`;
+  }
+  if (p.nextAction !== undefined) {
+    const verb =
+      p.state === 'running'
+        ? 'Keep going'
+        : p.state === 'queued'
+          ? 'Start'
+          : 'Say go to resume';
+    return `Steward: ${stateLabel(p.state)} ${title} — next: ${shortNext(p.nextAction)}. ${verb}, drop, or adjust.`;
+  }
+  return `Steward: ${stateLabel(p.state)} ${title}. Say what's next, drop, or adjust.`;
+}
+
+function formatManyStewardshipActs(
+  proposals: readonly GoalStewardshipActProposal[],
+): string {
+  const named = proposals.slice(0, STEWARD_NAME_CAP);
+  const rest = proposals.length - named.length;
+  const bits = named.map((p) => {
+    const head = `${stateLabel(p.state)} ${quoteTitle(p.title)}`;
+    return p.nextAction !== undefined
+      ? `${head} (next: ${shortNext(p.nextAction)})`
+      : head;
+  });
+  let list = bits.join('; ');
+  if (rest > 0) list += `; +${String(rest)} more`;
+  const n = proposals.length;
+  const lowCount = proposals.filter((p) => p.risk === 'low').length;
+  const actHint =
+    lowCount > 0
+      ? 'Pick one to act on (say go / resume), drop, or adjust'
+      : 'Unblock, drop, or adjust';
+  return `Steward: ${String(n)} goals need attention — ${list}. ${actHint}.`;
+}
+
+function capStewardship(text: string): string {
+  const s = text.replace(/\s+/g, ' ').trim();
+  if (s.length <= GOAL_STEWARDSHIP_ACT_MAX_CHARS) return s;
+  return `${s.slice(0, GOAL_STEWARDSHIP_ACT_MAX_CHARS - 1).trimEnd()}…`;
 }

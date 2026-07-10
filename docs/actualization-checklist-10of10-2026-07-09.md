@@ -102,8 +102,8 @@ Legend: `[ ]` pending · `[~]` in progress · `[x]` done · `[-]` cut with reaso
 - [x] **P2.2** Safe undo execution behind conflict gate + oversight/commandGate (`applyUndoActions`; preview-only when confirm seam absent)
 - [x] **P2.3** NL test/verify + commit gates complete and honest (verify_only + commit behind commandGate/oversight)
 - [ ] **P2.4** Shared deps builder CLI→menu (reduce dual-product drift)
-- [ ] **P2.5** Partner continuity: durable context / completion truth promoted only when real
-- [ ] **P2.6** Parallel goal stewardship that acts (not just lists)
+- [x] **P2.5** Partner continuity: completion-truth chrome from real CompletionResultV1 (verified vs unverified · settle honesty); recap/orientation merge when present — #157 (thin; no full r7 durable log rewrite)
+- [x] **P2.6** Parallel goal stewardship that acts: post-turn board refresh + multi-goal stewardship act line (propose concrete next; never auto-mutate) + rewatch enrich — #157
 - [x] **P2.7** Ghost text local-first landed (P0.17–P0.18 + #132 goalHints wire); optional model ghost remains **P1.5**
 - [ ] Acceptance: chat-only repo ops feel safe and useful; partner anticipates next step — **code complete for P2.1–2.3; human smoke pending**
 
