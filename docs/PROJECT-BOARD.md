@@ -1,6 +1,6 @@
 # myshell-tools — Active project board (orchestrator)
 
-Last updated: 2026-07-10 (release **3.167.0** — Wave 7 absorb + thin forge create)
+Last updated: 2026-07-10 (release **3.167.0** — Wave 7 absorb + thin forge create; #150 board sync)
 
 ## North star
 One subscription-native chat to rule them all. Elite partner. Not API-key product.
@@ -40,9 +40,10 @@ myshell-tools is **not** Claude Projects and must not become a "create project /
 | #146 | **W7.5** Goal rewatch+ (first-turn context) |
 | #147 | **W7.4** Done=check binding |
 | #148 | Docs: Wave 7 absorb complete on board/checklist |
-| #149 | Thin GitHub PR create via NL when `gh` available |
+| #149 | **P1.6** thin GitHub PR create (`gh pr create --fill`, gated) |
+| #150 | Docs: note PR create on P1.6 partial progress |
 
-Main tip includes #149. Package version **3.167.0**.
+Package version **3.167.0** (this cut: Wave 7 absorb + #149 create; #150 docs).
 
 ## Checklist honesty (2026-07-10)
 
@@ -50,20 +51,23 @@ Main tip includes #149. Package version **3.167.0**.
 |------|--------|-------|
 | Wave 0–4 code | **done** | Human acceptance smokes still open |
 | P2.1–2.3, P2.7 | **done** | Checkpoint/undo/verify; local ghost |
-| P1.6 GitHub depth | **partial** | status NL #137; thin create #149; review still open |
+| P1.6 GitHub depth | **partial** | status #137 + create #149; checks/review open |
 | P1.7 GitLab depth | **partial** | thin `glab mr list` #140 |
 | Wave 7 absorb | **code done** | #142–#147; human smoke pending |
-| S.5 Version | **3.167.0** | cut includes Wave 7 + #149 |
+| S.5 Version | **3.167.0** | cut includes Wave 7 + #149 (+ #150 docs) |
 | S.6 npm publish | **open** | npm `@latest` still older — user only |
 | Acceptance smokes | **open** | Replit/local — code complete ≠ accepted |
 
 ## Open / in flight
-(none — release cut pending merge)
+| Track | Notes |
+|-------|--------|
+| #152 forge PR checks | thin `gh pr checks` NL — open, not in this cut |
+| release 3.167.0 | this PR — merge then human smoke + publish |
 
 ## Next (priority)
 1. **User smoke** post-**3.167.0** (Effort, Shift+Tab, legend/panel, goals+recap, resume rewatch, routing receipt line, Tab ghost, forge/`gh` PR status+create / `glab` MR list, undo, Accounts weight copy, partner laws behavior, lag recovery)
 2. **`npm publish`** (user) for **3.167.0**
-3. **P1.6** remaining GitHub depth: review / richer PR workflows
+3. **P1.6** thin `gh pr checks` (#152 if/when green) + review / richer PR workflows
 4. **P1.7–1.8** GitLab pipelines / other-forge honesty polish
 5. **P1.5** optional budgeted model ghost (toggle; fail-soft)
 6. **P2.4** shared deps builder CLI→menu (only with tight contract — large seam)
