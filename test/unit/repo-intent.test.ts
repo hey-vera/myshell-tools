@@ -79,6 +79,17 @@ const cases: ReadonlyArray<readonly [string, ReturnType<typeof inferRepoIntent>[
   ['show me the checks', 'github_pr_checks'],
   ['how are the checks', 'github_pr_checks'],
   ['status of the checks', 'github_pr_checks'],
+  // P1.6 thin extension — GitHub PR review (must not steal status / checks / create)
+  ['pr review', 'github_pr_review'],
+  ['pull request review', 'github_pr_review'],
+  ['show reviews', 'github_pr_review'],
+  ['show me the reviews', 'github_pr_review'],
+  ['review comments', 'github_pr_review'],
+  ['pr feedback', 'github_pr_review'],
+  ['github reviews', 'github_pr_review'],
+  ['pr comments', 'github_pr_review'],
+  ['feedback on the pr', 'github_pr_review'],
+  ['gh pr view comments', 'github_pr_review'],
   // P1.6 thin extension — GitHub PR create (must not steal "pr status")
   ['create a pr', 'github_pr_create'],
   ['create a pull request', 'github_pr_create'],
@@ -127,6 +138,8 @@ describe('inferRepoIntent', () => {
     assert.equal(inferRepoIntent('mr status').mutatesWorkspace, false);
     assert.equal(inferRepoIntent('pr checks').mutatesWorkspace, false);
     assert.equal(inferRepoIntent('ci status').mutatesWorkspace, false);
+    assert.equal(inferRepoIntent('pr review').mutatesWorkspace, false);
+    assert.equal(inferRepoIntent('review comments').mutatesWorkspace, false);
   });
 
   it('extracts constraints from natural language steering', () => {
