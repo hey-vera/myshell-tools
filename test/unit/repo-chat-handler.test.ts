@@ -5,6 +5,7 @@ import type { CommandGateDecision, CommandGatePort } from '../../src/core/comman
 import {
   githubPrChecksUnavailableMessage,
   githubPrCreateUnavailableMessage,
+  githubPrReviewUnavailableMessage,
   githubPrStatusUnavailableMessage,
   gitlabMrCreateUnavailableMessage,
   handleRepoChatIntent,
@@ -748,6 +749,166 @@ describe('handleRepoChatIntent', () => {
         tools: { gh: false, glab: true },
       }),
     ).toMatch(/glab ci|pipeline/i);
+  });
+
+  // -------------------------------------------------------------------------
+  // P1.6 thin extension — GitHub PR review via NL ("pr review" / "review comments")
+  // -------------------------------------------------------------------------
+
+  it('github_pr_review: runs gh pr view --comments when host is GitHub and gh is available', async () => {
+    const ghCalls: Array<{ args: readonly string[]; cwd: string }> = [];
+    const result = await handleRepoChatIntent('pr review', deps({
+      forgeContext: githubForge,
+      async runGh(args, cwd) {
+        ghCalls.push({ args, cwd });
+        return {
+          ok: true,
+          stdout: 'author: alice\n  Looks good overall\n\n--\nreviewer: bob\n  Please fix the edge case',
+          stderr: '',
+          exitCode: 0,
+        };
+      },
+      commandGate: {
+        gate: (): CommandGateDecision => ({
+          allowed: true,
+          requireConfirmation: false,
+          commandTier: 'read-only',
+          forbidBackground: false,
+          mustRecord: false,
+          rationale: '',
+        }),
+      } as CommandGatePort,
+    }));
+
+    expect(result?.operation).toBe('github_pr_review');
+    expect(result?.mutatesWorkspace).toBe(false);
+    expect(result?.message).toContain('GitHub PR review');
+    expect(result?.message).toMatch(/read-only/i);
+    expect(result?.message).toContain('edge case');
+    expect(ghCalls).toEqual([{ args: ['pr', 'view', '--comments'], cwd: '/repo' }]);
+  });
+
+  it('github_pr_review: honest message when gh is missing on GitHub host (no theater)', async () => {
+    const ghCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('review comments', deps({
+      forgeContext: {
+        ...githubForge,
+        tools: { gh: false, glab: false },
+      },
+      async runGh(args, cwd) {
+        ghCalls.push({ args, cwd });
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(result?.operation).toBe('github_pr_review');
+    expect(result?.message).toMatch(/gh.*not on PATH/i);
+    expect(ghCalls).toEqual([]);
+  });
+
+  it('github_pr_review on GitLab: suggests glab mr view language (no fake gh)', async () => {
+    const ghCalls: unknown[] = [];
+    const glabCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('show reviews', deps({
+      forgeContext: {
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
+        hostClass: 'gitlab',
+        primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+        tools: { gh: true, glab: true },
+      },
+      async runGh() {
+        ghCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+      async runGlab() {
+        glabCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(result?.operation).toBe('github_pr_review');
+    expect(result?.message).toMatch(/GitLab/i);
+    expect(result?.message).toMatch(/glab mr view/i);
+    expect(result?.message).not.toMatch(/GitHub PR review \(via gh/);
+    expect(ghCalls).toEqual([]);
+    expect(glabCalls).toEqual([]);
+  });
+
+  it('github_pr_review: honest message for local-only / no remote', async () => {
+    const result = await handleRepoChatIntent('pr feedback', deps({
+      forgeContext: {
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [],
+        hostClass: 'none',
+        primaryRemoteUrl: null,
+        tools: { gh: false, glab: false },
+      },
+    }));
+
+    expect(result?.message).toMatch(/Local-only|no remote/i);
+  });
+
+  it('github_pr_review: surfaces gh failure honestly', async () => {
+    const result = await handleRepoChatIntent('github reviews', deps({
+      forgeContext: githubForge,
+      async runGh() {
+        return {
+          ok: false,
+          stdout: '',
+          stderr: 'no pull requests found for branch "main"',
+          exitCode: 1,
+        };
+      },
+    }));
+
+    expect(result?.message).toContain('gh pr view --comments failed');
+    expect(result?.message).toMatch(/no pull requests/i);
+  });
+
+  it('github_pr_review: gate deny does not run gh', async () => {
+    const ghCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('pr review', deps({
+      forgeContext: githubForge,
+      async runGh() {
+        ghCalls.push(1);
+        return { ok: true, stdout: 'ok', stderr: '', exitCode: 0 };
+      },
+      commandGate: {
+        gate: (): CommandGateDecision => ({
+          allowed: false,
+          requireConfirmation: false,
+          commandTier: 'read-only',
+          forbidBackground: false,
+          mustRecord: false,
+          rationale: 'denied in test',
+        }),
+      } as CommandGatePort,
+    }));
+
+    expect(result?.message).toMatch(/denied/i);
+    expect(ghCalls).toEqual([]);
+  });
+
+  it('githubPrReviewUnavailableMessage: null only when GitHub + gh', () => {
+    expect(githubPrReviewUnavailableMessage(githubForge)).toBeNull();
+    expect(
+      githubPrReviewUnavailableMessage({
+        ...githubForge,
+        tools: { gh: false, glab: false },
+      }),
+    ).toMatch(/not on PATH/i);
+    expect(
+      githubPrReviewUnavailableMessage({
+        ...githubForge,
+        hostClass: 'gitlab',
+        primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+        remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
+        tools: { gh: false, glab: true },
+      }),
+    ).toMatch(/glab mr view/i);
   });
 
   // -------------------------------------------------------------------------
