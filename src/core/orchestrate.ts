@@ -87,7 +87,7 @@ import {
 import { autoModeForPlanInfos, type PlanInfo } from './policy.js';
 import { pressureFromSignals, preflightAdmits } from './capability-budget.js';
 import { ENVIRONMENT_BLOCK_CHAR_CAP } from './repo-map.js';
-import { attachTerminalCompletionIfFlag } from './accept-stage.js';
+import { attachTerminalCompletionIfFlag, resolveDoneConditionText } from './accept-stage.js';
 import { buildRetrievalContext, buildWebContext } from './research.js';
 import { collectLocalEvidence, collectWebEvidence } from './research.js';
 import {
@@ -1465,8 +1465,22 @@ export async function* orchestrate(
         }
       : depsArg;
 
-  const depsWithIntent =
+  // Done=check binding: surface preflight doneCondition (semantic preferred,
+  // legacy intent.doneWhen fallback) onto deps so CompletionResultV1 can fill
+  // doneCondition instead of the null skeleton. Does not promote settlement.
+  const completionDoneCondition = resolveDoneConditionText({
+    ...(semanticPreflightForEvidence !== undefined
+      ? { semanticDone: semanticPreflightForEvidence.doneCondition }
+      : {}),
+    ...(intentFrame?.doneWhen !== undefined ? { doneWhen: intentFrame.doneWhen } : {}),
+  });
+
+  const depsWithIntentBase =
     turnIntentVersionId !== undefined ? { ...deps, intentVersionId: turnIntentVersionId } : deps;
+  const depsWithIntent: OrchestrateDeps =
+    completionDoneCondition !== null
+      ? { ...depsWithIntentBase, completionDoneCondition }
+      : depsWithIntentBase;
 
   // When the intent store is on, link the turn's intentVersionId onto every
   // contract produced this turn — goals, work-contracts, and review contracts.

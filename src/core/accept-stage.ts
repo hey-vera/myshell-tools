@@ -4,8 +4,20 @@ import { memoryProposalFor } from './orchestrate-memory.js';
 import type { CoreEvent, OrchestrateDeps, Tier } from './types.js';
 import { buildVerifyReceipt, type VerifyLevel, type VerifyOutcome, type VerifyPort } from './verify.js';
 import { buildSnapshotFromVerify, type EvidenceSnapshotV2 } from './evidence.js';
-import type { CompletionResultV1, CompletionTerminal, DeliveryQualityResult, CompletionWorktreeState, CompletionVerification, CompletionTestEvidence, CompletionRepairEvidence, DeliveryQualityIssue } from './types.js';
+import type {
+  CompletionResultV1,
+  CompletionTerminal,
+  DeliveryQualityResult,
+  CompletionWorktreeState,
+  CompletionVerification,
+  CompletionTestEvidence,
+  CompletionRepairEvidence,
+  DeliveryQualityIssue,
+  CompletionGoalSettlement,
+  CompletionEvidenceStatus,
+} from './types.js';
 import type { RankedRepoFile } from './repo-map.js';
+import type { SemanticDoneCondition } from './semantic-preflight.js';
 import {
   composeTrustReceipt,
   trustReceiptLines,
@@ -492,6 +504,130 @@ function buildCompletionRepairEvidence(): CompletionRepairEvidence {
   return { attempted: false, attempts: 0, maxAttempts: 1, retestedAfterLastRepair: false, finalAttemptChangedPaths: [] };
 }
 
+// ---------------------------------------------------------------------------
+// Done = check (PR-D): pure helpers
+// Terminal/goal done cannot be promoted from model confidence or "looks good".
+// Settlement requires verify/receipt truth; doneCondition is bound from preflight
+// when present, never invented.
+// ---------------------------------------------------------------------------
+
+/** Contract cap for CompletionResultV1.doneCondition (r7-item17 §3). */
+export const DONE_CONDITION_LIMIT = 200;
+
+/**
+ * Bind CompletionResultV1.doneCondition from semantic preflight (preferred) or a
+ * plain doneWhen/doneCondition string. Only nonblank text binds; unknown/absent →
+ * null. Pure; never invents a condition.
+ */
+export function resolveDoneConditionText(input: {
+  readonly semanticDone?: SemanticDoneCondition | null;
+  readonly text?: string | null;
+  readonly doneWhen?: string | null;
+}): string | null {
+  // Prefer semantic specified text; unknown falls through to text/doneWhen.
+  // Never invents a condition when nothing is specified.
+  if (input.semanticDone !== undefined && input.semanticDone !== null) {
+    if (input.semanticDone.status === 'specified') {
+      const t = input.semanticDone.text.trim();
+      if (t.length > 0) {
+        return t.length > DONE_CONDITION_LIMIT ? t.slice(0, DONE_CONDITION_LIMIT) : t;
+      }
+    }
+  }
+  const raw = input.text ?? input.doneWhen;
+  if (raw === undefined || raw === null) return null;
+  const t = raw.trim();
+  if (t.length === 0) return null;
+  return t.length > DONE_CONDITION_LIMIT ? t.slice(0, DONE_CONDITION_LIMIT) : t;
+}
+
+/**
+ * Map a real VerifyOutcome to CompletionEvidenceStatus. Critic-only approve is
+ * `reviewed`, never `verified` (tests alone earn verified).
+ */
+export function verificationStatusFromOutcome(
+  verifyOutcome: VerifyOutcome | undefined,
+): CompletionEvidenceStatus {
+  if (verifyOutcome?.verified === 'passing') return 'verified';
+  if (verifyOutcome?.verified === 'failing') return 'failing';
+  if (verifyOutcome?.critic?.parsed === true) return 'reviewed';
+  if (verifyOutcome === undefined) return 'unverified';
+  return 'unverified';
+}
+
+/**
+ * Terminal earned from verification alone. Never promotes `done` without green tests.
+ */
+export function terminalEarnedFromVerify(
+  verifyOutcome: VerifyOutcome | undefined,
+): CompletionTerminal {
+  if (verifyOutcome?.verified === 'passing') return 'done';
+  if (verifyOutcome?.verified === 'failing') return 'failed';
+  return 'answered';
+}
+
+/**
+ * Resolve the completion terminal under the done=check law:
+ * - delivery failure → blocked
+ * - terminalOverride `'done'` is honored ONLY when verification earned `done`
+ * - other overrides (needs-user, cancelled, …) pass through
+ * Model confidence / "looks good" cannot force terminal done.
+ */
+export function resolveCompletionTerminal(params: {
+  readonly verifyOutcome?: VerifyOutcome;
+  readonly terminalOverride?: CompletionTerminal;
+  readonly deliveryFailed?: boolean;
+}): CompletionTerminal {
+  if (params.deliveryFailed === true) return 'blocked';
+  const earned = terminalEarnedFromVerify(params.verifyOutcome);
+  if (params.terminalOverride === undefined) return earned;
+  if (params.terminalOverride === 'done' && earned !== 'done') return earned;
+  return params.terminalOverride;
+}
+
+/**
+ * Goal settlement under done=check. `allowed` is true only when terminal is `done`
+ * AND evidence is verified (tests green) or reviewed (real critic), with no
+ * conflict paths. Model claim alone never settles.
+ */
+export function buildGoalSettlement(params: {
+  readonly terminal: CompletionTerminal;
+  readonly verificationStatus: CompletionEvidenceStatus;
+  readonly conflictPaths?: readonly string[];
+}): CompletionGoalSettlement {
+  const conflicts = (params.conflictPaths?.length ?? 0) > 0;
+  const evidenceOk =
+    params.verificationStatus === 'verified' ||
+    params.verificationStatus === 'reviewed';
+  const allowed = params.terminal === 'done' && evidenceOk && !conflicts;
+
+  let state: CompletionGoalSettlement['state'];
+  if (allowed) state = 'done';
+  else if (params.terminal === 'blocked') state = 'blocked';
+  else if (params.terminal === 'needs-user') state = 'needs-user';
+  else if (params.terminal === 'done' && !allowed) state = 'active';
+  else if (
+    params.terminal === 'answered' ||
+    params.terminal === 'failed' ||
+    params.terminal === 'cancelled'
+  ) {
+    state = 'none';
+  } else state = 'active';
+
+  let reason: string;
+  if (allowed) {
+    reason = params.verificationStatus === 'verified' ? 'verified' : 'reviewed';
+  } else if (params.terminal === 'done' && conflicts) {
+    reason = 'conflict-paths';
+  } else if (params.terminal === 'done' && !evidenceOk) {
+    reason = 'done-requires-check';
+  } else {
+    reason = params.terminal;
+  }
+
+  return { allowed, state, reason };
+}
+
 export function finalizeAcceptTurn(params: {
   deps: OrchestrateDeps;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -515,6 +651,9 @@ export function buildCompletionResultV1(params: {
   candidate: CandidateResult;
   verifyOutcome?: VerifyOutcome;
   terminalOverride?: CompletionTerminal;
+  /** Explicit doneCondition override (tests / rare callers). Prefer deps.completionDoneCondition. */
+  doneCondition?: string | null;
+  semanticDone?: SemanticDoneCondition | null;
 }): CompletionResultV1 {
   const { deps, candidate, verifyOutcome, terminalOverride } = params;
   const createdAt = deps.clock.isoNow();
@@ -524,8 +663,9 @@ export function buildCompletionResultV1(params: {
 
   const testEvidence = buildTestEvidence(verifyOutcome);
   const repair = buildCompletionRepairEvidence();
+  const verificationStatus = verificationStatusFromOutcome(verifyOutcome);
   const verification: CompletionVerification = {
-    status: verifyOutcome?.verified === 'passing' ? 'verified' : verifyOutcome?.verified === 'failing' ? 'failing' : verifyOutcome?.critic?.parsed ? 'reviewed' : 'unverified',
+    status: verificationStatus,
     ...(verifyOutcome ? { verifyOutcome } : {}),
     testEvidence,
     repair,
@@ -537,18 +677,42 @@ export function buildCompletionResultV1(params: {
 
   const delivery = evaluateDeliveryQualitySkeleton(candidate.content, verification);
 
-  let terminal: CompletionTerminal = terminalOverride ?? (verifyOutcome?.verified === 'passing' ? 'done' : verifyOutcome?.verified === 'failing' ? 'failed' : 'answered');
-  if (delivery.status === 'failed') terminal = 'blocked';
+  // Done=check: terminal `done` only when verification earns it (or delivery fails → blocked).
+  const terminal = resolveCompletionTerminal({
+    ...(verifyOutcome !== undefined ? { verifyOutcome } : {}),
+    ...(terminalOverride !== undefined ? { terminalOverride } : {}),
+    deliveryFailed: delivery.status === 'failed',
+  });
 
   const worktree = buildWorktreeFromVerify(verifyOutcome, { ranked: [], symbolSummary: [] });
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const goalSettlement = { allowed: terminal === 'done' && verification.status === 'verified', state: (terminal === 'done' ? 'done' : terminal === 'blocked' ? 'blocked' : 'active') as any, reason: terminal === 'done' ? 'verified' : 'skeleton' };
+  const goalSettlement = buildGoalSettlement({
+    terminal,
+    verificationStatus: verification.status,
+    conflictPaths: worktree.conflictPaths,
+  });
 
-  const replayPolicy = { replay: terminal === 'done' ? 'forbidden-already-settled' : 'repair-only', reason: 'skeleton from 17a' } as const;
+  // Replay forbids re-settlement only when settlement was actually allowed.
+  const replayPolicy = {
+    replay: goalSettlement.allowed ? 'forbidden-already-settled' as const : 'repair-only' as const,
+    reason: goalSettlement.allowed ? 'settled after verify' : 'done-requires-check',
+  };
 
   const receiptLines: string[] = [];
   if (verifyOutcome) receiptLines.push(`verify:${verifyOutcome.verified}`);
+  if (!goalSettlement.allowed && terminal === 'done') {
+    receiptLines.push('settle:denied-needs-check');
+  }
+
+  const doneCondition = resolveDoneConditionText({
+    ...(params.semanticDone !== undefined ? { semanticDone: params.semanticDone } : {}),
+    text:
+      params.doneCondition !== undefined
+        ? params.doneCondition
+        : deps.completionDoneCondition !== undefined
+          ? deps.completionDoneCondition
+          : null,
+  });
 
   return {
     version: 1,
@@ -559,7 +723,7 @@ export function buildCompletionResultV1(params: {
     scope: 'code-change',
     terminal,
     objective: (candidate.task || 'turn').slice(0, 120),
-    doneCondition: null,
+    doneCondition,
     output: candidate.content,
     success: terminal === 'done' || terminal === 'answered',
     bestEffort: verification.status !== 'verified' || delivery.status !== 'passed',
@@ -569,7 +733,10 @@ export function buildCompletionResultV1(params: {
     goalSettlement,
     replayPolicy,
     receipt: { lines: receiptLines },
-    upstream: {},
+    upstream: {
+      ...(deps.intentVersionId !== undefined ? { intentVersionId: deps.intentVersionId } : {}),
+      ...(doneCondition !== null ? { semanticPreflightVersion: 1 as const } : {}),
+    },
   };
 }
 
@@ -583,7 +750,6 @@ export function buildTerminalCompletionResultV1(params: {
   const { deps, final, task, terminal } = params;
   const createdAt = deps.clock.isoNow();
   const needsUser = terminal === 'cancelled' || terminal === 'needs-user';
-  const terminalSuccess = terminal === 'done' || terminal === 'answered' ? final.success : false;
   const verification: CompletionVerification = {
     status: terminal === 'failed' || terminal === 'blocked' ? 'failing' : 'not-applicable',
     testEvidence: { status: 'not-needed' },
@@ -598,6 +764,13 @@ export function buildTerminalCompletionResultV1(params: {
     ruleCodes: terminal === 'cancelled' ? ['cancelled'] : ['not-applicable'],
   };
   const delivery = evaluateDeliveryQualitySkeleton(final.output, verification);
+  // Terminal path never reaches verify — done=check demotes unearned `done` to
+  // `answered` and always forbids goal settlement.
+  const honestTerminal: CompletionTerminal =
+    terminal === 'done' ? 'answered' : terminal;
+  const doneCondition = resolveDoneConditionText({
+    text: deps.completionDoneCondition !== undefined ? deps.completionDoneCondition : null,
+  });
   return {
     version: 1,
     id: `cr-${deps.session.id.slice(0, 20)}-terminal-${final.attempts}`.slice(0, 63),
@@ -605,12 +778,13 @@ export function buildTerminalCompletionResultV1(params: {
     sessionId: deps.session.id,
     createdAt,
     scope: 'conversation',
-    terminal,
+    terminal: honestTerminal,
     objective: task.slice(0, 120),
-    doneCondition: null,
+    doneCondition,
     output: final.output,
-    success: terminalSuccess,
-    bestEffort: terminalSuccess !== true || verification.status !== 'verified' || delivery.status !== 'passed',
+    // After demotion, `done` is never honest on this path — only `answered` may succeed.
+    success: honestTerminal === 'answered' ? final.success : false,
+    bestEffort: true,
     verification,
     deliveryQuality: delivery,
     worktree: {
@@ -621,17 +795,26 @@ export function buildTerminalCompletionResultV1(params: {
       concurrentUserEdits: [],
       conflictPaths: [],
     },
-    goalSettlement: { allowed: false, state: needsUser ? 'needs-user' : 'none', reason: terminal },
+    goalSettlement: {
+      allowed: false,
+      state: needsUser ? 'needs-user' : 'none',
+      reason: terminal === 'done' ? 'done-requires-check' : terminal,
+    },
     replayPolicy: {
       replay: needsUser ? 'needs-user' : 'unknown',
       reason: terminal === 'cancelled'
         ? 'user cancelled before settlement'
         : terminal === 'needs-user'
           ? 'waiting for user answer before execution'
-          : 'terminal path did not reach provider execution',
+          : terminal === 'done'
+            ? 'done-requires-check: terminal path has no verify evidence'
+            : 'terminal path did not reach provider execution',
     },
     receipt: { lines: [] },
-    upstream: {},
+    upstream: {
+      ...(deps.intentVersionId !== undefined ? { intentVersionId: deps.intentVersionId } : {}),
+      ...(doneCondition !== null ? { semanticPreflightVersion: 1 as const } : {}),
+    },
   };
 }
 

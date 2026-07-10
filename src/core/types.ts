@@ -382,6 +382,13 @@ export interface OrchestrateDeps {
    */
   readonly completionResultV1?: boolean;
   /**
+   * Optional preflight done-condition text bound into CompletionResultV1.doneCondition
+   * (done=check binding). Orchestrate sets this when semantic preflight specifies a
+   * doneCondition (or legacy intent.doneWhen is present). Absent/null → completion
+   * keeps doneCondition null — never invents a condition. Does not promote settlement.
+   */
+  readonly completionDoneCondition?: string | null;
+  /**
    * Captures this turn's ledger entries so the
    * receipt can report cache-adjusted cost and aux-call breakdown without
    * reading files or racing concurrent sessions.
