@@ -8,6 +8,7 @@ import {
   githubPrCreateUnavailableMessage,
   githubPrReviewUnavailableMessage,
   githubPrStatusUnavailableMessage,
+  gitlabCiStatusUnavailableMessage,
   gitlabMrCreateUnavailableMessage,
   gitlabMrStatusUnavailableMessage,
   handleRepoChatIntent,
@@ -649,9 +650,9 @@ describe('handleRepoChatIntent', () => {
     expect(ghCalls).toEqual([]);
   });
 
-  it('github_pr_checks on GitLab: suggests glab pipeline language (no fake gh)', async () => {
+  it('github_pr_checks on GitLab+glab: runs glab ci status (no fake gh)', async () => {
     const ghCalls: unknown[] = [];
-    const glabCalls: unknown[] = [];
+    const glabCalls: Array<{ args: readonly string[]; cwd: string }> = [];
     const result = await handleRepoChatIntent('github checks', deps({
       forgeContext: {
         cwd: '/repo',
@@ -665,6 +666,41 @@ describe('handleRepoChatIntent', () => {
         ghCalls.push(1);
         return { ok: true, stdout: '', stderr: '', exitCode: 0 };
       },
+      async runGlab(args, cwd) {
+        glabCalls.push({ args, cwd });
+        return {
+          ok: true,
+          stdout: '(running) · https://gitlab.com/acme/app/-/pipelines/99',
+          stderr: '',
+          exitCode: 0,
+        };
+      },
+    }));
+
+    expect(result?.operation).toBe('github_pr_checks');
+    expect(result?.message).toMatch(/GitLab CI status \(via glab\)/i);
+    expect(result?.message).toContain('pipelines/99');
+    expect(result?.message).not.toMatch(/GitHub PR checks \(via gh\)/);
+    expect(ghCalls).toEqual([]);
+    expect(glabCalls).toEqual([{ args: ['ci', 'status'], cwd: '/repo' }]);
+  });
+
+  it('github_pr_checks on GitLab without glab: honest message (no fake gh)', async () => {
+    const ghCalls: unknown[] = [];
+    const glabCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('ci status', deps({
+      forgeContext: {
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
+        hostClass: 'gitlab',
+        primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+        tools: { gh: false, glab: false },
+      },
+      async runGh() {
+        ghCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
       async runGlab() {
         glabCalls.push(1);
         return { ok: true, stdout: '', stderr: '', exitCode: 0 };
@@ -673,8 +709,7 @@ describe('handleRepoChatIntent', () => {
 
     expect(result?.operation).toBe('github_pr_checks');
     expect(result?.message).toMatch(/GitLab/i);
-    expect(result?.message).toMatch(/glab ci|pipeline/i);
-    expect(result?.message).not.toMatch(/GitHub PR checks \(via gh\)/);
+    expect(result?.message).toMatch(/glab.*not on PATH/i);
     expect(ghCalls).toEqual([]);
     expect(glabCalls).toEqual([]);
   });
@@ -735,7 +770,7 @@ describe('handleRepoChatIntent', () => {
     expect(ghCalls).toEqual([]);
   });
 
-  it('githubPrChecksUnavailableMessage: null only when GitHub + gh', () => {
+  it('githubPrChecksUnavailableMessage: null when GitHub+gh or GitLab+glab', () => {
     expect(githubPrChecksUnavailableMessage(githubForge)).toBeNull();
     expect(
       githubPrChecksUnavailableMessage({
@@ -751,7 +786,247 @@ describe('handleRepoChatIntent', () => {
         remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
         tools: { gh: false, glab: true },
       }),
-    ).toMatch(/glab ci|pipeline/i);
+    ).toBeNull();
+    expect(
+      githubPrChecksUnavailableMessage({
+        ...githubForge,
+        hostClass: 'gitlab',
+        primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+        remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
+        tools: { gh: false, glab: false },
+      }),
+    ).toMatch(/glab.*not on PATH/i);
+  });
+
+  // -------------------------------------------------------------------------
+  // P1.7 thin extension — GitLab CI/pipeline status via NL ("pipeline status")
+  // -------------------------------------------------------------------------
+
+  it('gitlab_ci_status: runs glab ci status when host is GitLab and glab is available', async () => {
+    const glabCalls: Array<{ args: readonly string[]; cwd: string }> = [];
+    const result = await handleRepoChatIntent('pipeline status', deps({
+      forgeContext: {
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
+        hostClass: 'gitlab',
+        primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+        tools: { gh: false, glab: true },
+      },
+      async runGlab(args, cwd) {
+        glabCalls.push({ args, cwd });
+        return {
+          ok: true,
+          stdout: '(success) · https://gitlab.com/acme/app/-/pipelines/42',
+          stderr: '',
+          exitCode: 0,
+        };
+      },
+      commandGate: {
+        gate: (): CommandGateDecision => ({
+          allowed: true,
+          requireConfirmation: false,
+          commandTier: 'read-only',
+          forbidBackground: false,
+          mustRecord: false,
+          rationale: '',
+        }),
+      } as CommandGatePort,
+    }));
+
+    expect(result?.operation).toBe('gitlab_ci_status');
+    expect(result?.mutatesWorkspace).toBe(false);
+    expect(result?.message).toContain('GitLab CI status');
+    expect(result?.message).toContain('pipelines/42');
+    expect(glabCalls).toEqual([{ args: ['ci', 'status'], cwd: '/repo' }]);
+  });
+
+  it('gitlab_ci_status: surfaces non-green stdout when glab exits non-zero', async () => {
+    const result = await handleRepoChatIntent('are pipelines green', deps({
+      forgeContext: {
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
+        hostClass: 'gitlab',
+        primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+        tools: { gh: false, glab: true },
+      },
+      async runGlab() {
+        return {
+          ok: false,
+          stdout: '(failed) · https://gitlab.com/acme/app/-/pipelines/7',
+          stderr: '',
+          exitCode: 1,
+        };
+      },
+    }));
+
+    expect(result?.operation).toBe('gitlab_ci_status');
+    expect(result?.message).toMatch(/not all green/i);
+    expect(result?.message).toContain('failed');
+  });
+
+  it('gitlab_ci_status: honest message when glab missing on GitLab host', async () => {
+    const glabCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('glab ci status', deps({
+      forgeContext: {
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
+        hostClass: 'gitlab',
+        primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+        tools: { gh: false, glab: false },
+      },
+      async runGlab() {
+        glabCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(result?.operation).toBe('gitlab_ci_status');
+    expect(result?.message).toMatch(/glab.*not on PATH/i);
+    expect(glabCalls).toEqual([]);
+  });
+
+  it('gitlab_ci_status on GitHub+gh: cross-routes to gh pr checks', async () => {
+    const ghCalls: Array<{ args: readonly string[]; cwd: string }> = [];
+    const glabCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('pipeline status', deps({
+      forgeContext: githubForge,
+      async runGh(args, cwd) {
+        ghCalls.push({ args, cwd });
+        return {
+          ok: true,
+          stdout: 'lint\tpass\t5s\thttps://ci.example/1',
+          stderr: '',
+          exitCode: 0,
+        };
+      },
+      async runGlab() {
+        glabCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(result?.operation).toBe('github_pr_checks');
+    expect(result?.message).toContain('GitHub PR checks');
+    expect(result?.message).toContain('lint');
+    expect(ghCalls).toEqual([{ args: ['pr', 'checks'], cwd: '/repo' }]);
+    expect(glabCalls).toEqual([]);
+  });
+
+  it('gitlab_ci_status: honest message for local-only / no remote', async () => {
+    const result = await handleRepoChatIntent('mr pipeline', deps({
+      forgeContext: {
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [],
+        hostClass: 'none',
+        primaryRemoteUrl: null,
+        tools: { gh: false, glab: false },
+      },
+    }));
+
+    expect(result?.message).toMatch(/Local-only|no remote/i);
+  });
+
+  it('gitlab_ci_status: surfaces glab failure honestly when no useful stdout', async () => {
+    const result = await handleRepoChatIntent('glab ci status', deps({
+      forgeContext: {
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
+        hostClass: 'gitlab',
+        primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+        tools: { gh: false, glab: true },
+      },
+      async runGlab() {
+        return {
+          ok: false,
+          stdout: '',
+          stderr: 'none of the git remotes configured map to a valid project command',
+          exitCode: 1,
+        };
+      },
+    }));
+
+    expect(result?.message).toContain('glab ci status failed');
+    expect(result?.message).toMatch(/remotes configured/i);
+  });
+
+  it('gitlab_ci_status: gate deny does not run glab', async () => {
+    const glabCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('pipeline status', deps({
+      forgeContext: {
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
+        hostClass: 'gitlab',
+        primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+        tools: { gh: false, glab: true },
+      },
+      async runGlab() {
+        glabCalls.push(1);
+        return { ok: true, stdout: 'ok', stderr: '', exitCode: 0 };
+      },
+      commandGate: {
+        gate: (): CommandGateDecision => ({
+          allowed: false,
+          requireConfirmation: false,
+          commandTier: 'read-only',
+          forbidBackground: false,
+          mustRecord: false,
+          rationale: 'denied in test',
+        }),
+      } as CommandGatePort,
+    }));
+
+    expect(result?.message).toMatch(/denied/i);
+    expect(glabCalls).toEqual([]);
+  });
+
+  it('gitlab_ci_status: caps long glab output', async () => {
+    const long = 'pipeline-line\n'.repeat(500);
+    const result = await handleRepoChatIntent('pipeline list', deps({
+      forgeContext: {
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
+        hostClass: 'gitlab',
+        primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+        tools: { gh: false, glab: true },
+      },
+      async runGlab() {
+        return { ok: true, stdout: long, stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(result?.message).toMatch(/truncated/i);
+    expect(result?.message.length).toBeLessThan(long.length);
+  });
+
+  it('gitlabCiStatusUnavailableMessage: null when GitLab+glab or GitHub+gh', () => {
+    expect(
+      gitlabCiStatusUnavailableMessage({
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
+        hostClass: 'gitlab',
+        primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+        tools: { gh: false, glab: true },
+      }),
+    ).toBeNull();
+    expect(gitlabCiStatusUnavailableMessage(githubForge)).toBeNull();
+    expect(
+      gitlabCiStatusUnavailableMessage({
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
+        hostClass: 'gitlab',
+        primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+        tools: { gh: false, glab: false },
+      }),
+    ).toMatch(/not on PATH/i);
   });
 
   // -------------------------------------------------------------------------

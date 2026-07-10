@@ -3,27 +3,29 @@
  *
  * This is the interface seam between ordinary user language ("what changed?",
  * "run tests", "undo that", "pr status", "pr checks", "pr review", "create a pr",
- * "mr status", "what forge am I on?") and repo infrastructure.
+ * "mr status", "pipeline status", "what forge am I on?") and repo infrastructure.
  *
  * **Local file/git mastery is first-class (P1.8):** status, diff, test/verify,
  * commit, and undo do **not** need a forge CLI or remote. They run against the
  * local working tree regardless of hostClass (github | gitlab | other | none).
- * Forge-specific NL (PR/MR status/create/checks/review) degrades honestly when
- * the host is other (Bitbucket/Gitea/etc.) or none (local-only) — never pretends
- * gh/glab apply.
+ * Forge-specific NL (PR/MR status/create/checks/review/pipelines) degrades
+ * honestly when the host is other (Bitbucket/Gitea/etc.) or none (local-only) —
+ * never pretends gh/glab apply.
  *
  * verify_only and commit execute under commandGate + oversight (same seams as
  * menu/cli verify paths). GitHub PR status (P1.6 thin) runs `gh pr status` when
  * the workspace is GitHub and gh is on PATH. GitHub PR checks (P1.6 thin
- * extension) runs read-only `gh pr checks` for CI/check status (no --watch).
- * GitHub PR review (P1.6 thin extension) runs read-only `gh pr view --comments`
- * for review/comment summary — never approve or request-changes. GitHub PR create
- * (P1.6 thin extension) runs non-interactive `gh pr create --fill` under the same
- * gate/oversight posture as commit — never force-push, never invent base. GitLab
- * MR list (P1.7 thin) runs `glab mr list` when the workspace is GitLab and glab
- * is on PATH. GitLab MR create (P1.7 thin extension) runs non-interactive
- * `glab mr create --fill --yes` under the same gate/oversight posture as PR create
- * — honest fail-soft otherwise. Undo plans via checkpoint conflict gate, then
+ * extension) runs read-only `gh pr checks` for CI/check status (no --watch); on
+ * GitLab+glab it runs `glab ci status` instead. GitHub PR review (P1.6 thin
+ * extension) runs read-only `gh pr view --comments` for review/comment summary —
+ * never approve or request-changes. GitHub PR create (P1.6 thin extension) runs
+ * non-interactive `gh pr create --fill` under the same gate/oversight posture as
+ * commit — never force-push, never invent base. GitLab MR list (P1.7 thin) runs
+ * `glab mr list` when the workspace is GitLab and glab is on PATH. GitLab MR
+ * create (P1.7 thin extension) runs non-interactive `glab mr create --fill --yes`
+ * under the same gate/oversight posture as PR create. GitLab CI/pipeline status
+ * (P1.7 thin extension) runs read-only `glab ci status` (no watch loops) —
+ * honest fail-soft otherwise. Undo plans via checkpoint conflict gate, then
  * applies under oversight + commandGate when safe.
  */
 
@@ -231,16 +233,16 @@ export function githubPrStatusUnavailableMessage(forge: WorkspaceContext): strin
 
 /**
  * Honest message when forge/tools cannot support GitHub PR checks. PURE-ish.
- * Returns null only when host is GitHub and gh is on PATH.
- * GitLab pipelines are not faked via gh — suggest glab CI language instead.
+ * Returns null when host is GitHub and gh is on PATH (caller may run gh),
+ * or when host is GitLab and glab is on PATH (caller may run glab ci status).
  */
 export function githubPrChecksUnavailableMessage(forge: WorkspaceContext): string | null {
   if (forge.hostClass === 'github' && forge.tools.gh) return null;
+  // GitLab + glab: handler runs glab ci status (P1.7 thin) rather than refusing.
+  if (forge.hostClass === 'gitlab' && forge.tools.glab) return null;
 
   if (forge.hostClass === 'gitlab') {
-    return forge.tools.glab
-      ? 'This workspace is GitLab — not GitHub. gh PR checks do not apply. Try `glab ci status` or `glab pipeline list` in the shell (pipeline NL is not wired yet), or open CI in the GitLab UI.'
-      : 'This workspace is GitLab — not GitHub. gh PR checks do not apply, and glab is not on PATH. Use the GitLab UI or install glab (https://gitlab.com/gitlab-org/cli) for `glab ci status` / pipelines.';
+    return 'This workspace is GitLab — not GitHub. gh PR checks do not apply, and glab is not on PATH. Use the GitLab UI or install glab (https://gitlab.com/gitlab-org/cli) for `glab ci status` / pipelines.';
   }
   if (forge.hostClass === 'other') {
     return `This remote is not GitHub (${otherForgeRemoteDetail(forge)}) — I will not run gh PR checks against it. Use the host UI for CI. ${LOCAL_OPS_HINT}`;
@@ -252,6 +254,31 @@ export function githubPrChecksUnavailableMessage(forge: WorkspaceContext): strin
   }
   // github but gh missing
   return 'This is a GitHub repo, but `gh` is not on PATH. Install the GitHub CLI (https://cli.github.com) or check PR checks in the browser. I will not pretend gh is available.';
+}
+
+/**
+ * Honest message when forge/tools cannot support GitLab CI/pipeline status.
+ * Returns null when host is GitLab and glab is on PATH (caller may run),
+ * or when host is GitHub and gh is on PATH (caller may run gh pr checks).
+ */
+export function gitlabCiStatusUnavailableMessage(forge: WorkspaceContext): string | null {
+  if (forge.hostClass === 'gitlab' && forge.tools.glab) return null;
+  // GitHub + gh: handler runs gh pr checks rather than refusing.
+  if (forge.hostClass === 'github' && forge.tools.gh) return null;
+
+  if (forge.hostClass === 'github') {
+    return 'This workspace is GitHub — not GitLab. Pipeline status via glab does not apply, and gh is not on PATH. Install the GitHub CLI (https://cli.github.com) or check CI in the browser.';
+  }
+  if (forge.hostClass === 'other') {
+    return `This remote is not GitLab (${otherForgeRemoteDetail(forge)}) — I will not run glab CI status against it. Use the host UI for CI. ${LOCAL_OPS_HINT}`;
+  }
+  if (forge.hostClass === 'none') {
+    return forge.gitRoot !== null
+      ? `Local-only workspace (no remote forge) — there is no GitLab pipeline status to query. ${LOCAL_OPS_HINT}`
+      : 'This folder is not a git repo — there is no GitLab pipeline status to query.';
+  }
+  // gitlab but glab missing
+  return 'This is a GitLab repo, but `glab` is not on PATH. Install the GitLab CLI (https://gitlab.com/gitlab-org/cli) or check pipelines in the browser. I will not pretend glab is available.';
 }
 
 /**
@@ -744,8 +771,8 @@ function formatGhPrReviewResult(result: GhRunResult): RepoChatHandled {
 
 /**
  * Resolve forge + gated read-only `gh pr checks` when GitHub+gh.
- * No --watch (non-interactive one-shot). GitLab/other/missing tools → honest
- * degrade (suggest glab pipeline language; never fake gh checks on GitLab).
+ * No --watch (non-interactive one-shot). On GitLab+glab, cross-route to
+ * `glab ci status` (same user need: CI green?). Other/missing tools → honest degrade.
  *
  * Note: `gh pr checks` exits non-zero when checks failed (1) or pending (8)
  * while still printing a useful table on stdout — surface that table honestly.
@@ -759,6 +786,11 @@ async function handleGithubPrChecks(deps: RepoChatHandlerDeps): Promise<RepoChat
       'Could not detect workspace forge context just now — try again, or run `gh pr checks` in the shell.',
       { mutatesWorkspace: false },
     );
+  }
+
+  // CI language on GitLab → thin glab path when available (same user need).
+  if (forge.hostClass === 'gitlab' && forge.tools.glab) {
+    return handleGitlabCiStatus(deps, 'github_pr_checks');
   }
 
   const unavailable = githubPrChecksUnavailableMessage(forge);
@@ -794,6 +826,102 @@ async function handleGithubPrChecks(deps: RepoChatHandlerDeps): Promise<RepoChat
 
   const result = await runGh(['pr', 'checks'], deps.cwd);
   return formatGhPrChecksResult(result);
+}
+
+/**
+ * Resolve forge + gated read-only `glab ci status` when GitLab+glab.
+ * No watch loops (one-shot). On GitHub+gh, cross-route to gh pr checks.
+ * `operation` preserves intent when "ci status" / "pr checks" arrived via
+ * github_pr_checks but ran glab on a GitLab host.
+ */
+async function handleGitlabCiStatus(
+  deps: RepoChatHandlerDeps,
+  operation: 'gitlab_ci_status' | 'github_pr_checks' = 'gitlab_ci_status',
+): Promise<RepoChatHandled> {
+  const forge = await resolveForge(deps);
+
+  if (forge === null) {
+    return handled(
+      operation,
+      'Could not detect workspace forge context just now — try again, or run `glab ci status` in the shell.',
+      { mutatesWorkspace: false },
+    );
+  }
+
+  // Pipeline language on GitHub → thin gh path when available.
+  if (operation === 'gitlab_ci_status' && forge.hostClass === 'github' && forge.tools.gh) {
+    return handleGithubPrChecks({ ...deps, forgeContext: forge });
+  }
+
+  const unavailable = gitlabCiStatusUnavailableMessage(forge);
+  if (unavailable !== null) {
+    return handled(operation, unavailable, { mutatesWorkspace: false });
+  }
+
+  const display = 'glab ci status';
+  const runGlab = deps.runGlab ?? defaultRunGlab;
+
+  if (deps.commandGate !== undefined) {
+    const gate = deps.commandGate.gate(display);
+    const confirmed = await confirmGate(
+      deps.commandGate,
+      gate,
+      'Run `glab ci status` to show GitLab pipeline / CI status?',
+    );
+    if (!gate.allowed || confirmed === false) {
+      await recordGate(deps.commandGate, deps.cwd, display, gate, confirmed, 'denied');
+      return handled(
+        operation,
+        gate.allowed
+          ? 'Pipeline status query declined by gate.'
+          : 'Command gate denied `glab ci status`.',
+        { mutatesWorkspace: false },
+      );
+    }
+
+    const result = await runGlab(['ci', 'status'], deps.cwd);
+    await recordGate(deps.commandGate, deps.cwd, display, gate, confirmed, 'ran');
+    return formatGlabCiStatusResult(result, operation);
+  }
+
+  const result = await runGlab(['ci', 'status'], deps.cwd);
+  return formatGlabCiStatusResult(result, operation);
+}
+
+function formatGlabCiStatusResult(
+  result: GlabRunResult,
+  operation: 'gitlab_ci_status' | 'github_pr_checks',
+): RepoChatHandled {
+  const out = clipForgeOutput(result.stdout);
+  const err = clipForgeOutput(result.stderr);
+  const code = result.exitCode;
+
+  // Prefer stdout even on non-zero exit (pipeline failed / pending still has useful text).
+  if (out.length > 0) {
+    let headline = 'GitLab CI status (via glab):';
+    if (code !== null && code !== 0) {
+      headline = 'GitLab CI status (via glab; not all green):';
+    }
+    return handled(operation, `${headline}\n\n${out}`, {
+      mutatesWorkspace: false,
+    });
+  }
+
+  if (result.ok) {
+    return handled(
+      operation,
+      'glab ci status returned no output. There may be no pipeline for this branch, or CI is not configured. Try `glab pipeline list` in the shell, or open pipelines in the GitLab UI.',
+      { mutatesWorkspace: false },
+    );
+  }
+
+  const detail = err.length > 0 ? err : 'unknown error';
+  const codeLabel = code !== null ? ` (exit ${code})` : '';
+  return handled(
+    operation,
+    `glab ci status failed${codeLabel}:\n${detail}`,
+    { mutatesWorkspace: false },
+  );
 }
 
 function formatGhPrChecksResult(result: GhRunResult): RepoChatHandled {
@@ -1146,6 +1274,9 @@ export async function handleRepoChatIntent(
 
     case 'gitlab_mr_create':
       return handleGitlabMrCreate(deps, 'gitlab_mr_create');
+
+    case 'gitlab_ci_status':
+      return handleGitlabCiStatus(deps, 'gitlab_ci_status');
 
     case 'summarize_diff': {
       const diff = await deps.repoOps.diff(deps.cwd);

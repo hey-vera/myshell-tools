@@ -549,6 +549,10 @@ const COMMAND_TIER_SIGNALS: readonly CommandTierSignal[] = [
       /\bgit\s+(?:status|log|diff|show|branch)\b/i,
       // GitHub CLI read-only PR inspection (P1.6 thin — status/list/view/checks).
       /\bgh\s+pr\s+(?:status|list|view|checks)\b/i,
+      // GitLab CLI read-only CI/pipeline inspection (P1.7 thin — no watch loops).
+      /\bglab\s+ci\s+status\b/i,
+      /\bglab\s+pipeline\s+list\b/i,
+      /\bglab\s+mr\s+list\b/i,
       /\bstat\b/i,
       /\bfile\b/i,
       /\btree\b/i,
