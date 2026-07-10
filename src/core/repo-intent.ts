@@ -20,6 +20,11 @@ export type RepoOperationIntent =
   /** NL GitHub PR status (P1.6 thin): "pr status" / "github status" — not local git status. */
   | 'github_pr_status'
   /**
+   * NL GitHub PR checks (P1.6 thin extension): "pr checks" / "ci status" / "are checks green"
+   * — CI/check status only; never steals "pr status", create, or local git status.
+   */
+  | 'github_pr_checks'
+  /**
    * NL GitHub PR create (P1.6 thin extension): "create a pr" / "open a pull request"
    * / "gh pr create" — explicit create only; never steals plain "pr status".
    */
@@ -150,6 +155,27 @@ const GITHUB_PR_STATUS_RE: readonly RegExp[] = [
   /\bhow'?s\s+(the\s+)?pr\b/,
   /\bhow\s+is\s+(the\s+)?pr\b/,
   /\bcurrent\s+pr\b/,
+];
+
+/**
+ * GitHub PR checks / CI phrases (P1.6 thin extension). Checked after PR status
+ * (so "pr status" / "check the pr status" stay status) and before generic
+ * STATUS_RE (so "ci status" / "check status" do not collapse to local git status).
+ * Must not match create ("create a pr") or plain "status" / "git status".
+ */
+const GITHUB_PR_CHECKS_RE: readonly RegExp[] = [
+  /\bpr\s+checks\b/,
+  /\bpull[\s-]?request\s+checks\b/,
+  /\bgh\s+pr\s+checks\b/,
+  /\bgithub\s+(pr\s+)?checks\b/,
+  /\bci\s+status\b/,
+  /\bci\s+checks\b/,
+  /\bcheck\s+status\b/,
+  /\bchecks?\s+status\b/,
+  /\bstatus\s+of\s+(the\s+)?(checks?|ci)\b/,
+  /\bare\s+(the\s+)?(checks?|ci)\s+(green|passing|ok|good|failing|failed|red)\b/,
+  /\b(show|get|list)\s+(me\s+)?(the\s+)?(pr\s+|pull[\s-]?request\s+)?checks\b/,
+  /\bhow\s+are\s+(the\s+)?checks\b/,
 ];
 
 /**
@@ -382,6 +408,19 @@ export function inferRepoIntent(task: string): RepoIntent {
       needsVerification: false,
       constraints,
       rationale: 'natural-language GitHub PR status request',
+    };
+  }
+
+  // CI/check status after PR status (so "pr status" wins) and before generic status.
+  if (hasAny(text, GITHUB_PR_CHECKS_RE)) {
+    return {
+      version: 1,
+      operation: 'github_pr_checks',
+      confidence: 'high',
+      mutatesWorkspace: false,
+      needsVerification: false,
+      constraints,
+      rationale: 'natural-language GitHub PR checks / CI status request',
     };
   }
 

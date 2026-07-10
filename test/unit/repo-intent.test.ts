@@ -68,6 +68,17 @@ const cases: ReadonlyArray<readonly [string, ReturnType<typeof inferRepoIntent>[
   ['show me the pr status', 'github_pr_status'],
   ['how is the pr?', 'github_pr_status'],
   ['current pr', 'github_pr_status'],
+  // P1.6 thin extension — GitHub PR checks (must not steal "pr status" / create / local status)
+  ['pr checks', 'github_pr_checks'],
+  ['check status', 'github_pr_checks'],
+  ['ci status', 'github_pr_checks'],
+  ['github checks', 'github_pr_checks'],
+  ['gh pr checks', 'github_pr_checks'],
+  ['are checks green', 'github_pr_checks'],
+  ['are the checks green?', 'github_pr_checks'],
+  ['show me the checks', 'github_pr_checks'],
+  ['how are the checks', 'github_pr_checks'],
+  ['status of the checks', 'github_pr_checks'],
   // P1.6 thin extension — GitHub PR create (must not steal "pr status")
   ['create a pr', 'github_pr_create'],
   ['create a pull request', 'github_pr_create'],
@@ -101,6 +112,8 @@ describe('inferRepoIntent', () => {
     assert.equal(inferRepoIntent('run tests').needsVerification, true);
     assert.equal(inferRepoIntent('create a pr').mutatesWorkspace, true);
     assert.equal(inferRepoIntent('pr status').mutatesWorkspace, false);
+    assert.equal(inferRepoIntent('pr checks').mutatesWorkspace, false);
+    assert.equal(inferRepoIntent('ci status').mutatesWorkspace, false);
   });
 
   it('extracts constraints from natural language steering', () => {

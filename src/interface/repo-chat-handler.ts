@@ -2,16 +2,17 @@
  * Safe natural-language repo chat handler.
  *
  * This is the interface seam between ordinary user language ("what changed?",
- * "run tests", "undo that", "pr status", "create a pr", "mr status") and repo
- * infrastructure. verify_only and commit execute under commandGate + oversight
- * (same seams as menu/cli verify paths). GitHub PR status (P1.6 thin) runs
- * `gh pr status` when the workspace is GitHub and gh is on PATH. GitHub PR
- * create (P1.6 thin extension) runs non-interactive `gh pr create --fill` under
- * the same gate/oversight posture as commit — never force-push, never invent
- * base. GitLab MR list (P1.7 thin) runs `glab mr list` when the workspace is
- * GitLab and glab is on PATH — honest fail-soft otherwise (MR create is out of
- * scope). Undo plans via checkpoint conflict gate, then applies under oversight
- * + commandGate when safe.
+ * "run tests", "undo that", "pr status", "pr checks", "create a pr", "mr status")
+ * and repo infrastructure. verify_only and commit execute under commandGate +
+ * oversight (same seams as menu/cli verify paths). GitHub PR status (P1.6 thin)
+ * runs `gh pr status` when the workspace is GitHub and gh is on PATH. GitHub PR
+ * checks (P1.6 thin extension) runs read-only `gh pr checks` for CI/check status
+ * (no --watch). GitHub PR create (P1.6 thin extension) runs non-interactive
+ * `gh pr create --fill` under the same gate/oversight posture as commit — never
+ * force-push, never invent base. GitLab MR list (P1.7 thin) runs `glab mr list`
+ * when the workspace is GitLab and glab is on PATH — honest fail-soft otherwise
+ * (MR create is out of scope). Undo plans via checkpoint conflict gate, then
+ * applies under oversight + commandGate when safe.
  */
 
 import { planUndoAiCheckpoint } from '../core/ai-checkpoint.js';
@@ -128,6 +129,31 @@ export function githubPrStatusUnavailableMessage(forge: WorkspaceContext): strin
   }
   // github but gh missing
   return 'This is a GitHub repo, but `gh` is not on PATH. Install the GitHub CLI (https://cli.github.com) or check PR status in the browser. I will not pretend gh is available.';
+}
+
+/**
+ * Honest message when forge/tools cannot support GitHub PR checks. PURE-ish.
+ * Returns null only when host is GitHub and gh is on PATH.
+ * GitLab pipelines are not faked via gh — suggest glab CI language instead.
+ */
+export function githubPrChecksUnavailableMessage(forge: WorkspaceContext): string | null {
+  if (forge.hostClass === 'github' && forge.tools.gh) return null;
+
+  if (forge.hostClass === 'gitlab') {
+    return forge.tools.glab
+      ? 'This workspace is GitLab — not GitHub. gh PR checks do not apply. Try `glab ci status` or `glab pipeline list` in the shell (pipeline NL is not wired yet), or open CI in the GitLab UI.'
+      : 'This workspace is GitLab — not GitHub. gh PR checks do not apply, and glab is not on PATH. Use the GitLab UI or install glab (https://gitlab.com/gitlab-org/cli) for `glab ci status` / pipelines.';
+  }
+  if (forge.hostClass === 'other') {
+    return 'This remote is not GitHub — I will not run gh PR checks against a non-GitHub forge.';
+  }
+  if (forge.hostClass === 'none') {
+    return forge.gitRoot !== null
+      ? 'Local-only workspace (no remote forge) — there are no GitHub PR checks to query.'
+      : 'This folder is not a git repo — there are no GitHub PR checks to query.';
+  }
+  // github but gh missing
+  return 'This is a GitHub repo, but `gh` is not on PATH. Install the GitHub CLI (https://cli.github.com) or check PR checks in the browser. I will not pretend gh is available.';
 }
 
 /**
@@ -332,6 +358,95 @@ function formatGhPrCreateResult(result: GhRunResult): RepoChatHandled {
   return handled(
     'github_pr_create',
     `gh pr create --fill failed${code}:\n${detail}\n\nI will not hang on interactive prompts. If title/body or push is needed, run in a real shell:\n  ${GH_PR_CREATE_DISPLAY}\nor:\n  gh pr create --title "…" --body "…"`,
+    { mutatesWorkspace: false },
+  );
+}
+
+/**
+ * Resolve forge + gated read-only `gh pr checks` when GitHub+gh.
+ * No --watch (non-interactive one-shot). GitLab/other/missing tools → honest
+ * degrade (suggest glab pipeline language; never fake gh checks on GitLab).
+ *
+ * Note: `gh pr checks` exits non-zero when checks failed (1) or pending (8)
+ * while still printing a useful table on stdout — surface that table honestly.
+ */
+async function handleGithubPrChecks(deps: RepoChatHandlerDeps): Promise<RepoChatHandled> {
+  const forge = await resolveForge(deps);
+
+  if (forge === null) {
+    return handled(
+      'github_pr_checks',
+      'Could not detect workspace forge context just now — try again, or run `gh pr checks` in the shell.',
+      { mutatesWorkspace: false },
+    );
+  }
+
+  const unavailable = githubPrChecksUnavailableMessage(forge);
+  if (unavailable !== null) {
+    return handled('github_pr_checks', unavailable, { mutatesWorkspace: false });
+  }
+
+  const display = 'gh pr checks';
+  const runGh = deps.runGh ?? defaultRunGh;
+
+  if (deps.commandGate !== undefined) {
+    const gate = deps.commandGate.gate(display);
+    const confirmed = await confirmGate(
+      deps.commandGate,
+      gate,
+      'Run `gh pr checks` to show GitHub PR check / CI status?',
+    );
+    if (!gate.allowed || confirmed === false) {
+      await recordGate(deps.commandGate, deps.cwd, display, gate, confirmed, 'denied');
+      return handled(
+        'github_pr_checks',
+        gate.allowed
+          ? 'PR checks query declined by gate.'
+          : 'Command gate denied `gh pr checks`.',
+        { mutatesWorkspace: false },
+      );
+    }
+
+    const result = await runGh(['pr', 'checks'], deps.cwd);
+    await recordGate(deps.commandGate, deps.cwd, display, gate, confirmed, 'ran');
+    return formatGhPrChecksResult(result);
+  }
+
+  const result = await runGh(['pr', 'checks'], deps.cwd);
+  return formatGhPrChecksResult(result);
+}
+
+function formatGhPrChecksResult(result: GhRunResult): RepoChatHandled {
+  const out = clipForgeOutput(result.stdout);
+  const err = clipForgeOutput(result.stderr);
+  const code = result.exitCode;
+
+  // gh pr checks: 0 = all green, 1 = some failed, 8 = pending — still print table.
+  if (out.length > 0) {
+    let headline = 'GitHub PR checks (via gh):';
+    if (code === 8) {
+      headline = 'GitHub PR checks (via gh; some pending):';
+    } else if (code !== null && code !== 0) {
+      headline = 'GitHub PR checks (via gh; not all green):';
+    }
+    return handled('github_pr_checks', `${headline}\n\n${out}`, {
+      mutatesWorkspace: false,
+    });
+  }
+
+  if (result.ok) {
+    return handled(
+      'github_pr_checks',
+      'gh pr checks returned no output. There may be no open PR for this branch, or no checks configured. Try `gh pr status` or open the PR on GitHub.',
+      { mutatesWorkspace: false },
+    );
+  }
+
+  const detail = err.length > 0 ? err : 'unknown error';
+  const codeLabel = code !== null ? ` (exit ${code})` : '';
+  return handled(
+    'github_pr_checks',
+    `gh pr checks failed${codeLabel}:\n${detail}`,
     { mutatesWorkspace: false },
   );
 }
@@ -633,6 +748,9 @@ export async function handleRepoChatIntent(
 
     case 'github_pr_status':
       return handleGithubPrStatus(deps);
+
+    case 'github_pr_checks':
+      return handleGithubPrChecks(deps);
 
     case 'github_pr_create':
       return handleGithubPrCreate(deps);

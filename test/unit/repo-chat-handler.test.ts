@@ -3,6 +3,7 @@
 import { buildAiCheckpoint, hashText, type AiChangeCheckpoint } from '../../src/core/ai-checkpoint.js';
 import type { CommandGateDecision, CommandGatePort } from '../../src/core/command-gate.js';
 import {
+  githubPrChecksUnavailableMessage,
   githubPrCreateUnavailableMessage,
   githubPrStatusUnavailableMessage,
   handleRepoChatIntent,
@@ -568,6 +569,184 @@ describe('handleRepoChatIntent', () => {
         tools: { gh: false, glab: false },
       }),
     ).toMatch(/not on PATH/i);
+  });
+
+  // -------------------------------------------------------------------------
+  // P1.6 thin extension — GitHub PR checks via NL ("pr checks" / "ci status")
+  // -------------------------------------------------------------------------
+
+  it('github_pr_checks: runs gh pr checks when host is GitHub and gh is available', async () => {
+    const ghCalls: Array<{ args: readonly string[]; cwd: string }> = [];
+    const result = await handleRepoChatIntent('pr checks', deps({
+      forgeContext: githubForge,
+      async runGh(args, cwd) {
+        ghCalls.push({ args, cwd });
+        return {
+          ok: true,
+          stdout: 'lint\tpass\t10s\thttps://ci.example/1\ntypecheck\tpass\t20s\thttps://ci.example/2',
+          stderr: '',
+          exitCode: 0,
+        };
+      },
+      commandGate: {
+        gate: (): CommandGateDecision => ({
+          allowed: true,
+          requireConfirmation: false,
+          commandTier: 'read-only',
+          forbidBackground: false,
+          mustRecord: false,
+          rationale: '',
+        }),
+      } as CommandGatePort,
+    }));
+
+    expect(result?.operation).toBe('github_pr_checks');
+    expect(result?.mutatesWorkspace).toBe(false);
+    expect(result?.message).toContain('GitHub PR checks');
+    expect(result?.message).toContain('typecheck');
+    expect(ghCalls).toEqual([{ args: ['pr', 'checks'], cwd: '/repo' }]);
+  });
+
+  it('github_pr_checks: surfaces failed checks table when gh exits non-zero with stdout', async () => {
+    const result = await handleRepoChatIntent('ci status', deps({
+      forgeContext: githubForge,
+      async runGh() {
+        return {
+          ok: false,
+          stdout: 'lint\tfail\t10s\thttps://ci.example/1\nunit\tpass\t30s\thttps://ci.example/2',
+          stderr: '',
+          exitCode: 1,
+        };
+      },
+    }));
+
+    expect(result?.operation).toBe('github_pr_checks');
+    expect(result?.message).toMatch(/not all green/i);
+    expect(result?.message).toContain('lint');
+    expect(result?.message).toContain('fail');
+  });
+
+  it('github_pr_checks: honest message when gh is missing on GitHub host (no theater)', async () => {
+    const ghCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('are checks green', deps({
+      forgeContext: {
+        ...githubForge,
+        tools: { gh: false, glab: false },
+      },
+      async runGh(args, cwd) {
+        ghCalls.push({ args, cwd });
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(result?.operation).toBe('github_pr_checks');
+    expect(result?.message).toMatch(/gh.*not on PATH/i);
+    expect(ghCalls).toEqual([]);
+  });
+
+  it('github_pr_checks on GitLab: suggests glab pipeline language (no fake gh)', async () => {
+    const ghCalls: unknown[] = [];
+    const glabCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('github checks', deps({
+      forgeContext: {
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
+        hostClass: 'gitlab',
+        primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+        tools: { gh: true, glab: true },
+      },
+      async runGh() {
+        ghCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+      async runGlab() {
+        glabCalls.push(1);
+        return { ok: true, stdout: '', stderr: '', exitCode: 0 };
+      },
+    }));
+
+    expect(result?.operation).toBe('github_pr_checks');
+    expect(result?.message).toMatch(/GitLab/i);
+    expect(result?.message).toMatch(/glab ci|pipeline/i);
+    expect(result?.message).not.toMatch(/GitHub PR checks \(via gh\)/);
+    expect(ghCalls).toEqual([]);
+    expect(glabCalls).toEqual([]);
+  });
+
+  it('github_pr_checks: honest message for local-only / no remote', async () => {
+    const result = await handleRepoChatIntent('check status', deps({
+      forgeContext: {
+        cwd: '/repo',
+        gitRoot: '/repo',
+        remotes: [],
+        hostClass: 'none',
+        primaryRemoteUrl: null,
+        tools: { gh: false, glab: false },
+      },
+    }));
+
+    expect(result?.message).toMatch(/Local-only|no remote/i);
+  });
+
+  it('github_pr_checks: surfaces gh failure honestly when no useful stdout', async () => {
+    const result = await handleRepoChatIntent('gh pr checks', deps({
+      forgeContext: githubForge,
+      async runGh() {
+        return {
+          ok: false,
+          stdout: '',
+          stderr: 'no pull requests found for branch "main"',
+          exitCode: 1,
+        };
+      },
+    }));
+
+    expect(result?.message).toContain('gh pr checks failed');
+    expect(result?.message).toMatch(/no pull requests/i);
+  });
+
+  it('github_pr_checks: gate deny does not run gh', async () => {
+    const ghCalls: unknown[] = [];
+    const result = await handleRepoChatIntent('pr checks', deps({
+      forgeContext: githubForge,
+      async runGh() {
+        ghCalls.push(1);
+        return { ok: true, stdout: 'ok', stderr: '', exitCode: 0 };
+      },
+      commandGate: {
+        gate: (): CommandGateDecision => ({
+          allowed: false,
+          requireConfirmation: false,
+          commandTier: 'read-only',
+          forbidBackground: false,
+          mustRecord: false,
+          rationale: 'denied in test',
+        }),
+      } as CommandGatePort,
+    }));
+
+    expect(result?.message).toMatch(/denied/i);
+    expect(ghCalls).toEqual([]);
+  });
+
+  it('githubPrChecksUnavailableMessage: null only when GitHub + gh', () => {
+    expect(githubPrChecksUnavailableMessage(githubForge)).toBeNull();
+    expect(
+      githubPrChecksUnavailableMessage({
+        ...githubForge,
+        tools: { gh: false, glab: false },
+      }),
+    ).toMatch(/not on PATH/i);
+    expect(
+      githubPrChecksUnavailableMessage({
+        ...githubForge,
+        hostClass: 'gitlab',
+        primaryRemoteUrl: 'git@gitlab.com:acme/app.git',
+        remotes: [{ name: 'origin', url: 'git@gitlab.com:acme/app.git', purpose: 'fetch' }],
+        tools: { gh: false, glab: true },
+      }),
+    ).toMatch(/glab ci|pipeline/i);
   });
 
   // -------------------------------------------------------------------------
