@@ -96,9 +96,15 @@ import {
 import { goalGlyph, roadmapProgress, goalVerdictTag, goalVerdictFromOutcome, isGoalVerifiedDone, isDuplicateGoalTitle, formatGoalsForContext, ROADMAP_LIMIT, goalDepth } from '../core/goal-todo.js';
 import {
   buildGoalRewatchContext,
+  buildGoalStewardshipActLine,
   buildResumeGoalOrientation,
   mergeGoalRewatchIntoContext,
+  selectGoalStewardshipActProposals,
 } from '../core/resume-goal-orientation.js';
+import {
+  formatCompletionTruthChrome,
+  mergeCompletionTruthIntoOrientation,
+} from '../core/completion-truth-chrome.js';
 import { buildVerifyReceipt } from '../core/verify.js';
 import type { Goal, GoalState } from '../core/goal-todo.js';
 
@@ -1372,6 +1378,10 @@ export async function runChatLoop(
   // burn the latch). Mid-session idle re-issue skipped (no cheap focus seam).
   let goalRewatchBlock: string | null | undefined = undefined;
   let goalRewatchInjected = false;
+  // P2.5: last end-of-turn completion-truth chrome (from CompletionResultV1 when
+  // attached). Used to surface unverified honesty on recap/orientation within
+  // the same chat session. Not durable across process restarts (no r7 log rewrite).
+  let lastCompletionTruth: string | undefined;
 
   // One quiet orientation line on entry — NOT a per-turn label. Real chat shells
   // (claude, gpt) don't relabel the prompt every turn; they show a clean caret and
@@ -1450,10 +1460,18 @@ export async function runChatLoop(
       const resumeGoalStore = createFileGoalStore({ clock: ctx.clock });
       const allGoals = await resumeGoalStore.list().catch(() => [] as Goal[]);
       const projectKey = await resolveProjectKey(activeCwd).catch(() => null);
-      goalOrient = buildResumeGoalOrientation(allGoals, {
-        conversationId: convId,
-        projectKey,
-      });
+      const scope = { conversationId: convId, projectKey };
+      goalOrient = buildResumeGoalOrientation(allGoals, scope);
+      // P2.6: multi-goal resume prefers a concrete stewardship act line (propose
+      // next steps) over a pure list — still never auto-mutates goals.
+      const proposals = selectGoalStewardshipActProposals(allGoals, scope);
+      if (proposals.length >= 2) {
+        const act = buildGoalStewardshipActLine(allGoals, scope);
+        if (act !== null) goalOrient = act;
+      }
+      // P2.5: fold session-latched completion honesty into orientation when present
+      // (same process only — durable CR log rewrite is out of scope).
+      goalOrient = mergeCompletionTruthIntoOrientation(goalOrient, lastCompletionTruth);
     } catch {
       goalOrient = null; // fail-soft: missing/broken goal store never blocks resume
     }
@@ -1465,11 +1483,15 @@ export async function runChatLoop(
       await showFirstTouch('recap');
       if (conversationLive) {
         // Prefer the bottom dock (Ink). Fall back to a transcript line on legacy
-        // sinks that have no setRecap seam.
+        // sinks that have no setRecap seam. P2.5: when last turn left unverified
+        // honesty latched, fold it into the dock body so recap is not silent.
+        const dockBody =
+          mergeCompletionTruthIntoOrientation(recapText, lastCompletionTruth) ??
+          recapText;
         if (typeof out.setRecap === 'function') {
-          out.setRecap(recapText);
+          out.setRecap(dockBody);
         } else {
-          out.write('\n  ' + formatRecapLine(recapText, out.color) + '\n\n');
+          out.write('\n  ' + formatRecapLine(dockBody, out.color) + '\n\n');
         }
       }
     }
@@ -6359,6 +6381,48 @@ Output ONLY valid JSON (no prose, no markdown).`;
       noteRateLimit(result);
       await syncCapacity();
       await persistCompletedTurnProvider(result.final);
+
+      // P2.5: latch completion-truth chrome from CompletionResultV1 when attached
+      // (flag-off / absent → no latch; no theater). End-of-turn chrome + reduce
+      // already surface it; latch enables resume/recap merge within the session.
+      try {
+        const truth = formatCompletionTruthChrome(result.final?.completionResult);
+        if (truth !== undefined) lastCompletionTruth = truth;
+      } catch {
+        /* pure format fail-soft */
+      }
+
+      // P2.6: after every model turn, refresh the board next-action projection and
+      // goal context so parked work is not a silent museum. Fail-soft always.
+      try {
+        await syncBoard();
+        await refreshGoalContext();
+      } catch {
+        /* board/context chrome — never block the turn */
+      }
+
+      // P2.6: when multiple open goals need attention after a successful settle,
+      // propose a concrete next step (never auto-mutate without gates).
+      if (
+        result.final?.success === true &&
+        result.final.questions === undefined &&
+        !interruptedByEsc
+      ) {
+        try {
+          const projectKey = await resolveProjectKeyOnce();
+          const all = await goalStore.list();
+          const scope = { conversationId: convId, projectKey };
+          const proposals = selectGoalStewardshipActProposals(all, scope);
+          if (proposals.length >= 2) {
+            const act = buildGoalStewardshipActLine(all, scope);
+            if (act !== null) {
+              out.write(dim(`  ${act}\n`, out.color));
+            }
+          }
+        } catch {
+          /* stewardship propose is best-effort chrome */
+        }
+      }
 
       // P2.1: after a successful model turn, persist an AI-edit checkpoint when the
       // working tree has file deltas (enables safe NL undo). Fail-soft always.

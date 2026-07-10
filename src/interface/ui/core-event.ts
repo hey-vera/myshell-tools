@@ -22,6 +22,7 @@
  */
 
 import type { CoreEvent } from '../../core/types.js';
+import { formatCompletionTruthChrome } from '../../core/completion-truth-chrome.js';
 import type { Action, Verbosity } from './state.js';
 
 const MYSHELL_DEBUG = 'MYSHELL_DEBUG';
@@ -170,6 +171,14 @@ export function coreEventToActions(
           ...(ev.routingReceipt !== undefined && ev.routingReceipt.length > 0
             ? { routingReceipt: ev.routingReceipt }
             : {}),
+          // P2.5: surface real CompletionResultV1 verify/settle honesty in chrome.
+          // Pure format; omit when CR absent (flag-off / not attached).
+          ...(() => {
+            const line = formatCompletionTruthChrome(ev.completionResult);
+            return line !== undefined && line.length > 0
+              ? { completionTruth: line }
+              : {};
+          })(),
         },
       ];
   }
