@@ -191,6 +191,15 @@ export interface AppConfig {
    */
   codebaseAwareness?: boolean;
   /**
+   * OPTIONAL budgeted model ghost for Tab complete (P1.5). Absent/false → OFF
+   * (default): local-only ghost (history/slash/path/goalHints) is unchanged.
+   * When true, after a deliberate pause with NO local suggestion, a tiny
+   * subscription-native worker-tier completion may propose a dim ghost suffix.
+   * Fail-soft, debounced, cancelled on keystroke, never blocks typing, disableable
+   * here or via Control Panel. No new API-key surface.
+   */
+  modelGhost?: boolean;
+  /**
    * USER MEMORY master switch (memory-architecture §9). Absent/true → memory on
    * (read + inject + capture); false → the privacy kill-switch: no retrieval, no
    * injection, no proposals (existing facts remain listable/exportable). The
