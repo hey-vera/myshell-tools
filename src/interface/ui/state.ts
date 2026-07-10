@@ -683,6 +683,12 @@ export type Action =
        * from the CoreEvent final. Absent when no truthful routing fields existed.
        */
       readonly routingReceipt?: string;
+      /**
+       * End-of-turn completion-truth chrome from CompletionResultV1 when present
+       * (verified vs unverified · terminal · settle honesty). Absent when the
+       * final carried no completionResult (flag-off or not attached).
+       */
+      readonly completionTruth?: string;
     }
 
   // --- control-panel/open: open the panel, optionally to a specific section.
