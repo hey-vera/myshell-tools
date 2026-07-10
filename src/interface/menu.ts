@@ -184,6 +184,7 @@ import type { SystemModel } from '../core/understanding.js';
 import { verifyStage } from '../core/work-call.js';
 import { isRecapStale, recapEligible, type RecapResult } from '../core/recap.js';
 import { buildPreflightDeps } from './preflight-deps.js';
+import { makeModelGhostSuggester } from '../core/model-ghost.js';
 import type { IntentFrame } from '../core/intent.js';
 import { deriveDraftGoalSkeleton } from '../core/draft-goal.js';
 import { shouldShowFirstTouch, markSeen, FIRST_TOUCH_LINES } from '../core/first-touch.js';
@@ -7216,10 +7217,47 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         learnedTaste: true,
         codebaseAwareness: cfg.codebaseAwareness !== false,
         setAsDefault: cfg.setAsDefault === true,
+        modelGhost: cfg.modelGhost === true,
       };
       out.syncSettings(settings);
     } catch {
       /* settings snapshot is best-effort chrome */
+    }
+  };
+
+  // Optional model ghost port (P1.5): wire a budgeted worker-tier completer when
+  // config.modelGhost is on; clear when off. Fail-soft — never throws into the menu.
+  const syncModelGhost = (): void => {
+    if (inkHandle === null) return;
+    try {
+      if (mutableCtx.config.modelGhost !== true) {
+        inkHandle.setSuggestGhost(null);
+        return;
+      }
+      const envSnap = mutableCtx.env;
+      const authenticatedProviders = (
+        ['claude', 'codex', 'opencode', 'grok'] as const
+      ).filter((id) => envSnap[id]?.authenticated === true);
+      const availableModels: Partial<Record<ProviderId, readonly string[]>> = {};
+      for (const id of authenticatedProviders) {
+        const models = envSnap[id]?.availableModels;
+        if (models !== undefined && models.length > 0) availableModels[id] = models;
+      }
+      const suggester = makeModelGhostSuggester({
+        providers: ctx.providers,
+        policy: POLICY_PRESETS.balanced,
+        cwd: ctx.cwd,
+        sandbox: helperSandbox(ctx.sandbox),
+        ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
+        ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
+      });
+      inkHandle.setSuggestGhost(suggester);
+    } catch {
+      try {
+        inkHandle.setSuggestGhost(null);
+      } catch {
+        /* fail-soft */
+      }
     }
   };
 
@@ -7264,12 +7302,24 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           await saveConfig(mutableCtx.config);
           break;
         }
+        case 'model-ghost': {
+          // Default OFF: persist true only when enabling; clear key when disabling.
+          const wantEnabled = intent.value === true;
+          mutableCtx.config = withOptional(
+            mutableCtx.config,
+            'modelGhost',
+            wantEnabled ? true : undefined,
+          );
+          await saveConfig(mutableCtx.config);
+          break;
+        }
         case 'default-shell': {
           mutableCtx.config = await toggleDefaultShell(mutableCtx.config, out);
           break;
         }
       }
       syncSettings();
+      syncModelGhost();
     } catch {
       /* settings mutation is best-effort */
     }
@@ -7281,6 +7331,14 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     inkHandle.onControlPanelSettingAction((intent) => {
       handleSettingIntent(intent).catch(() => { /* best-effort */ });
     });
+  }
+
+  // Initial settings + model-ghost wiring (P1.5). Fail-soft; re-run on mutations.
+  try {
+    syncSettings();
+    syncModelGhost();
+  } catch {
+    /* best-effort chrome */
   }
 
   try {
@@ -8018,6 +8076,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         const autoMode = resolveAutoMode(mutableCtx.env, accounts);
         mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode, mutableCtx.env, inkReadKey);
         syncSettings();
+        syncModelGhost();
         continue;
       }
 
@@ -8025,6 +8084,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       if (key === 's') {
         await runSettings(ctx, mutableCtx, out, readLine, inkReadKey);
         syncSettings();
+        syncModelGhost();
         continue;
       }
 

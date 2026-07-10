@@ -914,6 +914,13 @@ export interface InkMountHandle {
     handler: ((action: { readonly key: string; readonly value?: string | boolean }) => void) | null,
   ): void;
   /**
+   * Install (or clear) the optional model-ghost SuggestGhost port (P1.5).
+   * See {@link InkAppBridge.setSuggestGhost}.
+   */
+  setSuggestGhost(
+    fn: ((line: string, signal: AbortSignal) => Promise<string | null>) | null,
+  ): void;
+  /**
    * Drive one model turn's CoreEvent stream into the reducer-backed transcript
    * (the STEP-3b streaming path). Same return shape as render.ts `renderStream`.
    */
@@ -1063,6 +1070,7 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
     },
     setMenuCaptureActive: (active) => bridge.setMenuCaptureActive(active),
     onControlPanelSettingAction: (handler) => bridge.onControlPanelSettingAction(handler),
+    setSuggestGhost: (fn) => bridge.setSuggestGhost(fn),
     beginTurn,
     resetTurn,
     renderTurn,

@@ -6,7 +6,12 @@ import assert from 'node:assert/strict';
 import {
   applyGhost,
   GHOST_DEBOUNCE_MS,
+  MODEL_GHOST_MAX_SUFFIX,
+  MODEL_GHOST_MIN_PREFIX,
+  parseModelGhostCompletion,
   proposeGhost,
+  resolveGhostPrecedence,
+  shouldOfferModelGhost,
 } from '../../src/interface/ghost-text.ts';
 import { goalHintsFromBoard } from '../../src/interface/ui/layout.ts';
 import type { GoalBoardRow } from '../../src/interface/ui/state.ts';
@@ -201,4 +206,89 @@ test('free-text /goal arg is not slash-mangled; history can still complete', () 
   });
   assert.ok(g);
   assert.equal(g.full, '/goal fix the flaky test');
+});
+
+// ---------------------------------------------------------------------------
+// Optional model ghost (P1.5) — pure gate / parse / precedence
+// ---------------------------------------------------------------------------
+
+test('resolveGhostPrecedence: local always wins over model', () => {
+  const local = { full: 'hello world', suffix: ' world', source: 'history' as const };
+  const model = { full: 'hello there', suffix: ' there', source: 'model' as const };
+  assert.equal(
+    resolveGhostPrecedence({ local, model, modelEnabled: true })?.full,
+    'hello world',
+  );
+  assert.equal(
+    resolveGhostPrecedence({ local: null, model, modelEnabled: true })?.source,
+    'model',
+  );
+  assert.equal(
+    resolveGhostPrecedence({ local: null, model, modelEnabled: false }),
+    null,
+  );
+  assert.equal(
+    resolveGhostPrecedence({ local: null, model: null, modelEnabled: true }),
+    null,
+  );
+});
+
+test('shouldOfferModelGhost: default off; local miss + prose only', () => {
+  assert.equal(
+    shouldOfferModelGhost({ enabled: false, local: null, line: 'fix the' }),
+    false,
+  );
+  assert.equal(
+    shouldOfferModelGhost({
+      enabled: true,
+      local: { full: 'fix the migration', suffix: ' migration', source: 'history' },
+      line: 'fix the',
+    }),
+    false,
+  );
+  assert.equal(
+    shouldOfferModelGhost({ enabled: true, local: null, line: 'fix the', kind: 'none' }),
+    true,
+  );
+  assert.equal(
+    shouldOfferModelGhost({ enabled: true, local: null, line: '/he', kind: 'slash-name' }),
+    false,
+  );
+  assert.equal(
+    shouldOfferModelGhost({ enabled: true, local: null, line: 'a', kind: 'none' }),
+    false,
+    'below MODEL_GHOST_MIN_PREFIX',
+  );
+  assert.equal(MODEL_GHOST_MIN_PREFIX, 2);
+  assert.equal(
+    shouldOfferModelGhost({ enabled: true, local: null, line: '', kind: 'none' }),
+    true,
+    'empty buffer may ask model when goalHints also miss',
+  );
+});
+
+test('parseModelGhostCompletion: suffix and full-line; fail-soft garbage', () => {
+  const suffix = parseModelGhostCompletion('fix the', ' migration path');
+  assert.ok(suffix);
+  assert.equal(suffix.source, 'model');
+  assert.equal(suffix.full, 'fix the migration path');
+  assert.equal(suffix.suffix, ' migration path');
+
+  const full = parseModelGhostCompletion('fix the', 'fix the release notes');
+  assert.ok(full);
+  assert.equal(full.full, 'fix the release notes');
+
+  assert.equal(parseModelGhostCompletion('hello', undefined), null);
+  assert.equal(parseModelGhostCompletion('hello', ''), null);
+  // Bare word without leading space is still accepted as a pure suffix (model
+  // sometimes omits the join space — Tab accept is user-gated).
+  const glued = parseModelGhostCompletion('hello', 'goodbye');
+  assert.ok(glued);
+  assert.equal(glued.full, 'hellogoodbye');
+
+  // Cap suffix length
+  const long = 'x'.repeat(MODEL_GHOST_MAX_SUFFIX + 40);
+  const capped = parseModelGhostCompletion('hi', long);
+  assert.ok(capped);
+  assert.equal(capped.suffix.length, MODEL_GHOST_MAX_SUFFIX);
 });
