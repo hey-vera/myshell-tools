@@ -96,6 +96,17 @@ const cases: ReadonlyArray<readonly [string, ReturnType<typeof inferRepoIntent>[
   ['gitlab status', 'gitlab_mr_status'],
   ['list the merge requests', 'gitlab_mr_status'],
   ['how is the mr?', 'gitlab_mr_status'],
+  // P1.7 thin extension — GitLab MR create (must not steal "mr status" / "mr list")
+  ['create a mr', 'gitlab_mr_create'],
+  ['create a merge request', 'gitlab_mr_create'],
+  ['open a mr', 'gitlab_mr_create'],
+  ['open a merge request', 'gitlab_mr_create'],
+  ['make a mr', 'gitlab_mr_create'],
+  ['submit a merge request', 'gitlab_mr_create'],
+  ['new mr', 'gitlab_mr_create'],
+  ['glab mr create', 'gitlab_mr_create'],
+  ['mr create', 'gitlab_mr_create'],
+  ['create a mr for the fix', 'gitlab_mr_create'],
 ];
 
 describe('inferRepoIntent', () => {
@@ -111,7 +122,9 @@ describe('inferRepoIntent', () => {
     assert.equal(inferRepoIntent('what changed?').mutatesWorkspace, false);
     assert.equal(inferRepoIntent('run tests').needsVerification, true);
     assert.equal(inferRepoIntent('create a pr').mutatesWorkspace, true);
+    assert.equal(inferRepoIntent('create a mr').mutatesWorkspace, true);
     assert.equal(inferRepoIntent('pr status').mutatesWorkspace, false);
+    assert.equal(inferRepoIntent('mr status').mutatesWorkspace, false);
     assert.equal(inferRepoIntent('pr checks').mutatesWorkspace, false);
     assert.equal(inferRepoIntent('ci status').mutatesWorkspace, false);
   });
