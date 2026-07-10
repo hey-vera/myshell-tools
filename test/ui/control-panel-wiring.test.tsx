@@ -590,10 +590,10 @@ test('committed transcript not duplicated when state pushed while CP open', asyn
 });
 
 // ---------------------------------------------------------------------------
-// non-empty Ctrl+G does NOT open CP
+// PR1: non-empty Ctrl+G DOES open CP (always-hot; draft preserved)
 // ---------------------------------------------------------------------------
 
-test('non-empty Ctrl+G does NOT open CP; after clearing, open works', async () => {
+test('non-empty Ctrl+G opens CP and preserves draft', async () => {
   const { bridge, store } = setupCPBridgeAndStore();
   store.dispatch({
     type: 'board/sync',
@@ -616,28 +616,14 @@ test('non-empty Ctrl+G does NOT open CP; after clearing, open works', async () =
   });
   assert.equal(bridge.input.currentLine(), 'h');
 
-  // Non-empty Ctrl+G → does NOT open.
-  await act(async () => {
-    stdin.write('\x07');
-    await tick();
-  });
-  assert.equal(store.getState().controlPanel.open, false);
-  assert.doesNotMatch(plain(lastFrame()), /CONTROL PANEL/);
-
-  // Clear the buffer.
-  await act(async () => {
-    stdin.write('\r');
-    await tick();
-  });
-  assert.equal(bridge.input.currentLine(), '');
-
-  // Now empty-buffer Ctrl+G → opens.
+  // Non-empty Ctrl+G → opens (always-hot).
   await act(async () => {
     stdin.write('\x07');
     await tick();
   });
   assert.equal(store.getState().controlPanel.open, true);
   assert.match(plain(lastFrame()), /CONTROL PANEL/);
+  assert.equal(bridge.input.currentLine(), 'h', 'draft must survive panel open');
 });
 
 // ---------------------------------------------------------------------------

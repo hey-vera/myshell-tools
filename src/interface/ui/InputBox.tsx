@@ -203,12 +203,10 @@ export interface InputBoxProps {
    */
   readonly onEscape?: (() => boolean) | undefined;
   /**
-   * Empty-buffer Ctrl+G handler. When the flag is on, the bridge routes
-   * the fullscreen panel toggle through it; returns true when consumed. When
-   * absent or returning false, the key falls through to the existing handler
-   * chain (menu single-key capture when the feature is off). Only fires on a
-   * truly empty editor; a non-empty buffer sends Ctrl+G through to editing as
-   * before.
+   * Always-hot Ctrl+G handler (any buffer state). When armed, the bridge routes
+   * the Control Panel toggle through it; returns true when consumed. When absent
+   * or returning false, the key falls through to the existing handler chain
+   * (menu single-key capture when the feature is off). Draft text is preserved.
    */
   readonly onToggleFullscreenPanel?: (() => boolean) | undefined;
   /**
@@ -219,17 +217,19 @@ export interface InputBoxProps {
    */
   readonly readPending?: (() => boolean) | undefined;
   /**
-   * Empty-buffer Left arrow handler. When the edit buffer is empty and a bare
-   * Left arrow is pressed, the editor calls this INSTEAD of cursor movement to
-   * signal "return to main menu". Non-empty buffer keeps moving the cursor as
-   * before. Word-movement (Ctrl/Meta+Left) is unchanged. Optional.
+   * Leave-chat / menu handler. Fires on:
+   * - bare Left when the edit buffer is empty, OR
+   * - Alt/Meta+Left on any buffer (draft preserved).
+   * Non-empty bare Left still moves the cursor. Word-movement stays on Ctrl+Left.
+   * Optional.
    */
   readonly onEmptyLeft?: (() => void) | undefined;
   /**
-   * Empty-buffer Right arrow handler. When the edit buffer is empty and a bare
-   * Right arrow is pressed, the editor calls this INSTEAD of cursor movement to
-   * open the Control Panel. Non-empty buffer keeps moving the cursor as before.
-   * Word-movement (Ctrl/Meta+Right) is unchanged. Optional.
+   * Open Control Panel handler. Fires on:
+   * - bare Right when the edit buffer is empty, OR
+   * - Alt/Meta+Right on any buffer (draft preserved).
+   * Non-empty bare Right still moves the cursor. Word-movement stays on Ctrl+Right.
+   * Optional.
    */
   readonly onEmptyRight?: (() => void) | undefined;
   /**
@@ -674,11 +674,10 @@ export function InputBox({
       return;
     }
 
-    // --- Empty-buffer Ctrl+G → toggle fullscreen panel -------------------------
-    // The one narrow bridge route from React events back to the reducer. Matches
-    // only a truly empty editor with Ctrl+G; non-empty or absent callback falls
-    // through to the existing handler chain (menu single-key capture when flag off).
-    if (value === '' && key.ctrl && input === 'g') {
+    // --- Always-hot Ctrl+G → toggle Control Panel (any buffer) -----------------
+    // Draft-preserving panel chord. When the callback is absent or returns false,
+    // fall through to the existing handler chain (menu single-key capture when off).
+    if (key.ctrl && input === 'g') {
       if (onToggleFullscreenPanel?.() === true) return;
     }
 
@@ -745,15 +744,28 @@ export function InputBox({
       return;
     }
 
-    // --- Empty-buffer arrow nav (focus-sensitive route keys) ---------------------
-    // Focus model (PANEL-NAV-SPEC / P0.9–P0.10):
+    // --- Always-hot Alt/Meta+arrows → leave chat / open panel (any buffer) ---
+    // Draft-preserving nav. Ctrl+arrow remains word-movement (below). Ink reports
+    // both xterm CSI `;3` (meta) and double-ESC option+arrow as key.meta.
+    if (key.meta && !key.ctrl) {
+      if (key.leftArrow) {
+        onEmptyLeft?.();
+        return;
+      }
+      if (key.rightArrow) {
+        onEmptyRight?.();
+        return;
+      }
+    }
+
+    // --- Empty-buffer bare arrow nav (focus-sensitive route keys) -------------
+    // Focus model (PANEL-NAV-SPEC / control-plane completion):
     // - Composer focused + empty buffer: bare Left → menu (onEmptyLeft), bare
     //   Right → open Control Panel (onEmptyRight). Safe: no cursor to preserve.
-    // - Composer focused + non-empty buffer: Left/Right stay cursor movement
-    //   (handled below). Nav is deferred until the draft is submitted or cleared.
+    // - Composer focused + non-empty buffer: bare Left/Right stay cursor movement
+    //   (handled below). Nav with draft uses Alt+arrows or Ctrl+G (above).
     // - Control Panel open: App sets this InputBox `active=false` so this handler
     //   is inert; the panel owns Esc/Left/Ctrl+G close (never a black hole).
-    // Word-movement chords (Ctrl/Meta+arrow) pass through (no-op on empty).
     if (value === '' && !key.meta && !key.ctrl) {
       if (key.leftArrow) {
         onEmptyLeft?.();
@@ -766,13 +778,14 @@ export function InputBox({
     }
 
     // --- Cursor movement -----------------------------------------------------
+    // Word-movement is Ctrl+arrow only; Alt/Meta+arrow is nav (handled above).
     if (key.leftArrow) {
-      if (key.meta || key.ctrl) setCursor(wordLeft(value, cursor));
+      if (key.ctrl) setCursor(wordLeft(value, cursor));
       else setCursor(Math.max(0, cursor - 1));
       return;
     }
     if (key.rightArrow) {
-      if (key.meta || key.ctrl) setCursor(wordRight(value, cursor));
+      if (key.ctrl) setCursor(wordRight(value, cursor));
       else setCursor(Math.min(value.length, cursor + 1));
       return;
     }

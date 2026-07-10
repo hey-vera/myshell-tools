@@ -28,9 +28,9 @@ import {
 //
 // Single active `useInput` owner per route — terminals have no rich focus:
 //
-// - **Chat route:** InputBox owns keys. Empty-buffer bare Right / Ctrl+G open
-//   this panel; empty-buffer bare Left returns to the main menu. Non-empty
-//   buffer keeps Left/Right as cursor movement.
+// - **Chat route:** InputBox owns keys. Always-hot Ctrl+G / Alt+Right (and
+//   empty-buffer bare Right) open this panel; Alt+Left or empty-buffer bare Left
+//   returns to the main menu. Non-empty bare Left/Right stay cursor movement.
 // - **Control Panel route (this component):** App sets InputBox `active=false`
 //   and `visible=false` so the composer is not a competing listener and cannot
 //   trap keys. This panel's `useInput` is the sole owner while `active`.

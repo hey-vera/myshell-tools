@@ -21,10 +21,16 @@ export interface BottomLegendProps {
   readonly onLegendClick?: ((action: LegendClickAction) => void) | undefined;
 }
 
-/** Clustered chat key legend — no edge-padding that exiles control panel right. */
-const FULL_LEGEND = '\u2190 menu  \u00b7  Shift+Tab mode  \u00b7  \u2192 panel  \u00b7  Esc leave';
-/** Narrow terminals keep the essential back + panel affordances. */
-const NARROW_LEGEND = '\u2190 menu  \u00b7  \u2192 panel';
+/**
+ * Clustered chat key legend — no edge-padding that exiles control panel right.
+ * Always-hot chords (work with draft): Alt+← leave, Ctrl+G panel.
+ * Bare ←/→ still open menu/panel when the buffer is empty (not listed in narrow).
+ * Esc leave: idle Esc → menu; mid-turn Esc → cancel turn (status line).
+ */
+const FULL_LEGEND =
+  'Alt+\u2190 menu  \u00b7  Shift+Tab mode  \u00b7  Ctrl+G panel  \u00b7  Esc leave';
+/** Narrow terminals keep the essential always-hot leave + panel affordances. */
+const NARROW_LEGEND = 'Alt+\u2190 menu  \u00b7  Ctrl+G panel';
 /** Columns below this threshold drop mode/interrupt hints. */
 const NARROW_COLUMNS = 60;
 
