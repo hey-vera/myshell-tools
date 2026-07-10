@@ -110,7 +110,9 @@ export function createInkStore(bridge: InkAppBridge, observer?: InkStoreObserver
     getState: () => state,
     dispatch(action: Action): void {
       const before = state;
-      state = reduce(state, action);
+      // Inject wall-clock so reduce can stamp lastEventAt for honest stall chrome
+      // (pure reducer never calls Date.now itself).
+      state = reduce(state, action, Date.now());
       const after = state;
       bridge.pushState(after);
       if (observer) {

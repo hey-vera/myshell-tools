@@ -322,6 +322,8 @@ test('createTurnDriver does not dispatch a duplicate turn/start when the optimis
           panelists: [],
           synthesizing: null,
           workLabel: 'Preparing',
+          lastEventAt: null,
+          lastPulseLabel: 'Preparing',
           toolSinceProse: false,
           breakBeforeNextProse: false,
           proseStarted: false,
