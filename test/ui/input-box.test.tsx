@@ -425,7 +425,9 @@ test('plain single Enter still submits typed input (no paste path interference)'
   assert.deepEqual(submitted, ['typed']);
 });
 
-test('queued indicator appears when setQueued(N) is called', async () => {
+test('legacy setQueued(N) still paints indicator (menu no longer drives it)', async () => {
+  // Mid-turn prose is live notes ("noted · applies next"); the chat loop never
+  // calls setQueued. Bridge API remains for compatibility — prove it still paints.
   const bridge = createInputBoxBridge();
   const { lastFrame } = render(
     <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
@@ -443,6 +445,16 @@ test('queued indicator appears when setQueued(N) is called', async () => {
       .some((r) => r.includes('Mode: Balanced · /goal · /help · /back')),
     `queued row should sit above the folded bottom rule, got:\n${frame}`,
   );
+});
+
+test('composer default (setQueued never called) has no queued indicator', async () => {
+  const bridge = createInputBoxBridge();
+  const { lastFrame } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  await tick();
+  const frame = plain(lastFrame());
+  assert.ok(!frame.includes('queued ('), `expected no queued indicator by default, got:\n${frame}`);
 });
 
 test('composerRules uses the full width and folds hints into the bottom rule', () => {
