@@ -20,6 +20,7 @@
  */
 
 import type { CoreEvent } from '../core/types.js';
+import { formatCompletionTruthChrome } from '../core/completion-truth-chrome.js';
 import type { ProviderId } from '../providers/port.js';
 import type { CliError, ErrorCategory } from '../providers/errors.js';
 import { classifyError, formatErrorMessage } from '../providers/errors.js';
@@ -922,6 +923,24 @@ export async function renderStream(
           out.write(`${dim(line, c)}\n`);
         }
 
+        // P2.5 completion-truth chrome from CompletionResultV1 when present.
+        // Verified vs unverified · terminal · settle honesty — no theater when absent.
+        function writeCompletionTruth(
+          finalEv: Extract<CoreEvent, { type: 'final' }>,
+        ): void {
+          if (isQuiet) return;
+          const line = formatCompletionTruthChrome(finalEv.completionResult);
+          if (line === undefined || line.length === 0) return;
+          out.write(`${dim(line, c)}\n`);
+        }
+
+        function writeEndOfTurnChrome(
+          finalEv: Extract<CoreEvent, { type: 'final' }>,
+        ): void {
+          writeRoutingReceipt(finalEv);
+          writeCompletionTruth(finalEv);
+        }
+
         // Render evidence receipt when present.
         // Append after any advisory notice and before the terminal completion line.
         function renderReceipt(): void {
@@ -1004,7 +1023,7 @@ export async function renderStream(
               if (ev.blocked.preservedWork.length > 0) {
                 out.write(`  ${dim('Preserved:', c)} ${ev.blocked.preservedWork.slice(0, 200)}\n`);
               }
-              writeRoutingReceipt(ev);
+              writeEndOfTurnChrome(ev);
             }
             renderReceipt();
             break;
@@ -1026,7 +1045,7 @@ export async function renderStream(
                   c,
                 )}\n`,
               );
-              writeRoutingReceipt(ev);
+              writeEndOfTurnChrome(ev);
             }
             break;
           }
@@ -1047,7 +1066,7 @@ export async function renderStream(
               `attempts: ${ev.attempts}, ` +
               `session: ${ev.sessionId}\n`,
             );
-            writeRoutingReceipt(ev);
+            writeEndOfTurnChrome(ev);
           }
           renderReceipt();
           break;
@@ -1060,7 +1079,7 @@ export async function renderStream(
         // lead-in before the ask_user block, already stripped above) has been
         // flushed; printing "✓ done" here would read as if the task were over.
         if (ev.questions !== undefined) {
-          writeRoutingReceipt(ev);
+          writeEndOfTurnChrome(ev);
           break;
         }
 
@@ -1109,7 +1128,7 @@ export async function renderStream(
           );
         }
         // Visible dispatch: one dim who/why line after a finished turn (PR-B).
-        writeRoutingReceipt(ev);
+        writeEndOfTurnChrome(ev);
         break;
       }
     }

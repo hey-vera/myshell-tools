@@ -10,11 +10,15 @@ import type { Goal } from '../../src/core/goal-todo.ts';
 import type { RoadmapItem } from '../../src/core/work-contract.ts';
 import {
   buildGoalRewatchContext,
+  buildGoalStewardshipActLine,
   buildResumeGoalOrientation,
   isResumePartnerGoal,
   mergeGoalRewatchIntoContext,
+  mergeStewardshipActIntoRewatch,
+  selectGoalStewardshipActProposals,
   selectResumePartnerGoals,
   GOAL_REWATCH_CONTEXT_HEADER,
+  GOAL_STEWARDSHIP_ACT_MAX_CHARS,
   RESUME_GOAL_ORIENTATION_MAX_CHARS,
 } from '../../src/core/resume-goal-orientation.ts';
 
@@ -329,5 +333,125 @@ describe('mergeGoalRewatchIntoContext', () => {
     assert.ok(merged.includes(PLAN));
     assert.ok(merged.indexOf('STANDING GOALS REWATCH') < merged.indexOf('CURRENT GOALS'));
     assert.match(merged, /\n\nCURRENT GOALS/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P2.6 — stewardship act proposals (concrete next step; never auto-mutate)
+// ---------------------------------------------------------------------------
+
+describe('selectGoalStewardshipActProposals / buildGoalStewardshipActLine', () => {
+  it('returns empty when no partner goals', () => {
+    assert.deepEqual(selectGoalStewardshipActProposals([], SCOPE), []);
+    assert.equal(buildGoalStewardshipActLine([], SCOPE), null);
+  });
+
+  it('proposes low-risk act when parked goal has a clear next step', () => {
+    const g = makeGoal({
+      roadmap: [makeItem({ id: 't1', text: 'Write expiry tests', status: 'pending' })],
+    });
+    const proposals = selectGoalStewardshipActProposals([g], SCOPE);
+    assert.equal(proposals.length, 1);
+    assert.equal(proposals[0]!.risk, 'low');
+    assert.equal(proposals[0]!.nextAction, 'Write expiry tests');
+    const line = buildGoalStewardshipActLine([g], SCOPE);
+    assert.ok(line !== null);
+    assert.match(line!, /^Steward:/);
+    assert.match(line!, /Write expiry tests/);
+    assert.match(line!, /Say go to resume|go/i);
+    // Never claims to have mutated state.
+    assert.ok(!line!.toLowerCase().includes('auto-'));
+  });
+
+  it('marks blocked goals as needs-user (not auto-acting)', () => {
+    const g = makeGoal({
+      state: 'blocked',
+      roadmap: [makeItem({ id: 't1', text: 'Prod credentials', status: 'blocked' })],
+    });
+    const proposals = selectGoalStewardshipActProposals([g], SCOPE);
+    assert.equal(proposals[0]!.risk, 'needs-user');
+    const line = buildGoalStewardshipActLine([g], SCOPE);
+    assert.ok(line !== null);
+    assert.match(line!, /not auto-acting/);
+  });
+
+  it('multi-goal line names concrete next steps and asks to pick one', () => {
+    const goals = [
+      makeGoal({
+        id: 'g1',
+        title: 'Auth JWT',
+        roadmap: [makeItem({ id: 't1', text: 'Write tests' })],
+      }),
+      makeGoal({
+        id: 'g2',
+        title: 'Docs pass',
+        state: 'queued',
+        roadmap: [makeItem({ id: 't1', text: 'Edit README' })],
+      }),
+    ];
+    const line = buildGoalStewardshipActLine(goals, SCOPE);
+    assert.ok(line !== null);
+    assert.match(line!, /2 goals need attention/);
+    assert.match(line!, /Write tests/);
+    assert.match(line!, /Edit README/);
+    assert.match(line!, /Pick one to act/);
+    assert.ok(line!.length <= GOAL_STEWARDSHIP_ACT_MAX_CHARS);
+  });
+
+  it('never invents foreign goals', () => {
+    const foreign = makeGoal({
+      conversationId: 'conv-other',
+      projectKey: 'other#zzz',
+      title: 'Secret',
+      roadmap: [makeItem({ id: 't1', text: 'Do stuff' })],
+    });
+    assert.equal(buildGoalStewardshipActLine([foreign], SCOPE), null);
+  });
+});
+
+describe('mergeStewardshipActIntoRewatch', () => {
+  it('returns null when both empty', () => {
+    assert.equal(mergeStewardshipActIntoRewatch(null, null), null);
+  });
+
+  it('appends steward next when multi-goal act present', () => {
+    const rewatch = `${GOAL_REWATCH_CONTEXT_HEADER}\n2 open goals: parked “A”; parked “B”.`;
+    const act = 'Steward: 2 goals need attention — parked “A” (next: X). Pick one to act on.';
+    const merged = mergeStewardshipActIntoRewatch(rewatch, act);
+    assert.ok(merged !== null);
+    assert.ok(merged!.includes(rewatch));
+    assert.match(merged!, /Steward next:/);
+  });
+});
+
+describe('buildGoalRewatchContext multi-goal stewardship enrich', () => {
+  it('folds steward act into rewatch when ≥2 open goals', () => {
+    const goals = [
+      makeGoal({
+        id: 'g1',
+        title: 'Auth JWT',
+        roadmap: [makeItem({ id: 't1', text: 'Write tests' })],
+      }),
+      makeGoal({
+        id: 'g2',
+        title: 'Docs pass',
+        roadmap: [makeItem({ id: 't1', text: 'Edit README' })],
+      }),
+    ];
+    const block = buildGoalRewatchContext(goals, SCOPE);
+    assert.ok(block !== null);
+    assert.match(block!, /STANDING GOALS REWATCH/);
+    assert.match(block!, /Steward next:/);
+    assert.match(block!, /2 goals need attention|Write tests/);
+  });
+
+  it('does not append steward act for a single goal (orientation already enough)', () => {
+    const g = makeGoal({
+      roadmap: [makeItem({ id: 't1', text: 'Write expiry tests' })],
+    });
+    const block = buildGoalRewatchContext([g], SCOPE);
+    assert.ok(block !== null);
+    assert.ok(!block!.includes('Steward next:'));
+    assert.match(block!, /Write expiry tests/);
   });
 });
