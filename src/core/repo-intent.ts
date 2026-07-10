@@ -29,6 +29,12 @@ export type RepoOperationIntent =
    * / "gh pr create" — explicit create only; never steals plain "pr status".
    */
   | 'github_pr_create'
+  /**
+   * NL GitHub PR review view (P1.6 thin extension): "pr review" / "show reviews"
+   * / "review comments" / "pr feedback" — read-only review summary only; never
+   * steals status, checks, or create; never approve/request-changes.
+   */
+  | 'github_pr_review'
   /** NL GitLab MR status (P1.7 thin): "mr status" / "gitlab status" — not local git status. */
   | 'gitlab_mr_status'
   /**
@@ -202,6 +208,26 @@ const GITHUB_PR_CHECKS_RE: readonly RegExp[] = [
   /\bare\s+(the\s+)?(checks?|ci)\s+(green|passing|ok|good|failing|failed|red)\b/,
   /\b(show|get|list)\s+(me\s+)?(the\s+)?(pr\s+|pull[\s-]?request\s+)?checks\b/,
   /\bhow\s+are\s+(the\s+)?checks\b/,
+];
+
+/**
+ * GitHub PR review / feedback phrases (P1.6 thin extension). Read-only view of
+ * reviews and comments. Checked after PR status + checks (so those keep their
+ * verbs) and before generic STATUS_RE. Must not match create, status, or checks.
+ */
+const GITHUB_PR_REVIEW_RE: readonly RegExp[] = [
+  /\bpr\s+review\b/,
+  /\bpull[\s-]?request\s+review\b/,
+  /\bgh\s+pr\s+(view\s+)?(review|comments)\b/,
+  /\bgithub\s+(pr\s+)?reviews?\b/,
+  /\b(show|get|list|see)\s+(me\s+)?(the\s+)?(pr\s+|pull[\s-]?request\s+)?reviews?\b/,
+  /\b(show|get|list|see)\s+(me\s+)?(the\s+)?(pr\s+|pull[\s-]?request\s+)?(review\s+)?comments\b/,
+  /\breview\s+comments\b/,
+  /\bpr\s+feedback\b/,
+  /\bpull[\s-]?request\s+feedback\b/,
+  /\b(pr|pull[\s-]?request)\s+comments\b/,
+  /\bfeedback\s+on\s+(the\s+)?(pr|pull[\s-]?request)\b/,
+  /\breviews?\s+on\s+(the\s+)?(pr|pull[\s-]?request)\b/,
 ];
 
 /**
@@ -490,6 +516,19 @@ export function inferRepoIntent(task: string): RepoIntent {
       needsVerification: false,
       constraints,
       rationale: 'natural-language GitHub PR checks / CI status request',
+    };
+  }
+
+  // PR review/comments after status+checks (those keep their verbs) and before generic status.
+  if (hasAny(text, GITHUB_PR_REVIEW_RE)) {
+    return {
+      version: 1,
+      operation: 'github_pr_review',
+      confidence: 'high',
+      mutatesWorkspace: false,
+      needsVerification: false,
+      constraints,
+      rationale: 'natural-language GitHub PR review / comments request (read-only)',
     };
   }
 

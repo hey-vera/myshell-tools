@@ -2,27 +2,29 @@
  * Safe natural-language repo chat handler.
  *
  * This is the interface seam between ordinary user language ("what changed?",
- * "run tests", "undo that", "pr status", "pr checks", "create a pr", "mr status",
- * "what forge am I on?") and repo infrastructure.
+ * "run tests", "undo that", "pr status", "pr checks", "pr review", "create a pr",
+ * "mr status", "what forge am I on?") and repo infrastructure.
  *
  * **Local file/git mastery is first-class (P1.8):** status, diff, test/verify,
  * commit, and undo do **not** need a forge CLI or remote. They run against the
  * local working tree regardless of hostClass (github | gitlab | other | none).
- * Forge-specific NL (PR/MR status/create/checks) degrades honestly when the host
- * is other (Bitbucket/Gitea/etc.) or none (local-only) — never pretends gh/glab
- * apply.
+ * Forge-specific NL (PR/MR status/create/checks/review) degrades honestly when
+ * the host is other (Bitbucket/Gitea/etc.) or none (local-only) — never pretends
+ * gh/glab apply.
  *
  * verify_only and commit execute under commandGate + oversight (same seams as
  * menu/cli verify paths). GitHub PR status (P1.6 thin) runs `gh pr status` when
  * the workspace is GitHub and gh is on PATH. GitHub PR checks (P1.6 thin
  * extension) runs read-only `gh pr checks` for CI/check status (no --watch).
- * GitHub PR create (P1.6 thin extension) runs non-interactive `gh pr create
- * --fill` under the same gate/oversight posture as commit — never force-push,
- * never invent base. GitLab MR list (P1.7 thin) runs `glab mr list` when the
- * workspace is GitLab and glab is on PATH. GitLab MR create (P1.7 thin extension)
- * runs non-interactive `glab mr create --fill --yes` under the same gate/oversight
- * posture as PR create — honest fail-soft otherwise. Undo plans via checkpoint
- * conflict gate, then applies under oversight + commandGate when safe.
+ * GitHub PR review (P1.6 thin extension) runs read-only `gh pr view --comments`
+ * for review/comment summary — never approve or request-changes. GitHub PR create
+ * (P1.6 thin extension) runs non-interactive `gh pr create --fill` under the same
+ * gate/oversight posture as commit — never force-push, never invent base. GitLab
+ * MR list (P1.7 thin) runs `glab mr list` when the workspace is GitLab and glab
+ * is on PATH. GitLab MR create (P1.7 thin extension) runs non-interactive
+ * `glab mr create --fill --yes` under the same gate/oversight posture as PR create
+ * — honest fail-soft otherwise. Undo plans via checkpoint conflict gate, then
+ * applies under oversight + commandGate when safe.
  */
 
 import { planUndoAiCheckpoint } from '../core/ai-checkpoint.js';
@@ -250,6 +252,32 @@ export function githubPrChecksUnavailableMessage(forge: WorkspaceContext): strin
   }
   // github but gh missing
   return 'This is a GitHub repo, but `gh` is not on PATH. Install the GitHub CLI (https://cli.github.com) or check PR checks in the browser. I will not pretend gh is available.';
+}
+
+/**
+ * Honest message when forge/tools cannot support GitHub PR review view. PURE-ish.
+ * Returns null only when host is GitHub and gh is on PATH.
+ * GitLab reviews are not faked via gh — suggest glab mr view language instead.
+ * Read-only only (no approve / request-changes mutation).
+ */
+export function githubPrReviewUnavailableMessage(forge: WorkspaceContext): string | null {
+  if (forge.hostClass === 'github' && forge.tools.gh) return null;
+
+  if (forge.hostClass === 'gitlab') {
+    return forge.tools.glab
+      ? 'This workspace is GitLab — not GitHub. gh PR review does not apply. Try `glab mr view --comments` in the shell (MR review NL is not wired yet), or open the MR in the GitLab UI.'
+      : 'This workspace is GitLab — not GitHub. gh PR review does not apply, and glab is not on PATH. Use the GitLab UI or install glab (https://gitlab.com/gitlab-org/cli) for `glab mr view --comments`.';
+  }
+  if (forge.hostClass === 'other') {
+    return 'This remote is not GitHub — I will not run gh PR review against a non-GitHub forge.';
+  }
+  if (forge.hostClass === 'none') {
+    return forge.gitRoot !== null
+      ? 'Local-only workspace (no remote forge) — there is no GitHub PR review to query.'
+      : 'This folder is not a git repo — there is no GitHub PR review to query.';
+  }
+  // github but gh missing
+  return 'This is a GitHub repo, but `gh` is not on PATH. Install the GitHub CLI (https://cli.github.com) or check PR reviews in the browser. I will not pretend gh is available.';
 }
 
 /**
@@ -630,6 +658,86 @@ function formatGlabMrCreateResult(
   return handled(
     operation,
     `glab mr create --fill --yes failed${code}:\n${detail}\n\nI will not hang on interactive prompts. If title/description or push is needed, run in a real shell:\n  ${GLAB_MR_CREATE_DISPLAY}\nor:\n  glab mr create --title "…" --description "…" --yes`,
+    { mutatesWorkspace: false },
+  );
+}
+
+/**
+ * Resolve forge + gated read-only `gh pr view --comments` when GitHub+gh.
+ * Thin review summary only — never approve / request-changes / submit review.
+ * GitLab/other/missing tools → honest degrade (suggest glab mr view language;
+ * never fake gh review on GitLab).
+ */
+async function handleGithubPrReview(deps: RepoChatHandlerDeps): Promise<RepoChatHandled> {
+  const forge = await resolveForge(deps);
+
+  if (forge === null) {
+    return handled(
+      'github_pr_review',
+      'Could not detect workspace forge context just now — try again, or run `gh pr view --comments` in the shell.',
+      { mutatesWorkspace: false },
+    );
+  }
+
+  const unavailable = githubPrReviewUnavailableMessage(forge);
+  if (unavailable !== null) {
+    return handled('github_pr_review', unavailable, { mutatesWorkspace: false });
+  }
+
+  const display = 'gh pr view --comments';
+  const runGh = deps.runGh ?? defaultRunGh;
+
+  if (deps.commandGate !== undefined) {
+    const gate = deps.commandGate.gate(display);
+    const confirmed = await confirmGate(
+      deps.commandGate,
+      gate,
+      'Run `gh pr view --comments` to show GitHub PR review / comments (read-only)?',
+    );
+    if (!gate.allowed || confirmed === false) {
+      await recordGate(deps.commandGate, deps.cwd, display, gate, confirmed, 'denied');
+      return handled(
+        'github_pr_review',
+        gate.allowed
+          ? 'PR review query declined by gate.'
+          : 'Command gate denied `gh pr view --comments`.',
+        { mutatesWorkspace: false },
+      );
+    }
+
+    const result = await runGh(['pr', 'view', '--comments'], deps.cwd);
+    await recordGate(deps.commandGate, deps.cwd, display, gate, confirmed, 'ran');
+    return formatGhPrReviewResult(result);
+  }
+
+  const result = await runGh(['pr', 'view', '--comments'], deps.cwd);
+  return formatGhPrReviewResult(result);
+}
+
+function formatGhPrReviewResult(result: GhRunResult): RepoChatHandled {
+  const out = clipForgeOutput(result.stdout);
+  const err = clipForgeOutput(result.stderr);
+
+  if (result.ok) {
+    if (out.length > 0) {
+      return handled(
+        'github_pr_review',
+        `GitHub PR review (via gh pr view --comments; read-only):\n\n${out}`,
+        { mutatesWorkspace: false },
+      );
+    }
+    return handled(
+      'github_pr_review',
+      'gh pr view --comments returned no output. There may be no open PR for this branch, or no review comments yet. Try `gh pr status` or open the PR on GitHub.',
+      { mutatesWorkspace: false },
+    );
+  }
+
+  const detail = err.length > 0 ? err : out.length > 0 ? out : 'unknown error';
+  const code = result.exitCode !== null ? ` (exit ${result.exitCode})` : '';
+  return handled(
+    'github_pr_review',
+    `gh pr view --comments failed${code}:\n${detail}`,
     { mutatesWorkspace: false },
   );
 }
@@ -1026,6 +1134,9 @@ export async function handleRepoChatIntent(
 
     case 'github_pr_checks':
       return handleGithubPrChecks(deps);
+
+    case 'github_pr_review':
+      return handleGithubPrReview(deps);
 
     case 'github_pr_create':
       return handleGithubPrCreate(deps);
