@@ -4,7 +4,7 @@
 
 `myshell-tools` is a terminal chat agent: plans, code, goals, research, and parallel work through conversation. It routes each task to the *cheapest* model likely to succeed, runs it on your real codebase, optionally has a **different vendor** review the result, and shows you exactly what it did — with **no fabricated quota %, ever**.
 
-> **Status: `3.169.0` — current daily drive.** Multi-goal one-chat (not an API-key product; not Claude Projects). Claude / Codex / Grok / OpenCode via subscription CLIs. OpenCode Go API key is the only intentional key exception. Live Effort Mode, Shift+Tab per-conversation mode, live control plane (Ctrl+G / Alt+arrows with draft, Esc leave / cancel-turn, no mid-turn queue — live notes), turn pulse + stall honesty, live model auto-adapt from provider CLI inventory, goals board + recap, local ghost Tab-complete (optional model ghost off by default), routing receipts + partner laws, forge-aware PR/MR status/create/checks/review/CI when `gh`/`glab` are present.
+> **Status: `3.170.0` - current daily drive.** Multi-goal one-chat (not an API-key product; not Claude Projects). Claude / Codex / Grok / OpenCode via subscription CLIs. OpenCode Go API key is the only intentional key exception. Live Effort Mode, Shift+Tab per-conversation mode, Esc exits to the terminal, `b` goes back, `c` opens the panel, durable drafts/session resume, goals survive leaving a chat, daemon-lite detached goal workers, smart status pulse, live model auto-adapt from provider CLI inventory, goals board + recap, local ghost Tab-complete (optional model ghost off by default), routing receipts + partner laws, forge-aware PR/MR status/create/checks/review/CI when `gh`/`glab` are present.
 
 ### Current daily use (honest)
 
@@ -12,7 +12,7 @@
 |----------|-------------|
 | Start | `npx myshell-tools` or `myshell-tools` after global install |
 | Change effort | Home `m` (global default) or Shift+Tab in chat (this conversation only) |
-| Navigate | Ctrl+G panel (with draft); Alt+←/→ leave/panel; empty-buffer arrows; Esc leave idle / cancel turn mid-stream |
+| Navigate | Esc exits to terminal; `b` back; `c` panel; Shift+Tab mode; Shift+Enter / Alt+Enter newline; left/right move the cursor; Up/Down recalls prior user messages |
 | Goals | One board + bottom recap; resume partner addresses parked goals; NL pause / pause all |
 | Repo chat | Natural language: status, diff, run tests, undo, commit, PR status/create/checks/review, MR list/create, GitLab CI |
 | Trust bar | No fake remaining-quota %; cooldowns/pressure/session tokens when observed; else `unknown` |
