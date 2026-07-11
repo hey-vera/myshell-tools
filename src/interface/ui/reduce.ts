@@ -130,31 +130,124 @@ function settleAllRunningGoals(
 }
 
 /**
- * Map a REAL tool name to a friendly present-tense verb for the live action line.
- * Only HONEST, unambiguous mappings are made; anything unrecognised returns the
- * raw tool name verbatim (never an invented verb). The provider tool names seen in
- * practice: Claude exposes the literal tool names (Edit/Write/Read/Bash/Grep/Glob/
- * …); codex emits coarse activity kinds (command_execution / file_change /
- * mcp_tool_call); opencode emits its own tool names. PURE.
+ * Optional context for smart pulse labels (goal title when the engine/UI has a
+ * real goal, never invented). PURE callers pass only what they already know.
  */
-function toolVerb(name: string): string {
+export interface PulseContext {
+  /** Human goal title when honestly known (tier-start title / goal card label). */
+  readonly goalTitle?: string;
+}
+
+/** Phase-machine workLabels that are safe to replace with a goal-title pulse. */
+const PHASE_LIKE_WORK_LABELS = new Set([
+  'Preparing',
+  'Routing',
+  'Composing',
+  // Legacy v1 label — still phase-like if any state still carries it.
+  'Thinking',
+  '',
+]);
+
+/**
+ * True when a shell/command detail honestly looks like a test run (vitest, jest,
+ * npm test, go test, …). Used only to prefer the scannable verb "Running tests"
+ * over a raw command dump — never invents a test run from an empty detail.
+ */
+export function looksLikeTestCommand(detail: string): boolean {
+  const d = detail.toLowerCase();
+  if (d.length === 0) return false;
+  // Explicit test runners / package scripts.
+  if (
+    /\b(vitest|jest|pytest|mocha|ava|tap|nodeunit|phpunit)\b/.test(d) ||
+    /\b(go\s+test|cargo\s+test|dotnet\s+test|ctest)\b/.test(d) ||
+    /\b(npm|pnpm|yarn|bun)\s+(test|run\s+test\b)/.test(d) ||
+    /\bnpx\s+vitest\b/.test(d) ||
+    /\bnpm\s+run\s+test\b/.test(d)
+  ) {
+    return true;
+  }
+  // Generic `*test*` script only when a package runner is also present.
+  if (/\b(npm|pnpm|yarn|bun|npx)\b/.test(d) && /\btests?\b/.test(d)) return true;
+  return false;
+}
+
+/**
+ * Map a REAL tool name (+ optional provider detail) to a scannable present-tense
+ * pulse verb for the live action line. Capitalized Gemini-class verbs
+ * (Reading / Editing / Running tests / …). Only HONEST, unambiguous mappings;
+ * anything unrecognised returns the raw tool name (never an invented verb).
+ * PURE.
+ */
+export function toolPulseVerb(
+  name: string,
+  detail?: string,
+): { readonly verb: string; readonly target?: string } {
   const n = name.toLowerCase();
+  const hasDetail = detail !== undefined && detail.length > 0;
   // file edits / writes
   if (n === 'edit' || n === 'write' || n === 'multiedit' || n === 'notebookedit' || n === 'file_change') {
-    return 'editing';
+    return hasDetail ? { verb: 'Editing', target: detail } : { verb: 'Editing' };
   }
   // reads
-  if (n === 'read' || n === 'notebookread') return 'reading';
-  // shell / command execution
-  if (n === 'bash' || n === 'command_execution' || n === 'shell') return 'running';
+  if (n === 'read' || n === 'notebookread') {
+    return hasDetail ? { verb: 'Reading', target: detail } : { verb: 'Reading' };
+  }
+  // shell / command execution — prefer "Running tests" when detail is a real test cmd
+  if (n === 'bash' || n === 'command_execution' || n === 'shell') {
+    if (hasDetail && looksLikeTestCommand(detail)) {
+      return { verb: 'Running tests' };
+    }
+    return hasDetail ? { verb: 'Running', target: detail } : { verb: 'Running' };
+  }
   // search
-  if (n === 'grep' || n === 'glob' || n === 'search' || n === 'list' || n === 'ls') return 'searching';
+  if (n === 'grep' || n === 'glob' || n === 'search' || n === 'list' || n === 'ls') {
+    return hasDetail ? { verb: 'Searching', target: detail } : { verb: 'Searching' };
+  }
   // web
-  if (n === 'webfetch' || n === 'fetch') return 'fetching';
-  if (n === 'websearch') return 'searching the web';
-  // a tool-call to another tool/server — show the raw name (honest, not invented).
+  if (n === 'webfetch' || n === 'fetch') {
+    return hasDetail ? { verb: 'Fetching', target: detail } : { verb: 'Fetching' };
+  }
+  if (n === 'websearch') {
+    return hasDetail ? { verb: 'Searching the web', target: detail } : { verb: 'Searching the web' };
+  }
   // Default: the raw tool name (never fabricated).
-  return name;
+  return hasDetail ? { verb: name, target: detail } : { verb: name };
+}
+
+/**
+ * Join a tool pulse into a scannable label: `Editing path`, `Reading`, 
+ * `Running tests`. PURE — never fabricates a target.
+ */
+export function formatToolPulseLabel(tool: {
+  readonly verb: string;
+  readonly target?: string;
+}): string {
+  if (tool.verb.length === 0) return '';
+  if (tool.target !== undefined && tool.target.length > 0) {
+    return `${tool.verb} ${tool.target}`;
+  }
+  return tool.verb;
+}
+
+/**
+ * Pick an honest human goal title from live goals, if any. Prefers the last
+ * running (else queued) goal whose label is not just the bare tier/id. PURE —
+ * returns undefined rather than inventing a title.
+ */
+export function activeGoalTitle(goals: readonly GoalView[]): string | undefined {
+  let queued: string | undefined;
+  for (let i = goals.length - 1; i >= 0; i -= 1) {
+    const g = goals[i];
+    if (g === undefined) continue;
+    if (g.state !== 'running' && g.state !== 'queued') continue;
+    const label = g.label.trim();
+    if (label.length === 0) continue;
+    // Skip bare tier/id stand-ins — not a real objective title.
+    if (label === g.tier || label === g.id) continue;
+    if (g.state === 'running') return label;
+    if (queued === undefined) queued = label;
+  }
+  return queued;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,17 +263,32 @@ function toolVerb(name: string): string {
 export const STALL_THRESHOLD_MS = 12_000;
 
 /**
- * Progressive pulse label from the live stream: tool verb when a real tool is
- * active, else the phase workLabel (Preparing / Thinking / Responding / verbose
- * tier label). PURE — never fabricates a verb.
+ * Progressive pulse label from the live stream:
+ *   1. tool verb (+ target) when a real tool is active
+ *   2. `Working on "goal title"` when a real goal title is known and the phase
+ *      is still preflight/routing/composing (not Responding / verbose tier)
+ *   3. else the phase workLabel (Preparing / Routing / Composing / Responding /
+ *      verbose tier label)
+ *
+ * PURE — never fabricates a verb, path, or goal title.
  */
 export function derivePulseLabel(
   stream: Pick<StreamView, 'workLabel' | 'currentTool'>,
+  ctx?: PulseContext,
 ): string {
   if (stream.currentTool !== undefined && stream.currentTool.verb.length > 0) {
-    return stream.currentTool.verb;
+    return formatToolPulseLabel(stream.currentTool);
   }
-  return stream.workLabel.length > 0 ? stream.workLabel : 'Thinking';
+  const wl = stream.workLabel;
+  const goalTitle = ctx?.goalTitle?.trim();
+  if (
+    goalTitle !== undefined &&
+    goalTitle.length > 0 &&
+    PHASE_LIKE_WORK_LABELS.has(wl)
+  ) {
+    return `Working on "${goalTitle}"`;
+  }
+  return wl.length > 0 ? wl : 'Composing';
 }
 
 /** True when a turn has gone silent long enough to surface stall chrome. PURE. */
@@ -193,14 +301,14 @@ export function isTurnStalled(
 }
 
 /**
- * Honest stall status text: `stalled · last Thinking · 47s`. The seconds are
+ * Honest stall status text: `stalled · last Composing · 47s`. The seconds are
  * the silence duration (now − lastEventAt), not invented work. PURE.
  */
 export function formatStallStatus(
   lastPulseLabel: string,
   silenceSecs: number,
 ): string {
-  const label = lastPulseLabel.length > 0 ? lastPulseLabel : 'Thinking';
+  const label = lastPulseLabel.length > 0 ? lastPulseLabel : 'Composing';
   const secs = Number.isFinite(silenceSecs) && silenceSecs > 0 ? Math.floor(silenceSecs) : 0;
   return `stalled · last ${label} · ${secs}s`;
 }
@@ -208,11 +316,15 @@ export function formatStallStatus(
 /**
  * Resolve the non-panel status headline: either the live progressive pulse, or
  * honest stall chrome when silence ≥ {@link STALL_THRESHOLD_MS}. PURE.
+ *
+ * Progressive priority: truncated live tool action (caller-supplied) → full
+ * {@link derivePulseLabel} (tool / goal title / phase workLabel).
  */
 export function resolveStatusHeadline(
   stream: Pick<StreamView, 'workLabel' | 'currentTool' | 'lastEventAt' | 'lastPulseLabel'>,
   nowMs: number | undefined,
   liveAction: string,
+  ctx?: PulseContext,
 ): { readonly stalled: boolean; readonly headline: string } {
   if (
     nowMs !== undefined &&
@@ -225,11 +337,13 @@ export function resolveStatusHeadline(
     const last =
       stream.lastPulseLabel.length > 0
         ? stream.lastPulseLabel
-        : derivePulseLabel(stream);
+        : derivePulseLabel(stream, ctx);
     return { stalled: true, headline: formatStallStatus(last, silenceSecs) };
   }
-  const headline = liveAction.length > 0 ? liveAction : stream.workLabel;
-  return { stalled: false, headline };
+  if (liveAction.length > 0) {
+    return { stalled: false, headline: liveAction };
+  }
+  return { stalled: false, headline: derivePulseLabel(stream, ctx) };
 }
 
 /** Actions that represent real stream / turn liveness (not chrome or panels). */
@@ -265,7 +379,11 @@ function isLivenessAction(action: Action): boolean {
  */
 function applyTurnPulse(state: UiState, action: Action, nowMs?: number): UiState {
   if (!isLivenessAction(action)) return state;
-  const lastPulseLabel = derivePulseLabel(state.stream);
+  const goalTitle = activeGoalTitle(state.goals);
+  const lastPulseLabel = derivePulseLabel(
+    state.stream,
+    goalTitle !== undefined ? { goalTitle } : undefined,
+  );
   const lastEventAt = nowMs !== undefined ? nowMs : state.stream.lastEventAt;
   if (
     state.stream.lastPulseLabel === lastPulseLabel &&
@@ -281,6 +399,13 @@ function applyTurnPulse(state: UiState, action: Action, nowMs?: number): UiState
       lastEventAt,
     },
   };
+}
+
+/** Promote Preparing → Routing on classifier / intent / engagement liveness. */
+function promoteRoutingLabel(state: UiState): UiState {
+  const wl = state.stream.workLabel;
+  if (wl !== 'Preparing' && wl !== '') return state;
+  return withStream(state, { workLabel: 'Routing' });
 }
 
 // ---------------------------------------------------------------------------
@@ -319,10 +444,10 @@ function reduceAction(state: UiState, action: Action): UiState {
         // UI looking frozen. With turnActive true and the fresh initialStreamView
         // (phase 'idle', workLabel 'Preparing', 0 steps), StatusBlock renders a
         // sensible immediate "⠋ Preparing… · 0s" line — honest preflight, not
-        // "Thinking" before any model work. tier-start promotes to Thinking;
-        // first prose promotes to Responding. No goals panel yet (hidden until
-        // goals arrive), never empty, never a crash. turn/final settles
-        // turnActive back to false.
+        // "Composing" before any model work. classified/intent → Routing;
+        // tier-start → Composing; first prose → Responding. No goals panel yet
+        // (hidden until goals arrive), never empty, never a crash. turn/final
+        // settles turnActive back to false.
         turnActive: true,
         tokens: { turn: 0, session: state.tokens.session },
       };
@@ -371,9 +496,10 @@ function reduceAction(state: UiState, action: Action): UiState {
 
     // -- classifier metadata: only a visible line under verbose AND MYSHELL_DEBUG.
     //    render.ts gates the classified line purely on process.env.MYSHELL_DEBUG
-    //    (independent of verbosity); we thread that as `debug`.
+    //    (independent of verbosity); we thread that as `debug`. Also promotes
+    //    Preparing → Routing so the pulse peeks at real pre-model work.
     case 'classified': {
-      const next = { ...state, turnActive: true };
+      const next = { ...promoteRoutingLabel(state), turnActive: true };
       if (!action.debug) return next;
       return commit(next, {
         kind: 'classified',
@@ -381,10 +507,11 @@ function reduceAction(state: UiState, action: Action): UiState {
       });
     }
 
-    // -- intent / engagement: render-optional; no visible effect in the renderer.
+    // -- intent / engagement: no committed line in normal mode, but both are
+    //    real pre-model work → pulse shows Routing (not eternal Preparing).
     case 'intent':
     case 'engagement':
-      return { ...state, turnActive: true };
+      return { ...promoteRoutingLabel(state), turnActive: true };
 
     // -- phase 'panel': open panel mode, pre-register every candidate as running,
     //    clear any prior synthesizing state. (render.ts: panelMode = true;
@@ -414,9 +541,9 @@ function reduceAction(state: UiState, action: Action): UiState {
 
     // -- tier-start: reset per-tier counters, add a running agent/goal. In verbose
     //    mode render.ts prints a `▶ tier (provider/model)` line. The workLabel is
-    //    the verbose tier label or "Thinking" (model is now composing — not the
-    //    optimistic "Preparing" from turn/start). In panel mode (pre-synthesis) a
-    //    not-yet-registered candidate is appended as running.
+    //    the verbose tier label or "Composing" (model is now generating — not the
+    //    optimistic "Preparing" / "Routing" from preflight). In panel mode
+    //    (pre-synthesis) a not-yet-registered candidate is appended as running.
     case 'tier-start': {
       const isVerbose = action.verbosity === 'verbose';
       const inPanel = state.stream.phase === 'panel'; // panelMode && synthesizing===null
@@ -427,7 +554,7 @@ function reduceAction(state: UiState, action: Action): UiState {
           { provider: action.provider, model: action.model, state: 'running', tokens: 0, attempt: action.attempt },
         ];
       }
-      const workLabel = isVerbose ? `${action.tier} (${action.provider}/${action.model})` : 'Thinking';
+      const workLabel = isVerbose ? `${action.tier} (${action.provider}/${action.model})` : 'Composing';
       // H2 fix: in PANEL mode the running candidates are represented SOLELY by
       // stream.panelists (the StatusLine's panelLabel reads them). We do NOT push
       // a per-candidate GoalView here, because each candidate's tier-done is a
@@ -603,11 +730,15 @@ function reduceAction(state: UiState, action: Action): UiState {
       const proseFull = s.proseFull + delta;
       const grown = s.buffer + delta;
       const buffer = grown.length > PROSE_BUFFER_CAP ? grown.slice(grown.length - PROSE_BUFFER_CAP) : grown;
-      // First real answer tokens → prefer "Responding" over Preparing/Thinking.
+      // First real answer tokens → prefer "Responding" over phase verbs.
       // Preserve verbose tier labels ("manager (codex/gpt-5)") and any other
       // non-phase verb already set by the stream.
       const phaseVerb =
-        s.workLabel === 'Preparing' || s.workLabel === 'Thinking' || s.workLabel === 'Responding';
+        s.workLabel === 'Preparing' ||
+        s.workLabel === 'Routing' ||
+        s.workLabel === 'Composing' ||
+        s.workLabel === 'Thinking' ||
+        s.workLabel === 'Responding';
       return withStream(state, {
         buffer,
         proseFull,
@@ -627,13 +758,18 @@ function reduceAction(state: UiState, action: Action): UiState {
     case 'stream/tool': {
       if (action.verbosity === 'verbose') return state;
       // Capture the LIVE action from the real tool event (the single most useful
-      // real-time signal): a friendly verb mapped from the tool NAME plus the real
-      // TARGET only when the event actually carried one (`detail`). This is live-
-      // status only — it commits NO transcript line and is confined to StreamView.
+      // real-time signal): a capitalized verb from the tool NAME plus the real
+      // TARGET only when the event actually carried one (`detail`). "Running tests"
+      // is preferred when the command detail honestly looks like a test run.
+      // Live-status only — commits NO transcript line; confined to StreamView.
+      const pulse = toolPulseVerb(
+        action.name,
+        action.detail !== undefined && action.detail.length > 0 ? action.detail : undefined,
+      );
       const currentTool: { readonly verb: string; readonly target?: string } =
-        action.detail !== undefined && action.detail.length > 0
-          ? { verb: toolVerb(action.name), target: action.detail }
-          : { verb: toolVerb(action.name) };
+        pulse.target !== undefined
+          ? { verb: pulse.verb, target: pulse.target }
+          : { verb: pulse.verb };
       const goals =
         action.goalId !== undefined
           ? state.goals.map((goal) =>

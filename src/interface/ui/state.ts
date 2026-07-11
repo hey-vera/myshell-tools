@@ -203,8 +203,10 @@ export interface StreamView {
   readonly synthesizing: { readonly count: number } | null;
   /**
    * render.ts `workLabel` — the spinner verb for the honest turn-phase machine:
-   * "Preparing" (turn/start / preflight) → "Thinking" (tier-start / model
-   * composing) → "Responding" (first text tokens) / verbose tier label.
+   * "Preparing" (turn/start / preflight) → "Routing" (classified/intent) →
+   * "Composing" (tier-start / model generating) → "Responding" (first text
+   * tokens) / verbose tier label. Smart pulse may surface a goal title or tool
+   * verb on top of this phase label.
    */
   readonly workLabel: string;
   /**
@@ -217,23 +219,25 @@ export interface StreamView {
   readonly lastEventAt: number | null;
   /**
    * Progressive pulse label frozen at the last liveness event: Preparing /
-   * Thinking / tool verb / Responding (or a verbose tier label). Used by the
-   * stall line (`stalled · last <label> · Ns`) so we never invent work after
-   * silence — we only report what was last truly observed.
+   * Routing / Composing / tool verb (+ target) / Working on "goal" / Responding
+   * (or a verbose tier label). Used by the stall line
+   * (`stalled · last <label> · Ns`) so we never invent work after silence — we
+   * only report what was last truly observed.
    */
   readonly lastPulseLabel: string;
   /**
    * The LIVE action the agent is currently performing, derived SOLELY from the
-   * most recent real `tool` provider-event (never fabricated): a friendly `verb`
-   * mapped from the tool name (Edit/Write→"editing", Read→"reading",
-   * Bash→"running", Grep/Glob→"searching", …) — or the raw tool name when no
-   * honest mapping exists — and an OPTIONAL `target` (file path / command) carried
-   * ONLY when the provider event actually supplied one (`detail`). The Claude
-   * subscription provider supplies no `detail`, so its tool events surface the verb
-   * alone (no fabricated target). This is LIVE-STATUS state only — it is NEVER
-   * committed to the transcript and never emits a transcript line. Absent until the
-   * first tool event of a tier; cleared at each tier boundary. The status line
-   * leads with it when present, else falls back to {@link workLabel}.
+   * most recent real `tool` provider-event (never fabricated): a scannable
+   * capitalized `verb` mapped from the tool name (Edit/Write→"Editing",
+   * Read→"Reading", Bash→"Running" / "Running tests", Grep/Glob→"Searching", …)
+   * — or the raw tool name when no honest mapping exists — and an OPTIONAL
+   * `target` (file path / command) carried ONLY when the provider event actually
+   * supplied one (`detail`). The Claude subscription provider supplies no
+   * `detail`, so its tool events surface the verb alone (no fabricated target).
+   * This is LIVE-STATUS state only — it is NEVER committed to the transcript and
+   * never emits a transcript line. Absent until the first tool event of a tier;
+   * cleared at each tier boundary. The status line leads with it when present,
+   * else falls back to goal title / {@link workLabel}.
    */
   readonly currentTool?: { readonly verb: string; readonly target?: string };
   /** render.ts `toolSinceProse` — a tool ran since the last prose delta, so the
