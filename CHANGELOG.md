@@ -4,6 +4,39 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.170.0] - 2026-07-10 - multi-chat orchestration + daemon-lite workers
+
+Ships the multi-chat orchestration foundation (#170-#174) on main after
+**3.169.0** (#169): durable chat/draft resume, Esc-as-exit key model,
+background goals that survive leaving a chat, real smart status verbs, and
+detached goal workers so active jobs can outlive the TUI process. Acceptances
+remain human-smoke pending; `npm publish` is owner-only.
+
+### Added
+- **Multi-chat orchestration architecture** - product contract and PR DAG for
+  one chat to drive multiple conversations, parallel goals, durable resume, and
+  daemon-lite compute-after-exit (#170).
+- **Durable draft/session resume** - composer drafts persist per conversation
+  and restore on reopen; Esc exits the process after flushing state (#171).
+- **Grok-style message recall** - Up/Down selects prior user messages for
+  insertion instead of stealing left/right cursor movement for global nav (#171).
+- **Process-scoped goal worker registry** - goals are keyed by conversation and
+  can keep running while the user leaves a chat or opens another one in the same
+  TUI process (#172).
+- **Smart status pulse v2** - status labels come from real event verbs and
+  active goal titles instead of getting stuck on generic Thinking (#173).
+- **Detached goal workers** - new `worker` command, job store, detached worker
+  spawn helper, and durable job execution path for daemon-lite background goals
+  that can survive process exit and idle-exit when done (#174).
+
+### Changed
+- **Key model** - Esc means exit to the terminal; `b` means back; `c` opens the
+  control panel; left/right remain composer cursor keys (#171).
+- **Leave-chat semantics** - leaving a chat no longer aborts every background
+  goal; natural-language pause still controls the intended running work (#172).
+- **Docs board tip** - package **3.170.0** after multi-chat orchestration +
+  detached worker wave.
+
 ## [3.169.0] - 2026-07-10 — live control plane, no queue, model auto-adapt
 
 Ships the live control-plane completion wave (#163–#167) on main after
