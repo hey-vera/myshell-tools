@@ -117,33 +117,36 @@ test('disableMouseTracking: no-op on non-TTY (keeps golden frames clean)', () =>
 // legend hit zones
 // ---------------------------------------------------------------------------
 
-test('hitTestLegend: full legend maps menu / mode / panel / interrupt', () => {
+test('hitTestLegend: full legend maps menu / panel / mode / interrupt', () => {
   const columns = 80;
   const zones = buildLegendHitZones(columns);
   assert.deepEqual(
     zones.map((z) => z.id),
-    ['menu', 'mode', 'panel', 'interrupt'],
+    ['menu', 'panel', 'mode', 'interrupt'],
   );
-  // First char of "Alt+← menu"
+  // First char of "b back"
   assert.equal(hitTestLegend(0, columns), 'menu');
   // Middot gap is a miss
   const menuEnd = zones[0]!.end;
   assert.equal(hitTestLegend(menuEnd, columns), null);
-  // "Ctrl+G panel" segment
+  // "c panel" segment
   const panel = zones.find((z) => z.id === 'panel')!;
   assert.equal(hitTestLegend(panel.start, columns), 'panel');
   assert.equal(hitTestLegend(panel.end - 1, columns), 'panel');
+  const exit = zones.find((z) => z.id === 'interrupt')!;
+  assert.equal(hitTestLegend(exit.start, columns), 'interrupt');
 });
 
-test('hitTestLegend: narrow legend keeps menu + panel only', () => {
+test('hitTestLegend: narrow legend keeps back + panel + exit', () => {
   const columns = 50;
   const zones = buildLegendHitZones(columns);
   assert.deepEqual(
     zones.map((z) => z.id),
-    ['menu', 'panel'],
+    ['menu', 'panel', 'interrupt'],
   );
   assert.equal(hitTestLegend(0, columns), 'menu');
   assert.equal(hitTestLegend(zones[1]!.start, columns), 'panel');
+  assert.equal(hitTestLegend(zones[2]!.start, columns), 'interrupt');
 });
 
 test('isLegendRow: only the bottom terminal row', () => {

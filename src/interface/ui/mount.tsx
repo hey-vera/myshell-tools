@@ -25,6 +25,7 @@ import type { LineReader, KeyInputStream } from '../menu-readline.js';
 import type { CoreEvent } from '../../core/types.js';
 import type { ProviderId } from '../../providers/port.js';
 import { App, createInkAppBridge, type InkAppBridge, type InputBoxInfo } from './App.js';
+import type { InputBoxBridge } from './InputBox.js';
 import {
   reduce,
   initialState,
@@ -868,6 +869,11 @@ export interface InkMountHandle {
   readonly out: OutputSink;
   readonly reader: LineReader;
   /**
+   * Nested composer bridge (history seed, setLine for durable draft restore,
+   * onDraftChange for debounced persist). Multi-chat PR-A.
+   */
+  readonly input: InputBoxBridge;
+  /**
    * Read EXACTLY ONE keypress through Ink's own input pipeline (the menu/confirm
    * single-key nav on the Ink path). Resolves with a legacy-`readSingleKey`-shaped
    * string (`'n'`, `'\r'`, `'\x1b'`, `'\x03'`, …) so `readMenuKey`/`confirmViaKey`
@@ -1059,6 +1065,7 @@ export function mountInk(opts: InkMountOptions): InkMountHandle {
   return {
     out,
     reader,
+    input: bridge.input,
     readKey: () => {
       watchdog?.recordInput();
       return bridge.readKey();

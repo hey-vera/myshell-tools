@@ -835,9 +835,9 @@ function AppBody({
         )}
         {/*
           Focus model: when the Control Panel is open, InputBox is inactive
-          (active=false) and hidden (visible=false). Always-hot Ctrl+G / Alt+Right
-          (and empty-buffer bare Right) open the panel; panel Esc/Left/Ctrl+G
-          close back here. See ControlPanel.tsx.
+          (active=false) and hidden (visible=false). Empty-buffer `c` / always-hot
+          Ctrl+G open the panel; empty-buffer `b` / Ctrl+B leave chat; panel
+          Esc/Left/Ctrl+G close back here. See ControlPanel.tsx.
         */}
         <InputBox
           bridge={bridge.input}

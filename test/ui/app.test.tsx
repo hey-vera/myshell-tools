@@ -156,13 +156,13 @@ test('BottomLegend renders with chatActive=true and no fullscreen panel', async 
   const frame = lastFrame() ?? '';
   // Strip ANSI for plain-text matching.
   const plainFrame = frame.replace(/\x1b\[[0-9;]*m/g, '');
-  // Clustered legend: always-hot chords (work with draft), not edge-padded.
-  assert.ok(plainFrame.includes('Alt+\u2190 menu'), `legend must show "Alt+← menu", got:\n${plainFrame}`);
+  // Clustered legend: product keys b/c/Esc + Shift+Tab mode (multi-chat PR-A).
+  assert.ok(plainFrame.includes('b back'), `legend must show "b back", got:\n${plainFrame}`);
+  assert.ok(plainFrame.includes('c panel'), `legend must show "c panel", got:\n${plainFrame}`);
   assert.ok(plainFrame.includes('Shift+Tab mode'), `legend must show "Shift+Tab mode", got:\n${plainFrame}`);
-  assert.ok(plainFrame.includes('Ctrl+G panel'), `legend must show "Ctrl+G panel", got:\n${plainFrame}`);
-  assert.ok(plainFrame.includes('Esc leave'), `legend must show "Esc leave", got:\n${plainFrame}`);
+  assert.ok(plainFrame.includes('Esc exit'), `legend must show "Esc exit", got:\n${plainFrame}`);
   // Not edge-padded: control panel affordance must not be exiled far right.
-  assert.ok(!/Alt\+\u2190 menu {10,}/.test(plainFrame), `legend must be clustered (no large gap after menu), got:\n${plainFrame}`);
+  assert.ok(!/b back {10,}/.test(plainFrame), `legend must be clustered (no large gap after back), got:\n${plainFrame}`);
 });
 
 test('BottomLegend hidden when chatActive=false (menu)', async () => {
@@ -172,8 +172,8 @@ test('BottomLegend hidden when chatActive=false (menu)', async () => {
   await new Promise((r) => setTimeout(r, 50));
   const frame = lastFrame() ?? '';
   const plainFrame = frame.replace(/\x1b\[[0-9;]*m/g, '');
-  assert.ok(!plainFrame.includes('Alt+\u2190 menu'), `legend must NOT show at menu, got:\n${plainFrame}`);
-  assert.ok(!plainFrame.includes('Ctrl+G panel'), `legend must NOT show at menu, got:\n${plainFrame}`);
+  assert.ok(!plainFrame.includes('b back'), `legend must NOT show at menu, got:\n${plainFrame}`);
+  assert.ok(!plainFrame.includes('c panel'), `legend must NOT show at menu, got:\n${plainFrame}`);
 });
 
 test('BottomLegend hidden while Control Panel is open', async () => {
@@ -186,15 +186,15 @@ test('BottomLegend hidden while Control Panel is open', async () => {
   await new Promise((r) => setTimeout(r, 50));
   const frame = lastFrame() ?? '';
   const plainFrame = frame.replace(/\x1b\[[0-9;]*m/g, '');
-  assert.ok(!plainFrame.includes('Alt+\u2190 menu'), `legend must NOT show when CP is open, got:\n${plainFrame}`);
-  assert.ok(!plainFrame.includes('Ctrl+G panel'), `legend must NOT show when CP is open, got:\n${plainFrame}`);
+  assert.ok(!plainFrame.includes('b back'), `legend must NOT show when CP is open, got:\n${plainFrame}`);
+  assert.ok(!plainFrame.includes('c panel'), `legend must NOT show when CP is open, got:\n${plainFrame}`);
   assert.ok(plainFrame.includes('CONTROL PANEL'), `CP must render, got:\n${plainFrame}`);
   // Panel chrome footer replaces chat legend — always teaches Esc close (P0.10).
   assert.ok(plainFrame.includes('Esc close'), `CP footer must show Esc close, got:\n${plainFrame}`);
   assert.ok(plainFrame.includes('Tab sections') || plainFrame.includes('Tab'), `CP footer must show Tab, got:\n${plainFrame}`);
 });
 
-test('BottomLegend narrow terminal keeps always-hot leave + panel only', async () => {
+test('BottomLegend narrow terminal keeps back + panel + exit', async () => {
   const bridge = createInkAppBridge();
   bridge._setUiState = () => {};
   const { lastFrame } = render(<App bridge={bridge} color={false} isTty={false} columns={50} />);
@@ -203,8 +203,8 @@ test('BottomLegend narrow terminal keeps always-hot leave + panel only', async (
   await new Promise((r) => setTimeout(r, 50));
   const frame = lastFrame() ?? '';
   const plainFrame = frame.replace(/\x1b\[[0-9;]*m/g, '');
-  assert.ok(plainFrame.includes('Alt+\u2190 menu'), `narrow legend must show "Alt+← menu", got:\n${plainFrame}`);
-  assert.ok(plainFrame.includes('Ctrl+G panel'), `narrow legend must show "Ctrl+G panel", got:\n${plainFrame}`);
+  assert.ok(plainFrame.includes('b back'), `narrow legend must show "b back", got:\n${plainFrame}`);
+  assert.ok(plainFrame.includes('c panel'), `narrow legend must show "c panel", got:\n${plainFrame}`);
+  assert.ok(plainFrame.includes('Esc exit'), `narrow legend must show "Esc exit", got:\n${plainFrame}`);
   assert.ok(!plainFrame.includes('Shift+Tab mode'), `narrow legend omits mode, got:\n${plainFrame}`);
-  assert.ok(!plainFrame.includes('Esc leave'), `narrow legend omits leave, got:\n${plainFrame}`);
 });

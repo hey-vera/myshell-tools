@@ -165,8 +165,13 @@ import {
   renderResumeTranscript,
 } from './render.js';
 import { isStubTitle } from '../infra/conversations.js';
+import {
+  createDebouncedDraftSaver,
+  loadComposerDraft,
+} from '../infra/composer-draft-store.js';
 import { systemClipboardPort, type ClipboardPort } from '../infra/clipboard.js';
 import { resolveStateHome } from '../infra/state-dir.js';
+import type { InputBoxBridge } from './ui/InputBox.js';
 import { helperSandbox } from '../infra/sandbox.js';
 import { resolveImageAttachments } from '../infra/attachments.js';
 import { runTask } from './run.js';
@@ -741,6 +746,12 @@ export async function runChatLoop(
   // updates the InputBox info chrome. Does NOT touch global config.mode. Cleared
   // in the loop's finally. Absent (legacy/test) → no-op.
   inkSetCycleMode?: (handler: (() => void) | null) => void,
+  /**
+   * Ink composer bridge (multi-chat PR-A). When provided: restore durable draft on
+   * enter, seed Up/Down history from prior user messages, debounced draft persist,
+   * and flush draft on leave/Esc exit. Absent (legacy/test) → no-op.
+   */
+  inkComposer?: InputBoxBridge,
 ): Promise<'menu' | 'exit'> {
   // Resolve the effective routing mode for THIS conversation. Per-conversation
   // mode (set on the conversation record) overrides the global default
@@ -1411,6 +1422,10 @@ export async function runChatLoop(
   // the recap can require a MANAGER-tier model call (up to RECAP_TIMEOUT_MS) and must
   // never block the user from typing. The recap resolves concurrently and prints when
   // ready (a beat after the prompt is already live; instant input beats perfect order).
+  // Durable composer draft (multi-chat PR-A): debounced save while typing; flush
+  // on leave / Esc process exit. Never deletes goals.
+  const draftSaver = createDebouncedDraftSaver(convId);
+
   {
     const entryMode = levelLabel(convLevel);
     // Show the chat composer now that an active conversation is starting (the
@@ -1420,7 +1435,7 @@ export async function runChatLoop(
     if (inkSetInputInfo === undefined) {
       out.write(
         dim(
-          `Type a message and press Enter.  Mode: ${entryMode} (Shift+Tab)  ·  /goal  ·  /help  ·  /back\n`,
+          `Type a message and press Enter.  Mode: ${entryMode} (Shift+Tab)  ·  b back  ·  c panel  ·  Esc exit\n`,
           out.color,
         ),
       );
@@ -1441,6 +1456,34 @@ export async function runChatLoop(
       // mid-session provider releases can enter Auto inventory promptly.
       scheduleLiveModelRedetect(true);
     });
+    // Seed Up/Down history from prior USER messages (not only this-session submits).
+    // Fail-soft; merge is replace-then-session-appends-as-user-sends.
+    if (inkComposer !== undefined) {
+      void ctx.store
+        .load(convId)
+        .then((entries) => {
+          if (!conversationLive) return;
+          const userLines = entries
+            .filter((e) => e.role === 'user' && typeof e.content === 'string' && e.content.trim().length > 0)
+            .map((e) => e.content);
+          inkComposer.seedHistory(userLines);
+        })
+        .catch(() => {
+          /* fail-soft */
+        });
+      // Restore durable draft into the composer.
+      void loadComposerDraft(convId)
+        .then((text) => {
+          if (!conversationLive || text.length === 0) return;
+          inkComposer.setLine(text);
+        })
+        .catch(() => {
+          /* fail-soft */
+        });
+      inkComposer.onDraftChange((text) => {
+        draftSaver.schedule(text);
+      });
+    }
     // P0.19/P0.20 — forge orientation dim line ONLY when non-GitHub-default
     // (GitLab / other / local-only). Fire-and-forget so chat open stays instant;
     // GitHub is silent (no spam). Fail-soft.
@@ -1722,7 +1765,7 @@ export async function runChatLoop(
       );
     } finally {
       detachEsc();
-      installIdleEscLeaveHandler();
+      installIdleEscExitHandler();
       if (stopCapture !== null) stopCapture();
       turnInput?.clear();
     }
@@ -1848,21 +1891,24 @@ export async function runChatLoop(
   // `while (true)` can break immediately even when awaiting readLine().
   let loopBreaker: ((result: 'menu' | 'exit') => void) | null = null;
 
-  // Mid-turn ESC: cancel the foreground turn only (`currentAc`). Stay in chat.
-  // Do NOT set control.exit / requestExit (fixes Slice-4 “ESC exits app mid-chat”).
-  // Background goals keep their own AbortControllers and are not touched.
+  // Mid-turn ESC (multi-chat PR-A): abort the foreground turn and EXIT the
+  // myshell process (control.exit). Draft is flushed in the loop finally.
+  // Background goals keep their own AbortControllers until process death (PR-D
+  // detaches them); state must survive on disk.
   const midTurnEscHandler = (): void => {
     interruptedByEsc = true;
     currentAc?.abort();
+    control.exit = true;
+    loopBreaker?.('exit');
   };
 
-  // Idle ESC (Ink): leave chat → home menu without aborting background goals.
-  // Installed whenever no mid-turn interrupt is active.
-  const installIdleEscLeaveHandler = (): void => {
+  // Idle ESC (Ink): exit myshell process entirely (not leave-chat → menu).
+  // Hierarchical back is empty-buffer `b` / Ctrl+B → `/back`. Draft flushed in finally.
+  const installIdleEscExitHandler = (): void => {
     if (inkSetInterrupt === undefined) return;
     inkSetInterrupt(() => {
-      control.menu = true;
-      loopBreaker?.('menu');
+      control.exit = true;
+      loopBreaker?.('exit');
     });
   };
 
@@ -1953,8 +1999,8 @@ export async function runChatLoop(
   };
 
   process.on('SIGINT', sigintHandler);
-  // Idle Esc leaves chat → menu (Ink). Mid-turn swaps this for cancel-turn only.
-  installIdleEscLeaveHandler();
+  // Idle Esc exits process (Ink). Mid-turn swaps this for abort-turn + exit.
+  installIdleEscExitHandler();
 
   try {
     while (true) {
@@ -2026,11 +2072,35 @@ export async function runChatLoop(
     // Leave chat ≠ kill goals (multi-chat PR-B): do NOT abortConversationGoalWorkers
     // here — process-scoped registry keeps A’s workers alive while user is in home/B.
     // Process exit (home Esc) eventually kills in-process workers; PR-D detaches them.
-    // Clear only the idle Esc leave handler so menu/home Esc owns exit again.
+    // Clear the idle Esc exit handler so menu/home Esc owns process exit again.
     if (inkSetInterrupt !== undefined) inkSetInterrupt(null);
     // Mark the conversation no longer live FIRST so a still-pending concurrent recap
     // (fired on resume) sees the gate closed and skips its dock/write into the menu.
     conversationLive = false;
+    // Durable draft: flush any pending debounce + live buffer before process exit
+    // or leave-chat. Never deletes goals; empty buffer clears the draft file.
+    try {
+      const liveDraft =
+        inkComposer?.currentLine() ??
+        (lineReader !== undefined && lineReader !== null ? lineReader.currentLine() : '') ??
+        '';
+      if (liveDraft.length > 0) {
+        draftSaver.schedule(liveDraft);
+      } else if (inkComposer !== undefined) {
+        // Submit already cleared draft via onDraftChange(''); still flush pending.
+      }
+      await draftSaver.flush();
+    } catch {
+      /* fail-soft */
+    }
+    draftSaver.dispose();
+    inkComposer?.onDraftChange(null);
+    // Clear composer chrome so the next chat / menu does not flash stale text.
+    try {
+      inkComposer?.setLine('');
+    } catch {
+      /* best-effort */
+    }
     // Clear the bottom recap dock so it never lingers on the menu surface.
     if (typeof out.setRecap === 'function') out.setRecap(null);
     // Let the concurrent recap settle so its side effects (storing the fresh recap +
@@ -7130,6 +7200,9 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
   // is live; does not change global config.mode. Undefined off the Ink path.
   const inkSetCycleMode: ((handler: (() => void) | null) => void) | undefined =
     inkHandle !== null ? (handler) => inkHandle.setCycleMode(handler) : undefined;
+  // Ink composer bridge for durable draft + user-message history (multi-chat PR-A).
+  const inkComposer: InputBoxBridge | undefined =
+    inkHandle !== null ? inkHandle.input : undefined;
   // Menu key-capture gate (BUG 2): while the main menu panel is showing, arm the
   // bridge's one-key FIFO so a key arriving during paint/refresh is queued instead
   // of falling into the hidden InputBox editor. Cleared before every sub-flow
@@ -7666,6 +7739,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
                 loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader,
                 inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo,
                 inkSetChatActive, inkBeginTurn, inkResetTurn, inkSetCycleMode,
+                inkComposer,
               );
               if (chatResult === 'exit') return;
             } catch {
@@ -7945,7 +8019,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           { goalStore: menuGoalStore, clock: ctx.clock, out, readLine, readMenuKey, inkReadKey, env: process.env, config: mutableCtx.config },
           meta.id,
         ))) break;
-        const chatResult = await runChatLoopWithMarker(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn, inkSetCycleMode);
+        const chatResult = await runChatLoopWithMarker(ctx, mutableCtx, meta.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn, inkSetCycleMode, inkComposer);
         spendDirty = true;
         listDirty = true;
         if (chatResult === 'exit') break;
@@ -7971,7 +8045,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
             { goalStore: menuGoalStore, clock: ctx.clock, out, readLine, readMenuKey, inkReadKey, env: process.env, config: mutableCtx.config },
             latest.id,
           ))) break;
-          const chatResult = await runChatLoopWithMarker(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn, inkSetCycleMode);
+          const chatResult = await runChatLoopWithMarker(ctx, mutableCtx, latest.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn, inkSetCycleMode, inkComposer);
           spendDirty = true; // a task may have run — refresh the spend summary
           listDirty = true; // conversation order/goals may have changed
           if (chatResult === 'exit') break;
@@ -8004,7 +8078,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
             { goalStore: menuGoalStore, clock: ctx.clock, out, readLine, readMenuKey, inkReadKey, env: process.env, config: mutableCtx.config },
             target.id,
           ))) break;
-          const chatResult = await runChatLoopWithMarker(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn, inkSetCycleMode);
+          const chatResult = await runChatLoopWithMarker(ctx, mutableCtx, target.id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkBeginTurn, inkResetTurn, inkSetCycleMode, inkComposer);
           spendDirty = true; // a task may have run — refresh the spend summary
           listDirty = true; // conversation order/goals may have changed
           if (chatResult === 'exit') break;
@@ -8046,7 +8120,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
             await runManage(ctx, out, readLine, confirm, inkReadKey);
             listDirty = true;
           } else if (libKey === 'i') {
-            const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkSetCycleMode);
+            const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkSetCycleMode, inkComposer);
             spendDirty = true;
             listDirty = true;
             if (importResult === 'exit') { keepRunning = false; }
@@ -8138,7 +8212,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
 
       // ---- [i] Import a native conversation -----------------------------------
       if (key === 'i') {
-        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkSetCycleMode);
+        const importResult = await runImportNative(ctx, mutableCtx, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, inkSetCycleMode, inkComposer);
         spendDirty = true; // an imported session may run a task — refresh spend
         listDirty = true; // the import created a conversation
         if (importResult === 'exit') break;
