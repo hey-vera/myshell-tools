@@ -126,7 +126,7 @@ function assertSafeJobSegment(value: string, label: string): void {
 export function parseGoalJob(raw: unknown): GoalJob | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const o = raw as Record<string, unknown>;
-  if (o['version'] !== 1) return null;
+  if (o['version'] !== GOAL_JOB_VERSION) return null;
   if (typeof o['conversationId'] !== 'string' || !isSafeJobSegment(o['conversationId'])) return null;
   if (typeof o['goalId'] !== 'string' || !isSafeJobSegment(o['goalId'])) return null;
   if (typeof o['work'] !== 'string') return null;
@@ -137,7 +137,7 @@ export function parseGoalJob(raw: unknown): GoalJob | null {
   if (typeof o['updatedAt'] !== 'string' || o['updatedAt'].length === 0) return null;
 
   const job: GoalJob = {
-    version: 1,
+    version: GOAL_JOB_VERSION,
     conversationId: o['conversationId'],
     goalId: o['goalId'],
     work: o['work'],
@@ -204,7 +204,7 @@ export function createPendingGoalJob(input: {
     throw new Error(`invalid goalId for goal job`);
   }
   return {
-    version: 1,
+    version: GOAL_JOB_VERSION,
     conversationId: input.conversationId,
     goalId: input.goalId,
     work: input.work,

@@ -12,6 +12,7 @@ import {
   ensureGoalJobsRoot,
   isProcessAlive,
   readWorkerPid,
+  removeGoalJobFile,
   writeWorkerPidFile,
   type GoalJobStore,
 } from '../../src/infra/goal-job-store.ts';
@@ -71,6 +72,10 @@ describe('createGoalJobStore', () => {
 
     const got = await store.get('conv1', 'goal_1');
     assert.equal(got?.goalId, 'goal_1');
+
+    const removed = await removeGoalJobFile(jobsRoot(), 'conv1', 'goal_1');
+    assert.equal(removed, true);
+    assert.equal(await store.get('conv1', 'goal_1'), null);
   });
 
   it('claims pending then denies second claim while owner alive', async () => {
