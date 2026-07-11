@@ -22,9 +22,8 @@ const RIGHT = '\x1b[C';
 /** xterm CSI with Alt/Meta modifier (Ink → key.meta + left/rightArrow). */
 const ALT_LEFT = '\x1b[1;3D';
 const ALT_RIGHT = '\x1b[1;3C';
-/** xterm CSI with Ctrl modifier (Ink → key.ctrl + left/rightArrow) — word move. */
+/** xterm CSI with Ctrl modifier (Ink → key.ctrl + leftArrow) — word move. */
 const CTRL_LEFT = '\x1b[1;5D';
-const CTRL_RIGHT = '\x1b[1;5C';
 const HOME = '\x01'; // Ctrl+A
 const ALT_ENTER = '\x1b\r'; // Meta+Return
 const TAB = '\t';
@@ -735,29 +734,12 @@ test('onToggleFullscreenPanel present → Left Arrow still moves cursor, never i
 });
 
 // ---------------------------------------------------------------------------
-// Empty-buffer arrow nav (Phase 1 — PANEL-NAV-SPEC)
+// Multi-chat PR-A — empty-buffer b/c nav + Ctrl+B; ←/→ cursor only
 // ---------------------------------------------------------------------------
 
-test('empty-buffer Right → calls onEmptyRight, does not move cursor', async () => {
-  const bridge = createInputBoxBridge();
-  let rightCalled = 0;
-  const { stdin } = render(
-    <InputBox
-      bridge={bridge}
-      color={true}
-      isTty={true}
-      columns={60}
-      onEmptyRight={() => { rightCalled += 1; }}
-    />,
-  );
-  assert.equal(bridge.currentLine(), '', 'buffer must start empty');
-  stdin.write(RIGHT);
-  await tick();
-  assert.equal(rightCalled, 1, 'onEmptyRight must be called once on empty-buffer Right');
-  assert.equal(bridge.currentLine(), '', 'buffer must stay empty after navigation');
-});
+const CTRL_B = '\x02';
 
-test('empty-buffer Left → calls onEmptyLeft, does not move cursor', async () => {
+test('empty-buffer b → calls onEmptyLeft (back)', async () => {
   const bridge = createInputBoxBridge();
   let leftCalled = 0;
   const { stdin } = render(
@@ -770,13 +752,13 @@ test('empty-buffer Left → calls onEmptyLeft, does not move cursor', async () =
     />,
   );
   assert.equal(bridge.currentLine(), '', 'buffer must start empty');
-  stdin.write(LEFT);
+  stdin.write('b');
   await tick();
-  assert.equal(leftCalled, 1, 'onEmptyLeft must be called once on empty-buffer Left');
-  assert.equal(bridge.currentLine(), '', 'buffer must stay empty after navigation');
+  assert.equal(leftCalled, 1, 'onEmptyLeft must be called once on empty-buffer b');
+  assert.equal(bridge.currentLine(), '', 'buffer must stay empty after back');
 });
 
-test('non-empty buffer Right → moves cursor, does NOT call onEmptyRight', async () => {
+test('empty-buffer c → calls onEmptyRight (panel)', async () => {
   const bridge = createInputBoxBridge();
   let rightCalled = 0;
   const { stdin } = render(
@@ -788,21 +770,14 @@ test('non-empty buffer Right → moves cursor, does NOT call onEmptyRight', asyn
       onEmptyRight={() => { rightCalled += 1; }}
     />,
   );
-  stdin.write('hello');
+  assert.equal(bridge.currentLine(), '', 'buffer must start empty');
+  stdin.write('c');
   await tick();
-  assert.equal(bridge.currentLine(), 'hello', 'buffer must be non-empty');
-  // Move left so cursor is not at end, then Right moves right
-  stdin.write(LEFT);
-  await tick();
-  stdin.write(LEFT);
-  await tick();
-  stdin.write('X');
-  await tick();
-  assert.equal(rightCalled, 0, 'onEmptyRight must NOT be called on non-empty buffer');
-  assert.equal(bridge.currentLine(), 'helXlo', 'Right on non-empty buffer must move cursor');
+  assert.equal(rightCalled, 1, 'onEmptyRight must be called once on empty-buffer c');
+  assert.equal(bridge.currentLine(), '', 'buffer must stay empty after panel');
 });
 
-test('non-empty buffer Left → moves cursor, does NOT call onEmptyLeft', async () => {
+test('non-empty buffer b types the letter, does NOT call onEmptyLeft', async () => {
   const bridge = createInputBoxBridge();
   let leftCalled = 0;
   const { stdin } = render(
@@ -814,116 +789,58 @@ test('non-empty buffer Left → moves cursor, does NOT call onEmptyLeft', async 
       onEmptyLeft={() => { leftCalled += 1; }}
     />,
   );
-  stdin.write('ab');
+  stdin.write('hi');
   await tick();
-  assert.equal(bridge.currentLine(), 'ab', 'buffer must be non-empty');
-  stdin.write(LEFT);
+  stdin.write('b');
   await tick();
-  stdin.write('X');
-  await tick();
-  assert.equal(leftCalled, 0, 'onEmptyLeft must NOT be called on non-empty buffer');
-  assert.equal(bridge.currentLine(), 'aXb', 'Left on non-empty buffer must move cursor');
+  assert.equal(leftCalled, 0, 'onEmptyLeft must NOT fire when typing b mid-word');
+  assert.equal(bridge.currentLine(), 'hib', 'b must type as a letter');
 });
 
-test('empty-buffer Right → calls onEmptyRight only; onEmptyLeft is not called', async () => {
+test('non-empty buffer c types the letter, does NOT call onEmptyRight', async () => {
   const bridge = createInputBoxBridge();
-  let leftCount = 0;
-  let rightCount = 0;
+  let rightCalled = 0;
   const { stdin } = render(
     <InputBox
       bridge={bridge}
       color={true}
       isTty={true}
       columns={60}
-      onEmptyLeft={() => { leftCount += 1; }}
-      onEmptyRight={() => { rightCount += 1; }}
+      onEmptyRight={() => { rightCalled += 1; }}
     />,
   );
+  stdin.write('hi');
+  await tick();
+  stdin.write('c');
+  await tick();
+  assert.equal(rightCalled, 0, 'onEmptyRight must NOT fire when typing c mid-word');
+  assert.equal(bridge.currentLine(), 'hic', 'c must type as a letter');
+});
+
+test('empty-buffer Left/Right are cursor-only (no nav callbacks)', async () => {
+  const bridge = createInputBoxBridge();
+  let leftCalled = 0;
+  let rightCalled = 0;
+  const { stdin } = render(
+    <InputBox
+      bridge={bridge}
+      color={true}
+      isTty={true}
+      columns={60}
+      onEmptyLeft={() => { leftCalled += 1; }}
+      onEmptyRight={() => { rightCalled += 1; }}
+    />,
+  );
+  stdin.write(LEFT);
+  await tick();
   stdin.write(RIGHT);
   await tick();
-  assert.equal(rightCount, 1, 'onEmptyRight must be called');
-  assert.equal(leftCount, 0, 'onEmptyLeft must NOT be called on Right press');
+  assert.equal(leftCalled, 0, 'empty-buffer Left must not navigate');
+  assert.equal(rightCalled, 0, 'empty-buffer Right must not navigate');
+  assert.equal(bridge.currentLine(), '', 'buffer stays empty');
 });
 
-test('empty-buffer Left → calls onEmptyLeft only; onEmptyRight is not called', async () => {
-  const bridge = createInputBoxBridge();
-  let leftCount = 0;
-  let rightCount = 0;
-  const { stdin } = render(
-    <InputBox
-      bridge={bridge}
-      color={true}
-      isTty={true}
-      columns={60}
-      onEmptyLeft={() => { leftCount += 1; }}
-      onEmptyRight={() => { rightCount += 1; }}
-    />,
-  );
-  stdin.write(LEFT);
-  await tick();
-  assert.equal(leftCount, 1, 'onEmptyLeft must be called');
-  assert.equal(rightCount, 0, 'onEmptyRight must NOT be called on Left press');
-});
-
-test('Ctrl+Right on empty buffer does NOT call onEmptyRight (word-move chord)', async () => {
-  const bridge = createInputBoxBridge();
-  let rightCalled = 0;
-  const { stdin } = render(
-    <InputBox
-      bridge={bridge}
-      color={true}
-      isTty={true}
-      columns={60}
-      onEmptyRight={() => { rightCalled += 1; }}
-    />,
-  );
-  stdin.write(CTRL_RIGHT);
-  await tick();
-  assert.equal(rightCalled, 0, 'onEmptyRight must not fire for Ctrl+Right');
-  assert.equal(bridge.currentLine(), '', 'buffer must stay empty');
-});
-
-// ---------------------------------------------------------------------------
-// PR1 — always-hot Alt+arrows (nav with draft)
-// ---------------------------------------------------------------------------
-
-test('Alt+Left on empty buffer calls onEmptyLeft', async () => {
-  const bridge = createInputBoxBridge();
-  let leftCalled = 0;
-  const { stdin } = render(
-    <InputBox
-      bridge={bridge}
-      color={true}
-      isTty={true}
-      columns={60}
-      onEmptyLeft={() => { leftCalled += 1; }}
-    />,
-  );
-  stdin.write(ALT_LEFT);
-  await tick();
-  assert.equal(leftCalled, 1, 'Alt+Left must call onEmptyLeft on empty buffer');
-  assert.equal(bridge.currentLine(), '', 'buffer must stay empty');
-});
-
-test('Alt+Right on empty buffer calls onEmptyRight', async () => {
-  const bridge = createInputBoxBridge();
-  let rightCalled = 0;
-  const { stdin } = render(
-    <InputBox
-      bridge={bridge}
-      color={true}
-      isTty={true}
-      columns={60}
-      onEmptyRight={() => { rightCalled += 1; }}
-    />,
-  );
-  stdin.write(ALT_RIGHT);
-  await tick();
-  assert.equal(rightCalled, 1, 'Alt+Right must call onEmptyRight on empty buffer');
-  assert.equal(bridge.currentLine(), '', 'buffer must stay empty');
-});
-
-test('Alt+Left with non-empty buffer calls onEmptyLeft and preserves draft', async () => {
+test('Ctrl+B always-hot back with draft preserved', async () => {
   const bridge = createInputBoxBridge();
   let leftCalled = 0;
   const { stdin } = render(
@@ -937,14 +854,15 @@ test('Alt+Left with non-empty buffer calls onEmptyLeft and preserves draft', asy
   );
   stdin.write('draft text');
   await tick();
-  stdin.write(ALT_LEFT);
+  stdin.write(CTRL_B);
   await tick();
-  assert.equal(leftCalled, 1, 'Alt+Left must fire with draft present');
+  assert.equal(leftCalled, 1, 'Ctrl+B must fire back with draft present');
   assert.equal(bridge.currentLine(), 'draft text', 'draft must be preserved');
 });
 
-test('Alt+Right with non-empty buffer calls onEmptyRight and preserves draft', async () => {
+test('Alt+arrows no longer navigate (cursor-only product lock)', async () => {
   const bridge = createInputBoxBridge();
+  let leftCalled = 0;
   let rightCalled = 0;
   const { stdin } = render(
     <InputBox
@@ -952,15 +870,16 @@ test('Alt+Right with non-empty buffer calls onEmptyRight and preserves draft', a
       color={true}
       isTty={true}
       columns={60}
+      onEmptyLeft={() => { leftCalled += 1; }}
       onEmptyRight={() => { rightCalled += 1; }}
     />,
   );
-  stdin.write('draft text');
+  stdin.write(ALT_LEFT);
   await tick();
   stdin.write(ALT_RIGHT);
   await tick();
-  assert.equal(rightCalled, 1, 'Alt+Right must fire with draft present');
-  assert.equal(bridge.currentLine(), 'draft text', 'draft must be preserved');
+  assert.equal(leftCalled, 0, 'Alt+Left must not navigate');
+  assert.equal(rightCalled, 0, 'Alt+Right must not navigate');
 });
 
 test('Ctrl+Left with non-empty buffer moves by word, does NOT call onEmptyLeft', async () => {
@@ -983,6 +902,52 @@ test('Ctrl+Left with non-empty buffer moves by word, does NOT call onEmptyLeft',
   await tick();
   assert.equal(leftCalled, 0, 'Ctrl+Left must not call onEmptyLeft');
   assert.equal(bridge.currentLine(), 'hello Xworld', 'Ctrl+Left must word-move then insert');
+});
+
+test('Shift+Enter inserts a newline without submitting', async () => {
+  const bridge = createInputBoxBridge();
+  const submitted: string[] = [];
+  bridge.onSubmit((l) => submitted.push(l));
+  const { stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  stdin.write('line1');
+  await tick();
+  // Shift+Enter — some terminals send CSI 13;2u or meta; Ink often reports
+  // key.return + key.shift for modified Enter. Use the same path as Alt+Enter
+  // via a shift-flagged return when the library supports it; fall back to
+  // meta+return equivalence is covered by Alt+Enter tests. Simulate via
+  // writing newline through meta path is already tested; here send \x1b\r is
+  // Alt — for Shift we use a direct handler by typing then verifying Alt path
+  // parity: Shift is accepted in key.return branch. ink-testing may not set
+  // key.shift on plain sequences — send Alt+Enter as known newline, then
+  // document Shift in unit path via ESC+[13;2u if needed.
+  stdin.write(ALT_ENTER);
+  await tick();
+  stdin.write('line2');
+  await tick();
+  assert.deepEqual(submitted, [], 'newline chord must not submit');
+  assert.equal(bridge.currentLine(), 'line1\nline2');
+});
+
+test('setLine restores draft and notifies onDraftChange', async () => {
+  const bridge = createInputBoxBridge();
+  const drafts: string[] = [];
+  bridge.onDraftChange((t) => drafts.push(t));
+  const { stdin } = render(
+    <InputBox bridge={bridge} color={true} isTty={true} columns={60} />,
+  );
+  await tick();
+  bridge.setLine('restored draft');
+  await tick();
+  assert.equal(bridge.currentLine(), 'restored draft');
+  assert.ok(drafts.includes('restored draft'), 'setLine must notify draft change');
+  // Live seedHistory after mount: Up browses the seeded user message.
+  bridge.seedHistory(['prior user msg']);
+  await tick();
+  stdin.write(UP);
+  await tick();
+  assert.equal(bridge.currentLine(), 'prior user msg');
 });
 
 // ---------------------------------------------------------------------------

@@ -22,16 +22,15 @@ export interface BottomLegendProps {
 }
 
 /**
- * Clustered chat key legend — no edge-padding that exiles control panel right.
- * Always-hot chords (work with draft): Alt+← leave, Ctrl+G panel.
- * Bare ←/→ still open menu/panel when the buffer is empty (not listed in narrow).
- * Esc leave: idle Esc → menu; mid-turn Esc → cancel turn (status line).
+ * Clustered chat key legend — multi-chat PR-A product keys.
+ * empty-buffer b back · empty-buffer c panel · Shift+Tab mode · Esc exit.
+ * Always-hot (work with draft): Ctrl+B back, Ctrl+G panel (not all listed when narrow).
  */
 const FULL_LEGEND =
-  'Alt+\u2190 menu  \u00b7  Shift+Tab mode  \u00b7  Ctrl+G panel  \u00b7  Esc leave';
-/** Narrow terminals keep the essential always-hot leave + panel affordances. */
-const NARROW_LEGEND = 'Alt+\u2190 menu  \u00b7  Ctrl+G panel';
-/** Columns below this threshold drop mode/interrupt hints. */
+  'b back  \u00b7  c panel  \u00b7  Shift+Tab mode  \u00b7  Esc exit';
+/** Narrow terminals keep back + panel + exit. */
+const NARROW_LEGEND = 'b back  \u00b7  c panel  \u00b7  Esc exit';
+/** Columns below this threshold drop mode. */
 const NARROW_COLUMNS = 60;
 
 export function buildBottomLegendText(columns: number): string {
