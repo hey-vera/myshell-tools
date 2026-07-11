@@ -39,6 +39,8 @@ const SHELL_EXEC_ALLOWLIST = new Set([
   "src/infra/gh-run.ts",
   // Fail-soft `glab` exec for MR list/status/create (gated at interface via CommandGatePort).
   "src/infra/glab-run.ts",
+  // Detached goal worker spawn only (myshell CLI entry); multi-chat PR-D daemon-lite.
+  "src/infra/detached-worker-spawn.ts",
 ]);
 
 /** Recursively collect all .ts files under a directory. Returns [] if dir does not exist. */

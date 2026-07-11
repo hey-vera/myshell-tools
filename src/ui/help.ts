@@ -65,6 +65,20 @@ export function commandHelpText(command: string): string | null {
         '  myshell-tools run "refactor the auth module and add tests"',
       ].join('\n') + '\n';
 
+    case 'worker':
+      return [
+        'myshell-tools worker',
+        '',
+        'Run the detached goal worker (daemon-lite). Claims pending goal jobs under',
+        'the state home, runs them, and idle-exits when the queue stays empty.',
+        '',
+        'Normally spawned automatically when a background goal starts. Safe to run',
+        'manually for recovery. Not a Windows service and not always-on.',
+        '',
+        'Job files: <stateRoot>/goal-jobs/<conversationId>/<goalId>.json',
+        '(no secrets — work text + status only).',
+      ].join('\n') + '\n';
+
     case 'rollback':
       return [
         'myshell-tools rollback [off]',

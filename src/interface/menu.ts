@@ -227,8 +227,10 @@ import {
   formatLiveNotesBlock,
   mergeLiveNotesIntoEnvironmentContext,
   parsePreemptiveControlCommand,
-  zombieRunningGoalIds,
 } from './menu-post-turn.js';
+import { zombieRunningGoalIdsWithJobs } from '../infra/goal-job.js';
+import { createGoalJobStore } from '../infra/goal-job-store.js';
+import { ensureWorkerProcess } from '../infra/detached-worker-spawn.js';
 import {
   abortConversationGoalWorkers,
   abortGoalWorker,
@@ -3162,6 +3164,9 @@ export async function runChatLoop(
       // project key with memory. No model call to create/manage a manual to-do.
       const goalStore = createFileGoalStore({ clock: ctx.clock });
       mutableGoalStore = goalStore;
+      // Detached goal job store (multi-chat PR-D) — durable jobs under state home.
+      // TUI enqueues on background spawn; worker process claims orphans after exit.
+      const goalJobStore = createGoalJobStore();
 
       // ---- Standing RULES store (Phase 4) -------------------------------------
       // The persistent home for user-authored standing rules the partner remembers
@@ -3426,18 +3431,26 @@ export async function runChatLoop(
       await refreshGoalContext();
       await refreshRulesContext();
 
-      // Goal integrity (control-plane PR3 / multi-chat PR-B): store `running`
-      // with no live AC for THIS conversation is a zombie (process restart /
-      // silent death). Other conversations' workers are untouched. Park + dim
-      // notice — never silent.
+      // Goal integrity (control-plane PR3 / multi-chat PR-B+D): store `running`
+      // with no live AC for THIS conversation AND no active detached job is a
+      // zombie (process restart / silent death). Other conversations' workers
+      // and active job files (worker may own work after Esc) are untouched.
+      // Park + dim notice for true orphans only — never silent.
       try {
         const allForHeal = await goalStore.listByConversation(convId).catch(() => []);
         const runningIds = allForHeal.filter((g) => g.state === 'running').map((g) => g.id);
         const liveIds = liveGoalIds(convId);
-        const zombies = zombieRunningGoalIds(runningIds, liveIds);
+        // Active detached jobs — worker may own work after Esc/process exit.
+        const activeJobs = await goalJobStore.listActive().catch(() => [] as const);
+        const detachedIds = new Set(activeJobs.map((j) => j.goalId));
+        const zombies = zombieRunningGoalIdsWithJobs(runningIds, liveIds, detachedIds);
         if (zombies.length > 0) {
           for (const zid of zombies) {
             await goalStore.setState(zid, 'parked').catch(() => null);
+            // Best-effort: mark matching job terminal if present for this chat.
+            await goalJobStore
+              .markTerminal(convId, zid, 'parked', 'healed orphan — no live worker or job')
+              .catch(() => null);
           }
           await syncBoard();
           out.write(
@@ -4258,6 +4271,37 @@ Output ONLY valid JSON (no prose, no markdown).`;
         registerGoalWorker(convId, goalId, ac);
         void (async () => {
           let verifiedDone = false;
+          // PR-D: durable job enqueue + ensure detached worker (fail-soft).
+          // While the TUI process is alive we still run runGoalLoop in-process
+          // (full adaptive loop lives here). Job file + worker.pid let work be
+          // reclaimed after Esc/process exit; worker skeleton parks for resume
+          // until runGoalLoop is extracted into the worker.
+          try {
+            await goalJobStore.enqueue({
+              conversationId: convId,
+              goalId,
+              work,
+              title,
+              cwd: activeCwd,
+            });
+            // Claim as TUI owner so the detached worker does not double-run
+            // while this process is still alive.
+            await goalJobStore.claim(convId, goalId, 'tui', process.pid);
+            await goalJobStore.markRunning(convId, goalId, 'tui in-process');
+            const ensured = await ensureWorkerProcess({ cwd: activeCwd });
+            if (!ensured.ok) {
+              // Fail-soft: in-process path continues regardless.
+              await goalJobStore
+                .updateStatus(convId, goalId, 'running', {
+                  note: `detach failed (${ensured.reason ?? 'unknown'}) — in-process fallback`,
+                  owner: 'tui',
+                  claimedBy: process.pid,
+                })
+                .catch(() => null);
+            }
+          } catch {
+            /* job enqueue / detach must never block in-process execution */
+          }
           try {
             await runGoalLoop(work, title, { goalId, background: true, signal: ac.signal });
             const goal = await goalStore.get(goalId).catch(() => null);
@@ -4273,6 +4317,15 @@ Output ONLY valid JSON (no prose, no markdown).`;
               if (goal?.state === 'running' && !verifiedDone) {
                 await goalStore.setState(goalId, 'parked').catch(() => null);
               }
+              // Settle durable job for board/reattach (PR-D).
+              await goalJobStore
+                .markTerminal(
+                  convId,
+                  goalId,
+                  verifiedDone ? 'done' : 'parked',
+                  verifiedDone ? 'tui completed' : 'tui parked',
+                )
+                .catch(() => null);
               if (conversationLive) {
                 await syncBoard();
                 out.write(

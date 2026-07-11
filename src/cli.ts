@@ -83,6 +83,7 @@ import { isPricingStale } from './infra/pricing.js';
 import { runDoctor } from './commands/doctor.js';
 import { runCost } from './commands/cost.js';
 import { runEvalCommand } from './commands/eval.js';
+import { runWorkerCommand } from './commands/worker.js';
 import type { SemanticPreflightCaseOutcome } from './core/eval/semantic-preflight-harness.js';
 import { classify } from './core/classify.js';
 import { makeIntentExtractor } from './core/intent-extractor.js';
@@ -235,6 +236,7 @@ Commands:
   install           Write a guarded startup hook to your shell rc file so new
                     interactive shells launch myshell-tools automatically
   uninstall         Remove the startup hook written by "install"
+  worker            Detached goal worker (daemon-lite): claim goal jobs, idle-exit
 
 Examples:
   myshell-tools                                 # open the control panel
@@ -490,6 +492,13 @@ async function main(): Promise<void> {
 
   if (args[0] === 'cost') {
     process.exit(await runCost(cwd, out));
+  }
+
+  // ---- Detached goal worker (multi-chat PR-D daemon-lite) ---------------------
+  // Claims durable goal jobs under state home; idle-exits when the queue is empty.
+  // Not a Windows service. Spawned detached by the TUI; can also be run manually.
+  if (args[0] === 'worker') {
+    process.exit(await runWorkerCommand({}));
   }
 
   // ---- Eval: the owner-invoked answer-quality ruler (Phase 0) ----------------
