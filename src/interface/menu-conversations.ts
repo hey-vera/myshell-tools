@@ -333,6 +333,8 @@ export async function runImportNative(
   inkSetChatActive?: (active: boolean) => void,
   // Shift+Tab conversation Effort Mode cycle — forwarded to runChatLoop (P0.8).
   inkSetCycleMode?: (handler: (() => void) | null) => void,
+  /** Ink composer bridge — durable draft + user-message history (multi-chat PR-A). */
+  inkComposer?: import('./ui/InputBox.js').InputBoxBridge,
 ): Promise<'menu' | 'exit'> {
   const env = { ...process.env, ...replitPersistentEnv(process.env, ctx.cwd) };
   const sessions = await listRecentNativeSessions({ env, limit: 9 });
@@ -374,5 +376,5 @@ export async function runImportNative(
 
   // Enter the chat loop for the newly imported conversation.
   // Return value propagates the 'exit' signal to the caller (startMenu).
-  return runChatLoop(ctx, mutableCtx, id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, undefined, undefined, inkSetCycleMode);
+  return runChatLoop(ctx, mutableCtx, id, out, readLine, loginFn, detectEnvironmentFn, confirm, suspendStdin, lineReader, inkRenderTurn, inkReadKey, inkSetInterrupt, inkSetInputInfo, inkSetChatActive, undefined, undefined, inkSetCycleMode, inkComposer);
 }

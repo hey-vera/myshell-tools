@@ -12,8 +12,8 @@ import type { ControlPanelSection } from './state.js';
 
 /** Kept in lockstep with BottomLegend FULL/NARROW (avoid import cycle). */
 const FULL_LEGEND =
-  'Alt+\u2190 menu  \u00b7  Shift+Tab mode  \u00b7  Ctrl+G panel  \u00b7  Esc leave';
-const NARROW_LEGEND = 'Alt+\u2190 menu  \u00b7  Ctrl+G panel';
+  'b back  \u00b7  c panel  \u00b7  Shift+Tab mode  \u00b7  Esc exit';
+const NARROW_LEGEND = 'b back  \u00b7  c panel  \u00b7  Esc exit';
 const NARROW_COLUMNS = 60;
 
 function legendTextForColumns(columns: number): string {
@@ -173,10 +173,10 @@ export function isPrimaryClick(ev: TerminalMouseEvent): boolean {
 // ---------------------------------------------------------------------------
 
 const LEGEND_SEGMENT_ACTIONS: Readonly<Record<string, LegendClickAction>> = {
-  'Alt+\u2190 menu': 'menu',
+  'b back': 'menu',
+  'c panel': 'panel',
   'Shift+Tab mode': 'mode',
-  'Ctrl+G panel': 'panel',
-  'Esc leave': 'interrupt',
+  'Esc exit': 'interrupt',
 };
 
 /**

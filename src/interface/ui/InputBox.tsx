@@ -10,8 +10,12 @@
  *   - legacy `setQueued(N)` bridge (mid-turn prose is live notes now — menu no
  *     longer drives the "⏎ queued (N)" indicator; the API remains for tests);
  *   - cursor movement (left/right, home/end, word-left/right), backspace/delete;
- *   - Up/Down history over previously submitted lines;
- *   - Alt+Enter (a.k.a. Meta+Return) inserts a newline; plain Enter submits.
+ *   - Up/Down browse prior user messages (seeded + session submits); Enter sends
+ *     the selected text (history insert is on Up; Enter = send — two-step UX);
+ *   - Alt+Enter / Shift+Enter insert a newline; plain Enter submits.
+ *   - empty-buffer `b` / always-hot Ctrl+B → hierarchical back;
+ *     empty-buffer `c` → control panel; Ctrl+G always-hot panel toggle.
+ *   - ←/→ are cursor only (no empty-buffer nav).
  *
  * MULTILINE SEMANTICS (documented choice): the legacy reader is a single
  * `node:readline` interface — Enter ALWAYS submits and there is no
@@ -95,8 +99,22 @@ export interface InputBoxBridge {
   /** Invoked by the box when the user submits a line (UNTRIMMED — the reader
    *  trims, matching legacy createLineReader). */
   onSubmit(handler: (line: string) => void): void;
-  /** Seed the Up/Down history with previously submitted lines (oldest→newest). */
+  /**
+   * Seed / replace the Up/Down message history (oldest→newest). Safe after mount
+   * — updates live editor state when the box is attached.
+   */
   seedHistory(lines: readonly string[]): void;
+  /**
+   * Replace the entire composer buffer (cursor at end). Used to restore a durable
+   * draft on chat enter. Empty string clears.
+   */
+  setLine(text: string): void;
+  /**
+   * Subscribe to in-progress buffer changes (draft persistence). Fired on every
+   * edit and on setLine; NOT fired for submit-clear (submit path clears draft
+   * explicitly). Replaces any prior handler.
+   */
+  onDraftChange(handler: ((text: string) => void) | null): void;
   /**
    * Legacy queued-typeahead count. Mid-turn prose is live notes (not a FIFO
    * turn queue); the chat loop no longer calls this. Kept for bridge/API
@@ -119,21 +137,41 @@ export interface InputBoxBridge {
   // --- wired internally ---
   /** @internal set by onSubmit() */ _submit?: ((line: string) => void) | undefined;
   /** @internal set by onQueued() */ _onQueued?: ((n: number) => void) | undefined;
+  /** @internal set by onDraftChange() */ _onDraftChange?: ((text: string) => void) | null;
   /** @internal initial history seed, consumed by the box on mount */ _history: string[];
   /** @internal the attached box API */ _api?: InputBoxApi | null;
   /** @internal set by the InputBox mount effect; invoked by insertText() */
   _insertText?: ((text: string) => void) | undefined;
+  /** @internal set by the InputBox mount effect; invoked by setLine() */
+  _setLine?: ((text: string) => void) | undefined;
+  /** @internal set by the InputBox mount effect; invoked by seedHistory() */
+  _setHistory?: ((lines: readonly string[]) => void) | undefined;
+  /** @internal pre-mount setLine stash, applied once on attach */
+  _pendingLine?: string | undefined;
 }
 
 /** Build an {@link InputBoxBridge} with empty wiring. */
 export function createInputBoxBridge(): InputBoxBridge {
   const bridge: InputBoxBridge = {
     _history: [],
+    _onDraftChange: null,
     onSubmit(handler): void {
       bridge._submit = handler;
     },
     seedHistory(lines): void {
       bridge._history = lines.slice();
+      bridge._setHistory?.(bridge._history);
+    },
+    setLine(text): void {
+      if (bridge._setLine !== undefined) {
+        bridge._setLine(text);
+      } else {
+        // Pre-mount: stash via a one-shot draft seed consumed on attach.
+        bridge._pendingLine = text;
+      }
+    },
+    onDraftChange(handler): void {
+      bridge._onDraftChange = handler;
     },
     setQueued(n): void {
       bridge._onQueued?.(n);
@@ -217,19 +255,16 @@ export interface InputBoxProps {
    */
   readonly readPending?: (() => boolean) | undefined;
   /**
-   * Leave-chat / menu handler. Fires on:
-   * - bare Left when the edit buffer is empty, OR
-   * - Alt/Meta+Left on any buffer (draft preserved).
-   * Non-empty bare Left still moves the cursor. Word-movement stays on Ctrl+Left.
-   * Optional.
+   * Hierarchical back (leave chat → menu). Fires on:
+   * - empty-buffer bare `b`, OR
+   * - always-hot Ctrl+B (any buffer; draft preserved).
+   * When the buffer is non-empty, bare `b` types the letter. Optional.
    */
   readonly onEmptyLeft?: (() => void) | undefined;
   /**
-   * Open Control Panel handler. Fires on:
-   * - bare Right when the edit buffer is empty, OR
-   * - Alt/Meta+Right on any buffer (draft preserved).
-   * Non-empty bare Right still moves the cursor. Word-movement stays on Ctrl+Right.
-   * Optional.
+   * Open Control Panel. Fires on empty-buffer bare `c` (non-empty `c` types the
+   * letter). Always-hot panel toggle remains Ctrl+G via
+   * {@link onToggleFullscreenPanel}. Optional.
    */
   readonly onEmptyRight?: (() => void) | undefined;
   /**
@@ -438,6 +473,17 @@ export function InputBox({
   const suggestGhostRef = useRef(suggestGhost);
   suggestGhostRef.current = suggestGhost;
 
+  const notifyDraft = useCallback(
+    (text: string): void => {
+      try {
+        bridge._onDraftChange?.(text);
+      } catch {
+        /* draft hooks must never break input */
+      }
+    },
+    [bridge],
+  );
+
   // Register the imperative API + queued subscriber; consume the history seed.
   useEffect(() => {
     bridge.attach({ currentLine: () => valueRef.current });
@@ -456,12 +502,36 @@ export function InputBox({
       setSuggIndex(0);
       setGhost(null);
       setHistIndex(null);
+      notifyDraft(next);
     };
+    bridge._setLine = (text: string): void => {
+      const next = typeof text === 'string' ? text : '';
+      setValue(next);
+      setCursor(next.length);
+      setSuggestions([]);
+      setSuggIndex(0);
+      setGhost(null);
+      setHistIndex(null);
+      setDraft('');
+      notifyDraft(next);
+    };
+    bridge._setHistory = (lines: readonly string[]): void => {
+      setHistory(lines.slice());
+      setHistIndex(null);
+    };
+    // Apply any pre-mount setLine stash once.
+    if (typeof bridge._pendingLine === 'string') {
+      const pending = bridge._pendingLine;
+      bridge._pendingLine = undefined;
+      bridge._setLine(pending);
+    }
     return () => {
       bridge.attach(null);
       bridge._insertText = undefined;
+      bridge._setLine = undefined;
+      bridge._setHistory = undefined;
     };
-  }, [bridge]);
+  }, [bridge, notifyDraft]);
   useEffect(() => {
     bridge.onQueued((n) => setQueued(n));
     return () => {
@@ -504,6 +574,7 @@ export function InputBox({
     setSuggIndex(0);
     // Typing / edits also dismiss ghost immediately (P0.18).
     setGhost(null);
+    notifyDraft(next);
   };
 
   const rememberCompletion = (text: string): void => {
@@ -516,6 +587,7 @@ export function InputBox({
   // Commit `submitted` as a line: record non-blank history, clear the editor,
   // and notify the bridge. Shared by plain-Enter and the paste-trailing-newline
   // path so both have byte-identical submit semantics (the reader trims).
+  // Clearing the buffer notifies draft listeners with '' so durable draft is wiped.
   const submit = (submitted: string): void => {
     if (submitted.trim() !== '') {
       const HISTORY_CAP = 500;
@@ -532,6 +604,7 @@ export function InputBox({
     setSuggIndex(0);
     setGhost(null);
     lastCompletionRef.current = null;
+    notifyDraft('');
     bridge._submit?.(submitted);
   };
 
@@ -681,6 +754,12 @@ export function InputBox({
       if (onToggleFullscreenPanel?.() === true) return;
     }
 
+    // --- Always-hot Ctrl+B → hierarchical back (any buffer; draft preserved) --
+    if (key.ctrl && (input === 'b' || input === '\x02')) {
+      onEmptyLeft?.();
+      return;
+    }
+
     // --- Pending menu/confirm read -------------------------------------------
     // This is the first dispatch branch: exactly one continuously-mounted input
     // consumer serves both menu capture and editor input, with no listener handoff.
@@ -689,18 +768,12 @@ export function InputBox({
       return;
     }
 
-    // --- Bare ESC → interrupt the in-flight turn (H1) ------------------------
-    // During a model turn the App installs an interrupt handler (the Ink twin of
-    // the legacy raw-mode ESC→currentAc.abort()). A BARE Escape keypress routes
-    // there and aborts the turn instead of editing. Only the standalone Escape key
-    // is intercepted (key.escape && no input payload): typed-ahead characters and
-    // Alt-chord escapes are untouched, so the typed-ahead queue is preserved. When
-    // idle (no handler installed) onEscape returns false → ESC is a no-op as before.
-    //
-    // When Tab-completions are showing, a bare ESC DISMISSES them first (clears the
-    // candidate row, leaves the buffer untouched) BEFORE the turn-interrupt path, so
-    // a user can back out of the suggestion list without aborting an in-flight turn.
-    // Ghost text (P0.18) is also dismissed by Esc before interrupt routing.
+    // --- Bare ESC → process exit / interrupt (App installs the handler) ------
+    // Multi-chat PR-A: Esc exits the myshell process after draft flush (menu
+    // installs control.exit). Mid-turn the same chord aborts the foreground turn
+    // and exits. Suggestions / ghost dismiss first so Esc never black-holes.
+    // Only the standalone Escape key is intercepted (key.escape && no input
+    // payload): typed-ahead characters and Alt-chord escapes are untouched.
     if (key.escape && input === '' && suggestions.length > 0) {
       setSuggestions([]);
       setSuggIndex(0);
@@ -716,14 +789,16 @@ export function InputBox({
 
     // --- Submit vs newline ---------------------------------------------------
     if (key.return) {
-      if (key.meta) {
-        // Alt/Option+Enter → insert a newline (multiline compose). This is the
-        // intentional chord and NEVER submits, even on a multiline buffer.
+      if (key.meta || key.shift) {
+        // Alt/Option+Enter or Shift+Enter → insert a newline (multiline compose).
+        // NEVER submits, even on a multiline buffer.
         replace(value.slice(0, cursor) + '\n' + value.slice(cursor), cursor + 1);
         return;
       }
       // A plain single Enter keypress submits the whole (possibly multiline)
-      // buffer. `key.return` is only set for a SINGLE-char `\r`/`\x1b\r` keypress
+      // buffer. When browsing history (Up filled the buffer), Enter sends that
+      // selection — message-select: Up inserts, Enter sends.
+      // `key.return` is only set for a SINGLE-char `\r`/`\x1b\r` keypress
       // (Ink's parseKeypress matches `s === '\r'` exactly) — a multi-char paste
       // ending in `\r` does NOT set key.return; that case is handled below.
       submit(value);
@@ -744,41 +819,32 @@ export function InputBox({
       return;
     }
 
-    // --- Always-hot Alt/Meta+arrows → leave chat / open panel (any buffer) ---
-    // Draft-preserving nav. Ctrl+arrow remains word-movement (below). Ink reports
-    // both xterm CSI `;3` (meta) and double-ESC option+arrow as key.meta.
-    if (key.meta && !key.ctrl) {
-      if (key.leftArrow) {
+    // --- Empty-buffer letter nav (multi-chat PR-A product keys) ---------------
+    // - empty buffer + bare `b` → hierarchical back (onEmptyLeft)
+    // - empty buffer + bare `c` → control panel (onEmptyRight)
+    // - non-empty buffer: b/c type as letters (fall through to printable)
+    // - ←/→ are always cursor movement (empty-buffer arrow nav removed)
+    // - Ctrl+G remains always-hot panel toggle; Ctrl+B always-hot back (above)
+    if (
+      value === '' &&
+      !key.meta &&
+      !key.ctrl &&
+      !key.shift &&
+      input.length === 1
+    ) {
+      const ch = input.toLowerCase();
+      if (ch === 'b') {
         onEmptyLeft?.();
         return;
       }
-      if (key.rightArrow) {
-        onEmptyRight?.();
-        return;
-      }
-    }
-
-    // --- Empty-buffer bare arrow nav (focus-sensitive route keys) -------------
-    // Focus model (PANEL-NAV-SPEC / control-plane completion):
-    // - Composer focused + empty buffer: bare Left → menu (onEmptyLeft), bare
-    //   Right → open Control Panel (onEmptyRight). Safe: no cursor to preserve.
-    // - Composer focused + non-empty buffer: bare Left/Right stay cursor movement
-    //   (handled below). Nav with draft uses Alt+arrows or Ctrl+G (above).
-    // - Control Panel open: App sets this InputBox `active=false` so this handler
-    //   is inert; the panel owns Esc/Left/Ctrl+G close (never a black hole).
-    if (value === '' && !key.meta && !key.ctrl) {
-      if (key.leftArrow) {
-        onEmptyLeft?.();
-        return;
-      }
-      if (key.rightArrow) {
+      if (ch === 'c') {
         onEmptyRight?.();
         return;
       }
     }
 
     // --- Cursor movement -----------------------------------------------------
-    // Word-movement is Ctrl+arrow only; Alt/Meta+arrow is nav (handled above).
+    // ←/→ are cursor only (no nav). Word-movement is Ctrl+arrow.
     if (key.leftArrow) {
       if (key.ctrl) setCursor(wordLeft(value, cursor));
       else setCursor(Math.max(0, cursor - 1));
