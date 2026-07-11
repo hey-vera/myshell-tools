@@ -22,7 +22,12 @@ export {
   isTurnStalled,
   formatStallStatus,
   resolveStatusHeadline,
+  toolPulseVerb,
+  formatToolPulseLabel,
+  looksLikeTestCommand,
+  activeGoalTitle,
   STALL_THRESHOLD_MS,
+  type PulseContext,
 } from './reduce.js';
 export {
   coreEventToActions,

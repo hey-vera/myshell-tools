@@ -121,15 +121,15 @@ test('AgentRow LEADS a running agent with the live action (verb + target) when g
       agent={agent({ provider: 'claude', model: 'opus', state: 'running', tokens: 0 })}
       last
       elapsedSecs={12}
-      workLabel="Thinking"
-      liveAction="editing src/auth/mw.ts"
+      workLabel="Composing"
+      liveAction="Editing src/auth/mw.ts"
       color={false}
     />,
   );
   const frame = lastFrame() ?? '';
   assert.match(frame, /claude\/opus/);
-  assert.match(frame, /editing src\/auth\/mw\.ts/);
-  // The live action replaces the bare "running" word and the "Thinking" fallback.
+  assert.match(frame, /Editing src\/auth\/mw\.ts/);
+  // The live action replaces the bare "running" word and the "Composing" fallback.
   assert.doesNotMatch(frame, /running/);
   assert.match(frame, /· 12s/);
 });
@@ -139,11 +139,11 @@ test('AgentRow falls back to the workLabel when no live action is present', () =
     <AgentRow
       agent={agent({ state: 'running', tokens: 0 })}
       last
-      workLabel="Thinking"
+      workLabel="Composing"
       color={false}
     />,
   );
-  assert.match(lastFrame() ?? '', /Thinking/);
+  assert.match(lastFrame() ?? '', /Composing/);
 });
 
 test('TokenMeter renders the compact ↓ ~Nk tokens readout', () => {
@@ -172,13 +172,13 @@ test('StatusBlock shows a "Preparing…" status line when active with no goals/s
   // (phase 'idle', workLabel 'Preparing', 0 steps). The block must render a
   // sensible "Preparing…" spinner line (NOT an empty box, NOT a crash, NO goals
   // panel) so the UI never looks frozen between submit and the first event —
-  // and does not claim "Thinking" before any model work has started.
+  // and does not claim "Composing" before any model work has started.
   const state: UiState = { ...initialState, turnActive: true };
   const { lastFrame } = render(<StatusBlock state={state} color={false} rows={24} />);
   const frame = lastFrame() ?? '';
   assert.notEqual(frame.trim(), ''); // not an empty box
   assert.match(frame, /Preparing…/);
-  assert.doesNotMatch(frame, /Thinking…/);
+  assert.doesNotMatch(frame, /Composing…/);
   assert.doesNotMatch(frame, /esc cancel turn/);
   assert.doesNotMatch(frame, /GOALS/); // no goals panel until goals arrive
 });
@@ -218,18 +218,19 @@ test('StatusLine renders the "Waiting on N models" wording in panel mode', () =>
   assert.match(frame, /esc cancel turn/);
 });
 
-test('StatusLine falls back to "Thinking" + an honest work summary when no tool is active', () => {
+test('StatusLine falls back to "Composing" + an honest work summary when no tool is active', () => {
   const state: UiState = {
     ...initialState,
     turnActive: true,
-    goals: [goal({ state: 'running', agents: [agent({ state: 'running' })] })],
+    // Bare tier label (not a human title) so the pulse stays phase-like Composing.
+    goals: [goal({ id: 'ic#1', label: 'ic', tier: 'ic', state: 'running', agents: [agent({ state: 'running' })] })],
     // streamedChars is non-zero but must NOT produce a token figure (it was a
     // fabricated streamedChars/4 proxy; real tokens only appear when known/>0).
-    stream: { ...initialState.stream, phase: 'streaming', workLabel: 'Thinking', stepCount: 3, streamedChars: 4000 },
+    stream: { ...initialState.stream, phase: 'streaming', workLabel: 'Composing', stepCount: 3, streamedChars: 4000 },
   };
   const { lastFrame } = render(<StatusLine state={state} frame="⠙" elapsedSecs={6} color={false} />);
   const frame = lastFrame() ?? '';
-  assert.match(frame, /Thinking…/);
+  assert.match(frame, /Composing…/);
   assert.match(frame, /◐ 1 active/);
   // NO token figure mid-run (the fabricated ~Nk proxy is gone).
   assert.doesNotMatch(frame, /tokens/);
@@ -243,20 +244,20 @@ test('StatusLine shows honest stall chrome after ≥12s silence (display-only)',
   const state: UiState = {
     ...initialState,
     turnActive: true,
-    goals: [goal({ state: 'running', agents: [agent({ state: 'running' })] })],
+    goals: [goal({ id: 'ic#1', label: 'ic', tier: 'ic', state: 'running', agents: [agent({ state: 'running' })] })],
     stream: {
       ...initialState.stream,
       phase: 'thinking',
-      workLabel: 'Thinking',
+      workLabel: 'Composing',
       lastEventAt,
-      lastPulseLabel: 'Thinking',
+      lastPulseLabel: 'Composing',
     },
   };
-  // Under threshold: still progressive Thinking…
+  // Under threshold: still progressive Composing…
   const under = render(
     <StatusLine state={state} frame="⠙" elapsedSecs={5} nowMs={lastEventAt + 5_000} color={false} />,
   );
-  assert.match(under.lastFrame() ?? '', /Thinking…/);
+  assert.match(under.lastFrame() ?? '', /Composing…/);
   assert.doesNotMatch(under.lastFrame() ?? '', /stalled/);
 
   // At/over threshold: honest stall; last known label; silence seconds.
@@ -264,10 +265,10 @@ test('StatusLine shows honest stall chrome after ≥12s silence (display-only)',
     <StatusLine state={state} frame="⠹" elapsedSecs={47} nowMs={lastEventAt + 47_000} color={false} />,
   );
   const frame = stalled.lastFrame() ?? '';
-  assert.match(frame, /stalled · last Thinking · 47s/);
+  assert.match(frame, /stalled · last Composing · 47s/);
   assert.match(frame, /esc to interrupt/);
   // Must not invent a progressive verb with ellipsis while stalled.
-  assert.doesNotMatch(frame, /Thinking…/);
+  assert.doesNotMatch(frame, /Composing…/);
 });
 
 test('StatusLine LEADS with the live ACTION and reports honest active, complete, and goal counts', () => {
@@ -281,15 +282,15 @@ test('StatusLine LEADS with the live ACTION and reports honest active, complete,
     stream: {
       ...initialState.stream,
       phase: 'streaming',
-      workLabel: 'Thinking',
+      workLabel: 'Composing',
       stepCount: 28,
-      currentTool: { verb: 'editing', target: 'src/auth/mw.ts' },
+      currentTool: { verb: 'Editing', target: 'src/auth/mw.ts' },
     },
   };
   const { lastFrame } = render(<StatusLine state={state} frame="⠹" elapsedSecs={59} color={false} />);
   const frame = lastFrame() ?? '';
-  // The action leads (not "Thinking"); the honest work summary + elapsed follow.
-  assert.match(frame, /editing src\/auth\/mw\.ts…/);
+  // The action leads (not "Composing"); the honest work summary + elapsed follow.
+  assert.match(frame, /Editing src\/auth\/mw\.ts…/);
   assert.match(frame, /◐ 1 active/);
   assert.match(frame, /✓ 2 complete/);
   assert.match(frame, /2 goals/);
@@ -298,12 +299,37 @@ test('StatusLine LEADS with the live ACTION and reports honest active, complete,
   assert.doesNotMatch(frame, /tokens/);
 });
 
+test('StatusLine surfaces Working on "goal title" when composing with a real goal', () => {
+  const state: UiState = {
+    ...initialState,
+    turnActive: true,
+    goals: [
+      goal({
+        id: 'g1',
+        label: 'Ship auth middleware',
+        state: 'running',
+        agents: [agent({ state: 'running' })],
+        tier: 'ic',
+      }),
+    ],
+    stream: {
+      ...initialState.stream,
+      phase: 'thinking',
+      workLabel: 'Composing',
+    },
+  };
+  const { lastFrame } = render(<StatusLine state={state} frame="⠙" elapsedSecs={3} color={false} />);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /Working on "Ship auth middleware"…/);
+  assert.doesNotMatch(frame, /Composing…/);
+});
+
 test('StatusLine omits the goal-count segment when only one goal is visible', () => {
   const state: UiState = {
     ...initialState,
     turnActive: true,
     goals: [goal({ state: 'running', agents: [agent({ state: 'running' }), agent({ state: 'done' })] })],
-    stream: { ...initialState.stream, phase: 'streaming', workLabel: 'Thinking', stepCount: 1 },
+    stream: { ...initialState.stream, phase: 'streaming', workLabel: 'Composing', stepCount: 1 },
   };
   const { lastFrame } = render(<StatusLine state={state} frame="⠙" elapsedSecs={1} color={false} />);
   const frame = lastFrame() ?? '';
@@ -365,14 +391,14 @@ test('StatusBlock surfaces the live action (currentTool) on the running agent ro
     stream: {
       ...initialState.stream,
       phase: 'streaming',
-      workLabel: 'Thinking',
+      workLabel: 'Composing',
       stepCount: 12,
-      currentTool: { verb: 'editing', target: 'src/auth/mw.ts' },
+      currentTool: { verb: 'Editing', target: 'src/auth/mw.ts' },
     },
   });
   const { lastFrame } = render(<StatusBlock state={state} color={false} rows={40} />);
   const frame = lastFrame() ?? '';
-  assert.match(frame, /editing src\/auth\/mw\.ts/);
+  assert.match(frame, /Editing src\/auth\/mw\.ts/);
   assert.match(frame, /◐ 1 active/);
   // No fabricated token figure anywhere mid-run.
   assert.doesNotMatch(frame, /tokens/);
@@ -647,7 +673,7 @@ test('board ON: an ordinary turn does NOT render a "GOALS ▸ <message>" card', 
   assert.doesNotMatch(frame, new RegExp(raw.slice(0, 20)));
   assert.match(frame, /BOARD/);
   assert.match(frame, /Redesign feed 3\/8 · parked/);
-  assert.match(frame, /Thinking…/);
+  assert.match(frame, /Composing…/);
 });
 
 test('board ON: the persistent board and the live GOALS agent tree render together within budget', () => {

@@ -26,6 +26,10 @@ import {
   isTurnStalled,
   formatStallStatus,
   resolveStatusHeadline,
+  toolPulseVerb,
+  formatToolPulseLabel,
+  looksLikeTestCommand,
+  activeGoalTitle,
   STALL_THRESHOLD_MS,
   type Action,
   type AgentRunState,
@@ -511,12 +515,22 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
     assert.equal(started.turnActive, true);
   });
 
-  it('honest workLabel phases: Preparing → Thinking → Responding', () => {
+  it('honest workLabel phases: Preparing → Routing → Composing → Responding', () => {
     const started = reduce(initialState, { type: 'turn/start' });
     assert.equal(started.stream.workLabel, 'Preparing');
     assert.equal(started.turnActive, true);
 
-    const thinking = reduce(started, {
+    const routing = reduce(started, {
+      type: 'classified',
+      tier: 'ic',
+      risk: 'low',
+      rationale: 'simple',
+      verbosity: 'normal',
+      debug: false,
+    });
+    assert.equal(routing.stream.workLabel, 'Routing');
+
+    const composing = reduce(routing, {
       type: 'tier-start',
       tier: 'ic',
       provider: 'claude',
@@ -524,10 +538,10 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
       attempt: 1,
       verbosity: 'normal',
     });
-    assert.equal(thinking.stream.workLabel, 'Thinking');
-    assert.equal(thinking.stream.phase, 'thinking');
+    assert.equal(composing.stream.workLabel, 'Composing');
+    assert.equal(composing.stream.phase, 'thinking');
 
-    const responding = reduce(thinking, { type: 'stream/prose', text: 'Hi' });
+    const responding = reduce(composing, { type: 'stream/prose', text: 'Hi' });
     assert.equal(responding.stream.workLabel, 'Responding');
     assert.equal(responding.stream.phase, 'streaming');
 
@@ -552,7 +566,7 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
     assert.equal(derivePulseLabel(started.stream), 'Preparing');
 
     const t1 = t0 + 500;
-    const thinking = reduce(
+    const composing = reduce(
       started,
       {
         type: 'tier-start',
@@ -564,12 +578,12 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
       },
       t1,
     );
-    assert.equal(thinking.stream.lastEventAt, t1);
-    assert.equal(thinking.stream.lastPulseLabel, 'Thinking');
+    assert.equal(composing.stream.lastEventAt, t1);
+    assert.equal(composing.stream.lastPulseLabel, 'Composing');
 
     const t2 = t1 + 200;
     const tool = reduce(
-      thinking,
+      composing,
       {
         type: 'stream/tool',
         name: 'Edit',
@@ -580,8 +594,8 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
       t2,
     );
     assert.equal(tool.stream.lastEventAt, t2);
-    assert.equal(tool.stream.lastPulseLabel, 'editing');
-    assert.equal(derivePulseLabel(tool.stream), 'editing');
+    assert.equal(tool.stream.lastPulseLabel, 'Editing src/a.ts');
+    assert.equal(derivePulseLabel(tool.stream), 'Editing src/a.ts');
 
     const t3 = t2 + 100;
     const prose = reduce(tool, { type: 'stream/prose', text: 'Hi' }, t3);
@@ -590,7 +604,7 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
     // still prefers the live tool verb (honest: a tool is still the last action
     // until tier boundary). After flush it falls back to Responding.
     assert.equal(prose.stream.workLabel, 'Responding');
-    assert.equal(prose.stream.lastPulseLabel, 'editing');
+    assert.equal(prose.stream.lastPulseLabel, 'Editing src/a.ts');
 
     const flushed = reduce(
       prose,
@@ -616,34 +630,133 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
     assert.equal(isTurnStalled(null, 50_000), false);
     assert.equal(isTurnStalled(1_000, 1_000 + 11_999), false);
     assert.equal(isTurnStalled(1_000, 1_000 + 12_000), true);
-    assert.equal(formatStallStatus('Thinking', 47), 'stalled · last Thinking · 47s');
-    assert.equal(formatStallStatus('', 12), 'stalled · last Thinking · 12s');
+    assert.equal(formatStallStatus('Composing', 47), 'stalled · last Composing · 47s');
+    assert.equal(formatStallStatus('', 12), 'stalled · last Composing · 12s');
 
     const stream: StreamView = {
       ...initialStreamView,
-      workLabel: 'Thinking',
+      workLabel: 'Composing',
       lastEventAt: 1_000,
-      lastPulseLabel: 'Thinking',
+      lastPulseLabel: 'Composing',
     };
     // Under threshold → progressive headline (live action wins when present).
-    assert.deepEqual(resolveStatusHeadline(stream, 1_000 + 5_000, 'editing src/a.ts'), {
+    assert.deepEqual(resolveStatusHeadline(stream, 1_000 + 5_000, 'Editing src/a.ts'), {
       stalled: false,
-      headline: 'editing src/a.ts',
+      headline: 'Editing src/a.ts',
     });
     assert.deepEqual(resolveStatusHeadline(stream, 1_000 + 5_000, ''), {
       stalled: false,
-      headline: 'Thinking',
+      headline: 'Composing',
     });
     // At threshold → honest stall; silence seconds from lastEventAt, not invented work.
-    assert.deepEqual(resolveStatusHeadline(stream, 1_000 + 47_000, 'editing src/a.ts'), {
+    assert.deepEqual(resolveStatusHeadline(stream, 1_000 + 47_000, 'Editing src/a.ts'), {
       stalled: true,
-      headline: 'stalled · last Thinking · 47s',
+      headline: 'stalled · last Composing · 47s',
     });
     // No nowMs → never stall (display stays progressive).
     assert.deepEqual(resolveStatusHeadline(stream, undefined, ''), {
       stalled: false,
-      headline: 'Thinking',
+      headline: 'Composing',
     });
+  });
+
+  it('smart pulse pure helpers: tool verbs, goal title, Running tests', () => {
+    assert.deepEqual(toolPulseVerb('Read'), { verb: 'Reading' });
+    assert.deepEqual(toolPulseVerb('Read', 'src/a.ts'), { verb: 'Reading', target: 'src/a.ts' });
+    assert.deepEqual(toolPulseVerb('Edit', 'src/a.ts'), { verb: 'Editing', target: 'src/a.ts' });
+    assert.deepEqual(toolPulseVerb('Bash'), { verb: 'Running' });
+    assert.deepEqual(toolPulseVerb('Bash', 'npm test'), { verb: 'Running tests' });
+    assert.deepEqual(toolPulseVerb('Bash', 'npx vitest run'), { verb: 'Running tests' });
+    assert.deepEqual(toolPulseVerb('Bash', 'ls -la'), { verb: 'Running', target: 'ls -la' });
+    assert.deepEqual(toolPulseVerb('Grep', 'foo'), { verb: 'Searching', target: 'foo' });
+    assert.deepEqual(toolPulseVerb('mystery_tool'), { verb: 'mystery_tool' });
+    assert.equal(formatToolPulseLabel({ verb: 'Editing', target: 'src/a.ts' }), 'Editing src/a.ts');
+    assert.equal(formatToolPulseLabel({ verb: 'Running tests' }), 'Running tests');
+    assert.equal(looksLikeTestCommand('npm test'), true);
+    assert.equal(looksLikeTestCommand('ls'), false);
+
+    assert.equal(
+      derivePulseLabel({ workLabel: 'Composing', currentTool: undefined }, { goalTitle: 'Ship auth' }),
+      'Working on "Ship auth"',
+    );
+    assert.equal(
+      derivePulseLabel(
+        { workLabel: 'Composing', currentTool: { verb: 'Reading', target: 'a.ts' } },
+        { goalTitle: 'Ship auth' },
+      ),
+      'Reading a.ts',
+    );
+    assert.equal(
+      derivePulseLabel({ workLabel: 'Responding', currentTool: undefined }, { goalTitle: 'Ship auth' }),
+      'Responding',
+    );
+    assert.equal(derivePulseLabel({ workLabel: '', currentTool: undefined }), 'Composing');
+
+    const goals: GoalView[] = [
+      {
+        id: 'g1',
+        label: 'Ship auth',
+        state: 'running',
+        tokens: 0,
+        toolCount: 0,
+        agents: [],
+        tier: 'ic',
+      },
+    ];
+    assert.equal(activeGoalTitle(goals), 'Ship auth');
+    assert.equal(
+      activeGoalTitle([{ ...goals[0]!, label: 'ic', id: 'ic#1' }]),
+      undefined,
+      'bare tier label is not an honest goal title',
+    );
+
+    assert.deepEqual(
+      resolveStatusHeadline(
+        { ...initialStreamView, workLabel: 'Composing', lastEventAt: 1, lastPulseLabel: 'Composing' },
+        2,
+        '',
+        { goalTitle: 'Ship auth' },
+      ),
+      { stalled: false, headline: 'Working on "Ship auth"' },
+    );
+  });
+
+  it('intent/engagement promote Routing; goal title freezes into lastPulseLabel', () => {
+    const t0 = 10_000;
+    let s = reduce(initialState, { type: 'turn/start' }, t0);
+    s = reduce(s, { type: 'intent' }, t0 + 10);
+    assert.equal(s.stream.workLabel, 'Routing');
+    assert.equal(s.stream.lastPulseLabel, 'Routing');
+
+    s = reduce(
+      s,
+      {
+        type: 'tier-start',
+        tier: 'ic',
+        provider: 'claude',
+        model: 'sonnet',
+        attempt: 1,
+        verbosity: 'normal',
+        title: 'Fix hang detector',
+      },
+      t0 + 20,
+    );
+    assert.equal(s.stream.workLabel, 'Composing');
+    assert.equal(s.stream.lastPulseLabel, 'Working on "Fix hang detector"');
+
+    s = reduce(
+      s,
+      {
+        type: 'stream/tool',
+        name: 'Bash',
+        phase: 'start',
+        verbosity: 'normal',
+        detail: 'npm test -- test/unit/hang.test.ts',
+      },
+      t0 + 30,
+    );
+    assert.equal(s.stream.currentTool?.verb, 'Running tests');
+    assert.equal(s.stream.lastPulseLabel, 'Running tests');
   });
 
   it('board/sync and chrome do NOT stamp lastEventAt (not stream liveness)', () => {
@@ -781,7 +894,7 @@ describe('ui reduce — tier-start', () => {
     assert.equal(s.stream.stepCount, 0);
     assert.equal(s.stream.streamedChars, 0);
     assert.equal(s.stream.attemptHadProse, false);
-    assert.equal(s.stream.workLabel, 'Thinking');
+    assert.equal(s.stream.workLabel, 'Composing');
     assert.equal(s.stream.phase, 'thinking');
     assert.equal(s.goals.length, 1);
     assert.equal(s.goals[0]?.state, 'running');
@@ -883,14 +996,14 @@ describe('ui reduce — tool / reasoning verbosity', () => {
   });
 
   it('captures the LIVE action (currentTool) from a real tool event, mapping the name to a verb', () => {
-    // A real tool name maps to a friendly verb; with NO detail there is no target
+    // A real tool name maps to a capitalized verb; with NO detail there is no target
     // (the Claude subscription provider supplies none — never fabricated).
     const edit = reduce(initialState, { type: 'stream/tool', name: 'Edit', phase: 'start', verbosity: 'normal' });
-    assert.deepEqual(edit.stream.currentTool, { verb: 'editing' });
+    assert.deepEqual(edit.stream.currentTool, { verb: 'Editing' });
     const read = reduce(initialState, { type: 'stream/tool', name: 'Read', phase: 'start', verbosity: 'normal' });
-    assert.deepEqual(read.stream.currentTool, { verb: 'reading' });
+    assert.deepEqual(read.stream.currentTool, { verb: 'Reading' });
     const bash = reduce(initialState, { type: 'stream/tool', name: 'Bash', phase: 'start', verbosity: 'normal' });
-    assert.deepEqual(bash.stream.currentTool, { verb: 'running' });
+    assert.deepEqual(bash.stream.currentTool, { verb: 'Running' });
     // An unmapped tool name surfaces verbatim (never invented).
     const custom = reduce(initialState, { type: 'stream/tool', name: 'CustomMcpTool', phase: 'start', verbosity: 'normal' });
     assert.deepEqual(custom.stream.currentTool, { verb: 'CustomMcpTool' });
@@ -904,7 +1017,7 @@ describe('ui reduce — tool / reasoning verbosity', () => {
       verbosity: 'normal',
       detail: 'src/auth/mw.ts',
     });
-    assert.deepEqual(withTarget.stream.currentTool, { verb: 'editing', target: 'src/auth/mw.ts' });
+    assert.deepEqual(withTarget.stream.currentTool, { verb: 'Editing', target: 'src/auth/mw.ts' });
   });
 
   it('clears currentTool at a (non-panel) tier boundary so no stale verb lingers', () => {
