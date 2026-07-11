@@ -100,6 +100,10 @@ export async function defaultGoalJobExecutor(
     // Skeleton: no multi-turn model loop yet. Park so TUI reattach can resume
     // via existing in-process path rather than claiming false completion.
     await goalStore.setState(job.goalId, 'parked').catch(() => null);
+    await defaultLog(
+      goalJobsRoot(defaultStateLayout()),
+      'goalId=' + job.goalId + ' paused for TUI resume; full adaptive loop is not worker-extracted yet',
+    );
     return 'parked';
   } catch {
     return 'failed';
@@ -168,7 +172,7 @@ export async function runWorkerLoop(options: WorkerLoopOptions = {}): Promise<nu
     await store.markRunning(
       claimed.conversationId,
       claimed.goalId,
-      'detached-worker running',
+      'detached-worker claimed; pausing for TUI resume',
     );
 
     const ac = new AbortController();
@@ -185,7 +189,7 @@ export async function runWorkerLoop(options: WorkerLoopOptions = {}): Promise<nu
       outcome === 'done'
         ? 'detached-worker completed'
         : outcome === 'parked'
-          ? 'detached-worker parked (skeleton/resume)'
+          ? 'paused for resume after exit'
           : 'detached-worker failed';
     await store.markTerminal(claimed.conversationId, claimed.goalId, outcome, note);
     await log(`finished goalId=${claimed.goalId} outcome=${outcome}`);

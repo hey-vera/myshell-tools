@@ -44,7 +44,7 @@ test('idle InputBox renders the full-width composer and info chip (TTY+colour)',
   const frame = plain(lastFrame());
   assert.ok(frame.includes('❯'), `expected caret, got:\n${frame}`);
   assert.ok(frame.includes('─ chat '), `expected chat rule, got:\n${frame}`);
-  assert.ok(frame.includes('Mode: Balanced · /goal · /help · /back'), `expected folded bottom hints, got:\n${frame}`);
+  assert.ok(frame.includes('Mode: Balanced · /help · Shift+Tab mode'), `expected folded bottom hints, got:\n${frame}`);
   assert.ok(frame.includes('Type a message...'), `expected placeholder, got:\n${frame}`);
   assert.ok(!frame.includes('┌'), `nested info-box corners must not render, got:\n${frame}`);
   assert.ok(!frame.includes('└'), `nested info-box corners must not render, got:\n${frame}`);
@@ -250,7 +250,7 @@ test('multiline buffer renders adjacent composer rows (caret on row 1, gutter on
   assert.ok(r1 !== -1 && r2 !== -1 && r2 === r1 + 1, `rows should be adjacent, got:\n${frame}`);
   // Full-width rules still frame the (now taller) input, without old side rails.
   assert.ok(frame.includes('─ chat '), `expected top rule, got:\n${frame}`);
-  assert.ok(frame.includes('Mode: Balanced · /goal · /help · /back'), `expected folded bottom hints, got:\n${frame}`);
+  assert.ok(frame.includes('Mode: Balanced · /help · Shift+Tab mode'), `expected folded bottom hints, got:\n${frame}`);
   assert.ok(!frame.includes('│'), `expected no old side rails, got:\n${frame}`);
 });
 
@@ -447,7 +447,7 @@ test('legacy setQueued(N) still paints indicator (menu no longer drives it)', as
   assert.ok(
     rows
       .slice(queuedRow + 1)
-      .some((r) => r.includes('Mode: Balanced · /goal · /help · /back')),
+      .some((r) => r.includes('Mode: Balanced · /help · Shift+Tab mode')),
     `queued row should sit above the folded bottom rule, got:\n${frame}`,
   );
 });
@@ -463,15 +463,15 @@ test('composer default (setQueued never called) has no queued indicator', async 
 });
 
 test('composerRules uses the full width and folds hints into the bottom rule', () => {
-  const rules = composerRules(100, 'Mode: Balanced · /goal · /help · /back', false);
+  const rules = composerRules(100, 'Mode: Balanced · /help · Shift+Tab mode', false);
   assert.equal(visibleLength(rules.top), 100);
   assert.equal(visibleLength(rules.bottom), 100);
   assert.ok(!rules.top.includes('┌'), `got:\n${rules.top}`);
-  assert.ok(rules.bottom.includes('Mode: Balanced · /goal · /help · /back'), `got:\n${rules.bottom}`);
+  assert.ok(rules.bottom.includes('Mode: Balanced · /help · Shift+Tab mode'), `got:\n${rules.bottom}`);
 });
 
 test('composerRules drops trailing hints on narrow widths before shrinking the editor', () => {
-  const rules = composerRules(32, 'Mode: Balanced · /goal · /help · /back', false);
+  const rules = composerRules(32, 'Mode: Balanced · /help · Shift+Tab mode', false);
   assert.equal(visibleLength(rules.bottom), 32);
   assert.ok(rules.bottom.includes('Mode: Balanced'), `got:\n${rules.bottom}`);
   assert.ok(!rules.bottom.includes('/back'), `narrow width should hide trailing hints first, got:\n${rules.bottom}`);
@@ -494,7 +494,7 @@ test('long input wraps to the same row count with default vs overlong hints at a
       color={true}
       isTty={true}
       columns={32}
-      info="Mode: Balanced · /goal · /help · /back · /extra-hint"
+      info="Mode: Balanced · /help · Shift+Tab mode · /extra-hint"
     />,
   );
   extraHint.stdin.write(long);

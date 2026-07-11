@@ -192,9 +192,9 @@ export interface ResumeMessage {
 export interface ResumeTranscriptOptions {
   /** Emit ANSI colour (gated exactly like every theme helper). Default false. */
   readonly color?: boolean;
-  /** How many of the most recent messages to show. Default 6. */
+  /** How many of the most recent messages to show. Default 40. */
   readonly maxMessages?: number;
-  /** Per-message body character budget before an ellipsis. Default 280. */
+  /** Per-message body character budget before an ellipsis. Default 800. */
   readonly maxCharsPerMessage?: number;
   /**
    * "Now" in epoch ms, for the dim relative timestamp ("2h ago"). Injected so
@@ -204,8 +204,8 @@ export interface ResumeTranscriptOptions {
   readonly nowMs?: number;
 }
 
-const RESUME_DEFAULT_MAX_MESSAGES = 6;
-const RESUME_DEFAULT_MAX_CHARS = 280;
+const RESUME_DEFAULT_MAX_MESSAGES = 40;
+const RESUME_DEFAULT_MAX_CHARS = 800;
 
 /**
  * Collapse the assistant's stored content down to displayable prose: strip the
@@ -298,7 +298,7 @@ function relativeTime(timestamp: string | undefined, nowMs: number | undefined):
  * string above the recap line and the entry prompt.
  *
  * Shape (most-recent-last, chronological):
- *   - a dim "…N earlier messages" note when older turns were dropped;
+ *   - a dim "…N earlier messages · /export for full transcript" note when older turns were dropped;
  *   - one block per shown message: `› ` for the user, `● ` for the assistant
  *     (the existing Phase-1 glyphs), the body (bounded per-message), and a dim
  *     trailing relative timestamp when a clock + timestamp are available;
@@ -332,7 +332,7 @@ export function renderResumeTranscript(
   const lines: string[] = [];
   if (dropped > 0) {
     const noun = dropped === 1 ? 'message' : 'messages';
-    lines.push(dim(`  …${dropped} earlier ${noun}`, color));
+    lines.push(dim(`  …${dropped} earlier ${noun} · /export for full transcript`, color));
   }
 
   for (const m of window) {

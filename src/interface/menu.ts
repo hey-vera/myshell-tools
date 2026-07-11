@@ -772,7 +772,7 @@ export async function runChatLoop(
   // App/global operations (menu nav, account menus, capability refresh) stay on
   // `ctx.cwd`; only `ctx.cwd` references *inside* runChatLoop are converted below.
   const activeCwd = convMeta?.workspaceRoot ?? ctx.cwd;
-  const CHAT_HINTS = ['/goal', '/help', '/back'] as const;
+  const CHAT_HINTS = ['/help', 'Shift+Tab mode'] as const;
   let convLevel: Level =
     convMeta?.mode !== undefined && isLevel(convMeta.mode) ? convMeta.mode : 'auto';
   // Accounts inventory for Auto posture (loaded lazily; empty until first read).

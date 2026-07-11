@@ -705,14 +705,14 @@ describe('layoutForHeight — persistent board (flag ON)', () => {
     assert.equal(plan.streamCap, 0);
   });
 
-  it('shows BOTH the board and the live goals panel during an active turn', () => {
+  it('shows the board instead of a duplicate live goals panel during an active turn', () => {
     const goals = [
       { id: 'mid#0', label: 'ic', state: 'running' as const, tokens: 0, agents: [], tier: 'ic' as const },
     ];
     const plan = layoutForHeight(withBoard([boardRow()], true, goals), 40, 1);
     assert.equal(plan.visible, true);
     assert.notEqual(plan.board, null, 'board still planned during a turn');
-    assert.equal(plan.goals.kind, 'full', 'live goals panel also planned');
+    assert.equal(plan.goals.kind, 'hidden', 'board is the single planned goal surface');
   });
 
   it('a 20-goal board never makes the planned region exceed the viewport (idle)', () => {

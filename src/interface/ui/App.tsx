@@ -828,6 +828,7 @@ function AppBody({
             <Stream buffer={cappedStreamBuffer} color={color} />
           </>
         )}
+        <Box flexGrow={1} />
         {/* Bottom dock: ※ recap orientation (replaces the lesser GoalQuickStrip).
             Single goals surface remains the StatusBlock BOARD above. */}
         {!fullscreenPanelOpen && chatActive && (
@@ -889,6 +890,7 @@ function AppBody({
   return (
     <Box flexDirection="column">
       <Static items={lines}>{(line, index) => <Text key={index}>{line}</Text>}</Static>
+      <Box flexGrow={1} />
       <InputBox
         bridge={bridge.input}
         color={color}
