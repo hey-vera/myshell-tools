@@ -288,7 +288,7 @@ export function derivePulseLabel(
   ) {
     return `Working on "${goalTitle}"`;
   }
-  return wl.length > 0 ? wl : 'Composing';
+  return wl.length > 0 ? wl : 'Thinking';
 }
 
 /** True when a turn has gone silent long enough to surface stall chrome. PURE. */
@@ -308,7 +308,7 @@ export function formatStallStatus(
   lastPulseLabel: string,
   silenceSecs: number,
 ): string {
-  const label = lastPulseLabel.length > 0 ? lastPulseLabel : 'Composing';
+  const label = lastPulseLabel.length > 0 ? lastPulseLabel : 'Thinking';
   const secs = Number.isFinite(silenceSecs) && silenceSecs > 0 ? Math.floor(silenceSecs) : 0;
   return `stalled · last ${label} · ${secs}s`;
 }
@@ -554,7 +554,7 @@ function reduceAction(state: UiState, action: Action): UiState {
           { provider: action.provider, model: action.model, state: 'running', tokens: 0, attempt: action.attempt },
         ];
       }
-      const workLabel = isVerbose ? `${action.tier} (${action.provider}/${action.model})` : 'Composing';
+      const workLabel = isVerbose ? `${action.tier} (${action.provider}/${action.model})` : 'Thinking';
       // H2 fix: in PANEL mode the running candidates are represented SOLELY by
       // stream.panelists (the StatusLine's panelLabel reads them). We do NOT push
       // a per-candidate GoalView here, because each candidate's tier-done is a
@@ -736,7 +736,6 @@ function reduceAction(state: UiState, action: Action): UiState {
       const phaseVerb =
         s.workLabel === 'Preparing' ||
         s.workLabel === 'Routing' ||
-        s.workLabel === 'Composing' ||
         s.workLabel === 'Thinking' ||
         s.workLabel === 'Responding';
       return withStream(state, {

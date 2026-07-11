@@ -515,7 +515,7 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
     assert.equal(started.turnActive, true);
   });
 
-  it('honest workLabel phases: Preparing → Routing → Composing → Responding', () => {
+  it('honest workLabel phases: Preparing → Routing → Thinking → Responding', () => {
     const started = reduce(initialState, { type: 'turn/start' });
     assert.equal(started.stream.workLabel, 'Preparing');
     assert.equal(started.turnActive, true);
@@ -538,7 +538,7 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
       attempt: 1,
       verbosity: 'normal',
     });
-    assert.equal(composing.stream.workLabel, 'Composing');
+    assert.equal(composing.stream.workLabel, 'Thinking');
     assert.equal(composing.stream.phase, 'thinking');
 
     const responding = reduce(composing, { type: 'stream/prose', text: 'Hi' });
@@ -579,7 +579,7 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
       t1,
     );
     assert.equal(composing.stream.lastEventAt, t1);
-    assert.equal(composing.stream.lastPulseLabel, 'Composing');
+    assert.equal(composing.stream.lastPulseLabel, 'Thinking');
 
     const t2 = t1 + 200;
     const tool = reduce(
@@ -630,14 +630,14 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
     assert.equal(isTurnStalled(null, 50_000), false);
     assert.equal(isTurnStalled(1_000, 1_000 + 11_999), false);
     assert.equal(isTurnStalled(1_000, 1_000 + 12_000), true);
-    assert.equal(formatStallStatus('Composing', 47), 'stalled · last Composing · 47s');
-    assert.equal(formatStallStatus('', 12), 'stalled · last Composing · 12s');
+    assert.equal(formatStallStatus('Thinking', 47), 'stalled · last Thinking · 47s');
+    assert.equal(formatStallStatus('', 12), 'stalled · last Thinking · 12s');
 
     const stream: StreamView = {
       ...initialStreamView,
-      workLabel: 'Composing',
+      workLabel: 'Thinking',
       lastEventAt: 1_000,
-      lastPulseLabel: 'Composing',
+      lastPulseLabel: 'Thinking',
     };
     // Under threshold → progressive headline (live action wins when present).
     assert.deepEqual(resolveStatusHeadline(stream, 1_000 + 5_000, 'Editing src/a.ts'), {
@@ -646,17 +646,17 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
     });
     assert.deepEqual(resolveStatusHeadline(stream, 1_000 + 5_000, ''), {
       stalled: false,
-      headline: 'Composing',
+      headline: 'Thinking',
     });
     // At threshold → honest stall; silence seconds from lastEventAt, not invented work.
     assert.deepEqual(resolveStatusHeadline(stream, 1_000 + 47_000, 'Editing src/a.ts'), {
       stalled: true,
-      headline: 'stalled · last Composing · 47s',
+      headline: 'stalled · last Thinking · 47s',
     });
     // No nowMs → never stall (display stays progressive).
     assert.deepEqual(resolveStatusHeadline(stream, undefined, ''), {
       stalled: false,
-      headline: 'Composing',
+      headline: 'Thinking',
     });
   });
 
@@ -676,12 +676,12 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
     assert.equal(looksLikeTestCommand('ls'), false);
 
     assert.equal(
-      derivePulseLabel({ workLabel: 'Composing', currentTool: undefined }, { goalTitle: 'Ship auth' }),
+      derivePulseLabel({ workLabel: 'Thinking', currentTool: undefined }, { goalTitle: 'Ship auth' }),
       'Working on "Ship auth"',
     );
     assert.equal(
       derivePulseLabel(
-        { workLabel: 'Composing', currentTool: { verb: 'Reading', target: 'a.ts' } },
+        { workLabel: 'Thinking', currentTool: { verb: 'Reading', target: 'a.ts' } },
         { goalTitle: 'Ship auth' },
       ),
       'Reading a.ts',
@@ -690,7 +690,7 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
       derivePulseLabel({ workLabel: 'Responding', currentTool: undefined }, { goalTitle: 'Ship auth' }),
       'Responding',
     );
-    assert.equal(derivePulseLabel({ workLabel: '', currentTool: undefined }), 'Composing');
+    assert.equal(derivePulseLabel({ workLabel: '', currentTool: undefined }), 'Thinking');
 
     const goals: GoalView[] = [
       {
@@ -712,7 +712,7 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
 
     assert.deepEqual(
       resolveStatusHeadline(
-        { ...initialStreamView, workLabel: 'Composing', lastEventAt: 1, lastPulseLabel: 'Composing' },
+        { ...initialStreamView, workLabel: 'Thinking', lastEventAt: 1, lastPulseLabel: 'Thinking' },
         2,
         '',
         { goalTitle: 'Ship auth' },
@@ -741,7 +741,7 @@ describe('ui reduce — turn/start + commit/raw (persistent state)', () => {
       },
       t0 + 20,
     );
-    assert.equal(s.stream.workLabel, 'Composing');
+    assert.equal(s.stream.workLabel, 'Thinking');
     assert.equal(s.stream.lastPulseLabel, 'Working on "Fix hang detector"');
 
     s = reduce(
@@ -894,7 +894,7 @@ describe('ui reduce — tier-start', () => {
     assert.equal(s.stream.stepCount, 0);
     assert.equal(s.stream.streamedChars, 0);
     assert.equal(s.stream.attemptHadProse, false);
-    assert.equal(s.stream.workLabel, 'Composing');
+    assert.equal(s.stream.workLabel, 'Thinking');
     assert.equal(s.stream.phase, 'thinking');
     assert.equal(s.goals.length, 1);
     assert.equal(s.goals[0]?.state, 'running');

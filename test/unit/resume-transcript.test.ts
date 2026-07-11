@@ -117,6 +117,16 @@ describe('renderResumeTranscript — glyphs', () => {
 // ---------------------------------------------------------------------------
 
 describe('renderResumeTranscript — bounding', () => {
+  it('shows a useful recent transcript by default instead of only a tiny recap', () => {
+    const entries: ResumeMessage[] = [];
+    for (let i = 0; i < 12; i++) {
+      entries.push(msg(i % 2 === 0 ? 'user' : 'assistant', `m${i}`));
+    }
+    const out = strip(renderResumeTranscript(entries));
+    assert.match(out, /m0/);
+    assert.match(out, /m11/);
+    assert.doesNotMatch(out, /earlier/);
+  });
   it('shows only the last maxMessages and notes the dropped count', () => {
     const entries: ResumeMessage[] = [];
     for (let i = 0; i < 10; i++) {
@@ -124,7 +134,7 @@ describe('renderResumeTranscript — bounding', () => {
     }
     const out = strip(renderResumeTranscript(entries, { maxMessages: 4 }));
     // 10 messages, show last 4 → 6 dropped.
-    assert.match(out, /…6 earlier messages/);
+    assert.match(out, /…6 earlier messages · \/export for full transcript/);
     assert.match(out, /m9/);
     assert.match(out, /m6/);
     assert.doesNotMatch(out, /\bm5\b/);
@@ -137,7 +147,7 @@ describe('renderResumeTranscript — bounding', () => {
       msg('user', 'c'),
     ];
     const out = strip(renderResumeTranscript(entries, { maxMessages: 2 }));
-    assert.match(out, /…1 earlier message\b/);
+    assert.match(out, /…1 earlier message · \/export for full transcript/);
   });
 
   it('does not show a dropped note when nothing was dropped', () => {

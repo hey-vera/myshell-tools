@@ -859,7 +859,9 @@ export function layoutForHeight(
   // always survives. When the board is off, `boardRows` is 0 → identical to today.
   const budget = Math.max(1, fullBudget - boardRows);
 
-  const goals = state.goals;
+  // Single goal surface: when the persistent board is visible, it owns goal display.
+  // The status line still carries live activity; avoid a second GOALS panel below it.
+  const goals = board !== null ? [] : state.goals;
   const hasGoals = goals.length > 0;
   const fullRows = hasGoals ? fullPanelRows(goals) : 0;
   // The agent-centric turn-summary line ("▸ N goals · M agents · …") is shown ONLY

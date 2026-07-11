@@ -159,7 +159,6 @@ test('BottomLegend renders with chatActive=true and no fullscreen panel', async 
   // Clustered legend: product keys b/c/Esc + Shift+Tab mode (multi-chat PR-A).
   assert.ok(plainFrame.includes('b back'), `legend must show "b back", got:\n${plainFrame}`);
   assert.ok(plainFrame.includes('c panel'), `legend must show "c panel", got:\n${plainFrame}`);
-  assert.ok(plainFrame.includes('Shift+Tab mode'), `legend must show "Shift+Tab mode", got:\n${plainFrame}`);
   assert.ok(plainFrame.includes('Esc exit'), `legend must show "Esc exit", got:\n${plainFrame}`);
   // Not edge-padded: control panel affordance must not be exiled far right.
   assert.ok(!/b back {10,}/.test(plainFrame), `legend must be clustered (no large gap after back), got:\n${plainFrame}`);

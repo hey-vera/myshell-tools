@@ -27,7 +27,7 @@ export interface BottomLegendProps {
  * Always-hot (work with draft): Ctrl+B back, Ctrl+G panel (not all listed when narrow).
  */
 const FULL_LEGEND =
-  'b back  \u00b7  c panel  \u00b7  Shift+Tab mode  \u00b7  Esc exit';
+  'b back  \u00b7  c panel  \u00b7  Esc exit';
 /** Narrow terminals keep back + panel + exit. */
 const NARROW_LEGEND = 'b back  \u00b7  c panel  \u00b7  Esc exit';
 /** Columns below this threshold drop mode. */

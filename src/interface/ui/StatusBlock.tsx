@@ -520,7 +520,7 @@ export function BoardRow({ row, state, color = true }: BoardRowProps): React.Rea
   // Meta after the title stays dim secondary text; glyph carries semantic color.
   const metaParts: string[] = [];
   if (progress.length > 0) metaParts.push(progress);
-  metaParts.push('·', row.state);
+  if (row.state !== 'parked') metaParts.push('·', row.state);
   if (agents > 0) metaParts.push('·', pluralize(agents, 'worker'));
   if (liveTools > 0) metaParts.push('·', pluralize(liveTools, 'tool'));
   if (row.verdict !== undefined && row.verdict.length > 0) metaParts.push('·', row.verdict);

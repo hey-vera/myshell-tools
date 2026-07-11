@@ -63,7 +63,7 @@ import type { InkStdinControl } from './App.js';
 const INPUT_BOX_MIN_COLUMNS = 32;
 const CARET = '❯';
 const PLACEHOLDER = 'Type a message...';
-const INFO_FALLBACK = 'Mode: Balanced · /goal · /help · /back';
+const INFO_FALLBACK = 'Mode: Balanced · /help · Shift+Tab mode';
 
 // Smart placeholder based on pressure + dynamic context (final smartness pass)
 function smartPlaceholder(pressure: number, hasDynamic: boolean, goalCount: number): string {
