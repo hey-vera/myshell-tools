@@ -231,6 +231,14 @@ import {
 import { zombieRunningGoalIdsWithJobs } from '../infra/goal-job.js';
 import { createGoalJobStore } from '../infra/goal-job-store.js';
 import { ensureWorkerProcess } from '../infra/detached-worker-spawn.js';
+import {
+  abortConversationGoalWorkers,
+  abortGoalWorker,
+  conversationWorkerCount,
+  liveGoalIds,
+  registerGoalWorker,
+  unregisterGoalWorker,
+} from './goal-worker-registry.js';
 import { planRetryTruncation, recentUserMessages } from './menu-message-redo.js';
 import { completeChat } from './menu-completion.js';
 import {
@@ -500,13 +508,9 @@ export interface MenuContext {
 }
 
 /** Timeout continuation obeys the same oversight level as an explicit /goal. */
-/**
- * Live background-goal AbortControllers keyed by goalId.
- * Process-scoped so leaving chat (`/back`) does NOT kill workers — only
- * explicit pause / worker completion / process exit ends them. `running` in
- * the store with no entry here is a zombie healed by reconcile on chat enter.
- */
-const backgroundGoalControllers = new Map<string, AbortController>();
+// Background goal workers: process-scoped multi-conversation registry
+// (`goal-worker-registry.ts`). Leave chat does NOT abort; NL pause / completion
+// / process exit does. See multi-chat PR-B.
 
 export async function approveTimeoutContinuation(
   oversight: Oversight,
@@ -2067,7 +2071,9 @@ export async function runChatLoop(
   } finally {
     process.removeListener('SIGINT', sigintHandler);
     loopBreaker = null;
-    // Leave chat ≠ kill goals: background workers keep their AbortControllers.
+    // Leave chat ≠ kill goals (multi-chat PR-B): do NOT abortConversationGoalWorkers
+    // here — process-scoped registry keeps A’s workers alive while user is in home/B.
+    // Process exit (home Esc) eventually kills in-process workers; PR-D detaches them.
     // Clear the idle Esc exit handler so menu/home Esc owns process exit again.
     if (inkSetInterrupt !== undefined) inkSetInterrupt(null);
     // Mark the conversation no longer live FIRST so a still-pending concurrent recap
@@ -3425,16 +3431,16 @@ export async function runChatLoop(
       await refreshGoalContext();
       await refreshRulesContext();
 
-      // Goal integrity (control-plane PR3 / multi-chat PR-D): store `running`
-      // with no live AC AND no active detached job is a zombie (process restart
-      // / silent death). Active job files mean a detached worker may still own
-      // the goal — do not park those (reattach after restart). Park + dim
-      // notice for true orphans only.
+      // Goal integrity (control-plane PR3 / multi-chat PR-B+D): store `running`
+      // with no live AC for THIS conversation AND no active detached job is a
+      // zombie (process restart / silent death). Other conversations' workers
+      // and active job files (worker may own work after Esc) are untouched.
+      // Park + dim notice for true orphans only — never silent.
       try {
-        const allForHeal = await goalStore.list().catch(() => []);
+        const allForHeal = await goalStore.listByConversation(convId).catch(() => []);
         const runningIds = allForHeal.filter((g) => g.state === 'running').map((g) => g.id);
-        const liveIds = new Set(backgroundGoalControllers.keys());
-        // Active detached jobs (any conversation) — worker may own work after Esc.
+        const liveIds = liveGoalIds(convId);
+        // Active detached jobs — worker may own work after Esc/process exit.
         const activeJobs = await goalJobStore.listActive().catch(() => [] as const);
         const detachedIds = new Set(activeJobs.map((j) => j.goalId));
         const zombies = zombieRunningGoalIdsWithJobs(runningIds, liveIds, detachedIds);
@@ -3764,7 +3770,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
             recentUserMessages: recentUser,
           },
           runtime: {
-            backgroundGoals: backgroundGoalControllers.size,
+            backgroundGoals: conversationWorkerCount(convId),
             pressure: currentPressure(),
             sessionConsumption,
           },
@@ -3976,12 +3982,10 @@ Output ONLY valid JSON (no prose, no markdown).`;
               break;
             }
             case 'pause': {
-              // Park store AND abort the live worker (NL pause is the primary stop).
-              const liveAc = backgroundGoalControllers.get(action.goalId);
-              if (liveAc !== undefined) {
-                liveAc.abort();
-                // Map entry is removed in spawnBackgroundGoal's finally.
-              }
+              // Park store AND abort THIS conversation's live worker only
+              // (NL pause is the primary stop; other chats keep working).
+              abortGoalWorker(convId, action.goalId);
+              // Map entry is removed in spawnBackgroundGoal's finally.
               const after = await goalStore.setState(action.goalId, 'parked').catch(() => null);
               await syncBoard();
               if (after) {
@@ -3999,13 +4003,12 @@ Output ONLY valid JSON (no prose, no markdown).`;
               break;
             }
             case 'pause_all': {
-              const running = (await goalStore.list().catch(() => [])).filter(
+              // Scope to this conversation only — multi-chat: never kill A’s goals from B.
+              const running = (await goalStore.listByConversation(convId).catch(() => [])).filter(
                 (g) => g.state === 'running',
               );
-              // Abort every live worker (even if store list is briefly stale).
-              for (const ac of backgroundGoalControllers.values()) {
-                ac.abort();
-              }
+              // Abort every live worker for THIS conversation (store list may be briefly stale).
+              abortConversationGoalWorkers(convId);
               let paused = 0;
               for (const g of running) {
                 const after = await goalStore.setState(g.id, 'parked').catch(() => null);
@@ -4261,11 +4264,11 @@ Output ONLY valid JSON (no prose, no markdown).`;
         return runGoalLoop(rawLine, fallbackLabel);
       };
       const spawnBackgroundGoal = (goalId: string, work: string, title: string): void => {
-        // Replace any prior controller for this goal (re-accept / re-bg).
-        const prior = backgroundGoalControllers.get(goalId);
-        if (prior !== undefined) prior.abort();
+        // Process-scoped registry by conversationId (multi-chat PR-B). Replace any
+        // prior controller for this goal (re-accept / re-bg). Leaving chat does NOT
+        // abort — only pause / completion / process exit ends the worker.
         const ac = new AbortController();
-        backgroundGoalControllers.set(goalId, ac);
+        registerGoalWorker(convId, goalId, ac);
         void (async () => {
           let verifiedDone = false;
           // PR-D: durable job enqueue + ensure detached worker (fail-soft).
@@ -4307,9 +4310,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
           } catch {
             /* background run failure must never crash the chat loop */
           } finally {
-            if (backgroundGoalControllers.get(goalId) === ac) {
-              backgroundGoalControllers.delete(goalId);
-            }
+            unregisterGoalWorker(convId, goalId, ac);
             // Integrity: never leave store `running` with no live AC (no silent zombie).
             try {
               const goal = await goalStore.get(goalId).catch(() => null);
@@ -4920,7 +4921,8 @@ Output ONLY valid JSON (no prose, no markdown).`;
         const isForegroundGoalRun = (): boolean => opts?.background !== true;
         const bindAc = (ac: AbortController): AbortController => {
           if (opts?.background === true) {
-            // Link to the spawn's external signal so leaving the chat aborts this run.
+            // Link to the spawn's external signal so NL pause (registry abort)
+            // cancels nested work. Leave-chat does NOT abort that signal.
             if (opts.signal !== undefined) {
               if (opts.signal.aborted) ac.abort();
               else opts.signal.addEventListener('abort', () => ac.abort(), { once: true });
