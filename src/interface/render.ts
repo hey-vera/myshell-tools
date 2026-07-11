@@ -459,7 +459,7 @@ export async function renderStream(
   const spinner = createSpinner(out, turnInput?.overlay);
   let spinnerActive = false;
   // Honest turn phases: Preparing until a tier actually starts composing,
-  // then Thinking (or the verbose tier label). Spinner stops on first text.
+  // then Composing (or the verbose tier label). Spinner stops on first text.
   let workLabel = 'Preparing';
   let stepCount = 0;
 
@@ -638,7 +638,7 @@ export async function renderStream(
           );
         }
         // Reset per-tier work tracking and start the live indicator. In verbose
-        // mode the model/provider is shown; otherwise a clean "Thinking…".
+        // mode the model/provider is shown; otherwise a clean "Composing…".
         stepCount = 0;
         streamedChars = 0;
         attemptHadProse = false;
@@ -654,7 +654,7 @@ export async function renderStream(
             panelists.push({ provider: ev.provider, state: 'running' });
           }
         }
-        workLabel = isVerbose ? `${ev.tier} (${ev.provider}/${ev.model})` : 'Thinking';
+        workLabel = isVerbose ? `${ev.tier} (${ev.provider}/${ev.model})` : 'Composing';
         if (out.isTty) {
           // Hint first (sits above), then the animated status line below it.
           showInterruptHint();
@@ -722,7 +722,7 @@ export async function renderStream(
             }
           } else {
             // Normal/quiet: keep the indicator alive and count the step, so a
-            // tool-heavy run shows life ("Thinking… 12 steps · 8s") instead of
+            // tool-heavy run shows life ("Composing… 12 steps · 8s") instead of
             // freezing on a dead line. Mark that prose (if any) was interrupted so
             // the next text delta starts on a fresh line.
             noteWorkStep();

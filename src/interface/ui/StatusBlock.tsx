@@ -45,7 +45,7 @@ import type {
   GoalView,
   UiState,
 } from './state.js';
-import { resolveStatusHeadline } from './reduce.js';
+import { activeGoalTitle, formatToolPulseLabel, resolveStatusHeadline } from './reduce.js';
 
 // ---------------------------------------------------------------------------
 // currentTool → a scannable live-action label
@@ -53,19 +53,22 @@ import { resolveStatusHeadline } from './reduce.js';
 
 /**
  * Render the live action (`stream.currentTool`) as a scannable `verb target`
- * string, e.g. `editing src/auth/mw.ts` or just `running` when no real target was
+ * string, e.g. `Editing src/auth/mw.ts` or just `Running` when no real target was
  * supplied. The target is shown ONLY when genuinely present (never fabricated) and
  * is width-bounded so a long path/command never blows the status line. Returns ''
- * for an absent/empty action so callers fall back to the real workLabel. PURE.
+ * for an absent/empty action so callers fall back to goal title / workLabel. PURE.
  */
 function liveActionLabel(
   currentTool: { readonly verb: string; readonly target?: string } | undefined,
 ): string {
   if (currentTool === undefined || currentTool.verb.length === 0) return '';
   if (currentTool.target !== undefined && currentTool.target.length > 0) {
-    return `${currentTool.verb} ${truncateToWidth(currentTool.target, 40)}`;
+    return formatToolPulseLabel({
+      verb: currentTool.verb,
+      target: truncateToWidth(currentTool.target, 40),
+    });
   }
-  return currentTool.verb;
+  return formatToolPulseLabel(currentTool);
 }
 
 // ---------------------------------------------------------------------------
@@ -167,11 +170,11 @@ export interface AgentRowProps {
    *  Date.now). Omitted/0 → no suffix. */
   readonly elapsedSecs?: number;
   /** "What it's doing" for a RUNNING agent — the live stream.workLabel (e.g.
-   *  "Preparing" / "Thinking" / "Responding"), shown in place of the bare
+   *  "Preparing" / "Composing" / "Responding"), shown in place of the bare
    *  "running" word. Omitted/non-running → the run-state word. Never fabricated;
    *  it is the real current work label. */
   readonly workLabel?: string;
-  /** The LIVE action label ("editing src/auth/mw.ts" / "running") from the real
+  /** The LIVE action label ("Editing src/auth/mw.ts" / "Running") from the real
    *  most-recent tool event, preferred over {@link workLabel} for a RUNNING agent.
    *  Omitted/empty → falls back to workLabel then the run-state word. Real, never
    *  fabricated (target shown only when the tool event supplied one). */
@@ -692,17 +695,23 @@ export function StatusLine({ state, frame, elapsedSecs, nowMs, color = true }: S
     );
   }
   // Non-panel: LEAD with the live ACTION — the single most informative real-time
-  // signal — i.e. the real tool verb + target ("editing src/auth/mw.ts") from the
-  // most recent tool event; fall back to the real workLabel ("Preparing" /
-  // "Thinking" / "Responding") when no tool is active. After ≥12s of silence,
-  // honest stall chrome replaces the progressive verb (never invents work).
-  // Then the demoted, DIM detail: a strictly derived work summary
+  // signal — i.e. the real tool verb + target ("Editing src/auth/mw.ts") from the
+  // most recent tool event; else Working on "goal title" when known; else the
+  // phase workLabel (Preparing / Routing / Composing / Responding). After ≥12s
+  // of silence, honest stall chrome replaces the progressive verb (never invents
+  // work). Then the demoted, DIM detail: a strictly derived work summary
   // (running agents, completed agents, visible multi-goal count, elapsed). NO
   // token figure is shown here: mid-run there is no honest token count for the
   // Claude subscription provider, so we never render the old fabricated
   // `streamedChars/4` proxy.
   const liveAction = liveActionLabel(s.currentTool);
-  const resolved = resolveStatusHeadline(s, nowMs, liveAction);
+  const goalTitle = activeGoalTitle(state.goals);
+  const resolved = resolveStatusHeadline(
+    s,
+    nowMs,
+    liveAction,
+    goalTitle !== undefined ? { goalTitle } : undefined,
+  );
   if (resolved.stalled) {
     return (
       <Box>

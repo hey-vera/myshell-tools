@@ -1366,7 +1366,7 @@ describe('renderStream — assistant ● turn marker', () => {
       `spinner label must not contain the semantic ●, got:\n${JSON.stringify(spinnerFrames)}`,
     );
     assert.ok(
-      spinnerFrames.some((s) => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (Preparing|Thinking)… 0 steps/.test(s)),
+      spinnerFrames.some((s) => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (Preparing|Composing)… 0 steps/.test(s)),
       `spinner should be only frame + label, got:\n${JSON.stringify(spinnerFrames)}`,
     );
     assert.ok(joined.includes(`\x1b[36m${DOT}\x1b[0m Hello there.`), 'answer prose still starts under cyan ●');
