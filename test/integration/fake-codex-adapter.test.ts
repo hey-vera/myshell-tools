@@ -84,11 +84,28 @@ describe('built Codex adapter with deterministic fake CLI', () => {
 
   it('reports one typed timeout and never a done when the real child produces no terminal output', async () => {
     const { createCodexProvider } = await import('../../dist/providers/codex.js');
-    const pending = withScenario('timeout', () => collectWithTimeout(createCodexProvider({ bin: fakeBin, binArgs: fakeBinArgs }), 200));
-    const events = await Promise.race([pending, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout did not settle')), 5_000))]);
-    assert.deepEqual(events.map((event: any) => event.type), ['error']);
-    assert.equal((events[0] as any).error.category, 'timeout');
-    assert.ok(!events.some((event: any) => event.type === 'done'));
+    const sentinel = join(tempDir, 'timeout.txt');
+    const prior = process.env.MYSHELL_FAKE_SENTINEL;
+    process.env.MYSHELL_FAKE_SENTINEL = sentinel;
+    let pid: number | undefined;
+    try {
+      const pending = withScenario('timeout', () => collectWithTimeout(createCodexProvider({ bin: fakeBin, binArgs: fakeBinArgs }), 200));
+      const started = Date.now();
+      while (!existsSync(sentinel) && Date.now() - started < 2_000) await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.ok(existsSync(sentinel), 'fake timeout child must publish its PID before timeout');
+      pid = Number(readFileSync(sentinel, 'utf8'));
+      const events = await Promise.race([pending, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout did not settle')), 5_000))]);
+      assert.deepEqual(events.map((event: any) => event.type), ['error']);
+      assert.equal((events[0] as any).error.category, 'timeout');
+      assert.ok(!events.some((event: any) => event.type === 'done'));
+      assert.throws(() => kill(pid!, 0), 'fake timeout child PID must not survive timeout');
+    } finally {
+      if (prior === undefined) delete process.env.MYSHELL_FAKE_SENTINEL;
+      else process.env.MYSHELL_FAKE_SENTINEL = prior;
+      if (pid !== undefined) {
+        try { kill(pid, 'SIGKILL'); } catch { /* already terminated */ }
+      }
+    }
   });
 
   it('cancels the real child, records its sentinel, and emits no post-cancel success', async () => {

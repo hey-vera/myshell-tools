@@ -27,6 +27,7 @@ if (scenario === 'cancel') {
   } else if (scenario === 'protocol-error') {
     emit({ type: 'error', message: `synthetic protocol failure v${FIXTURE_PROTOCOL_VERSION}` });
   } else if (scenario === 'timeout') {
+    if (sentinel) writeFileSync(sentinel, String(process.pid), 'utf8');
     setInterval(() => {}, 1_000);
   } else {
     emit({ type: 'thread.started', thread_id: 'fake-thread-001' });
