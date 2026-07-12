@@ -3,6 +3,6 @@
   "entry": ["test/**/*.test.ts", "test/ui/**/*.test.tsx"],
   "project": ["src/**/*.ts", "src/**/*.tsx"],
   "ignoreExportsUsedInFile": true,
-  "ignoreBinaries": ["claude", "codex", "opencode", "grok", "myshell-tools"],
+  "ignoreBinaries": ["claude", "codex", "opencode", "grok", "myshell-tools", "taskkill"],
   "ignoreDependencies": ["c8", "tsx.cmd"]
 }
