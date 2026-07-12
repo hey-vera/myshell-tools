@@ -222,7 +222,7 @@ export function createCodexParser(): (line: string) => ProviderEvent[] {
     if (eventType === 'error') {
       const ev = parsed as WireError;
       const message = ev.message ?? 'unknown error';
-      return [{ type: 'error', error: classifyError(message, 1) }];
+      return [{ type: 'error', error: { ...classifyError(message, 1), message } }];
     }
 
     // Unknown event type — emit nothing
