@@ -4,6 +4,7 @@ import { writeFileSync } from 'node:fs';
 
 const scenario = process.env.MYSHELL_FAKE_SCENARIO;
 const sentinel = process.env.MYSHELL_FAKE_SENTINEL;
+const FIXTURE_PROTOCOL_VERSION = 1;
 
 async function readStdin() {
   let prompt = '';
@@ -23,6 +24,8 @@ if (scenario === 'cancel') {
   if (scenario === 'error') {
     process.stderr.write(`synthetic authentication failure for ${prompt.length} bytes\n`);
     process.exitCode = 17;
+  } else if (scenario === 'protocol-error') {
+    emit({ type: 'error', message: `synthetic protocol failure v${FIXTURE_PROTOCOL_VERSION}` });
   } else {
     emit({ type: 'thread.started', thread_id: 'fake-thread-001' });
     emit({ type: 'item.completed', item: { type: 'agent_message', text: 'partial ' } });

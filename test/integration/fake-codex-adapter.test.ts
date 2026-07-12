@@ -68,6 +68,14 @@ describe('built Codex adapter with deterministic fake CLI', () => {
     assert.equal((events[0] as any).error.category, 'auth');
   });
 
+  it('converts a JSONL protocol error into one typed error without treating it as a subprocess failure', async () => {
+    const { createCodexProvider } = await import('../../dist/providers/codex.js');
+    const events = await withScenario('protocol-error', () => collect(createCodexProvider({ bin: fakeBin, binArgs: fakeBinArgs }), new AbortController().signal));
+    assert.deepEqual(events.map((event: any) => event.type), ['error']);
+    assert.equal((events[0] as any).error.category, 'unknown');
+    assert.match((events[0] as any).error.message, /synthetic protocol failure v1/i);
+  });
+
   it('cancels the real child, records its sentinel, and emits no post-cancel success', async () => {
     const { createCodexProvider } = await import('../../dist/providers/codex.js');
     const sentinel = join(tempDir, 'cancelled.txt');
