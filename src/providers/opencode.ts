@@ -135,8 +135,9 @@ export function buildOpencodeEnv(
  *
  * @param opts.bin - Override the binary name/path (default: `'opencode'`).
  */
-export function createOpencodeProvider(opts?: { bin?: string }): Provider {
+export function createOpencodeProvider(opts?: { bin?: string; binArgs?: readonly string[] }): Provider {
   const bin = opts?.bin ?? 'opencode';
+  const binArgs = opts?.binArgs ?? [];
 
   return {
     id: 'opencode',
@@ -155,6 +156,7 @@ export function createOpencodeProvider(opts?: { bin?: string }): Provider {
         req,
         signal,
         bin,
+        binArgs,
         register: (k) => killers.push(k),
       });
       return withHangCap(inner, {
@@ -176,9 +178,10 @@ async function* runOpencodeRaw(args0: {
   req: ProviderRequest;
   signal: AbortSignal;
   bin: string;
+  binArgs: readonly string[];
   register: (killTree: () => void) => void;
 }): AsyncIterable<ProviderEvent> {
-  const { req, signal, bin, register } = args0;
+  const { req, signal, bin, binArgs, register } = args0;
   // Build argv (pure). Pass `-m <provider/model>` when the router resolved a real
   // opencode model for this tier (selectOpencodeModel picks the best of the user's
   // REAL available models — free, OpenCode Go, or Zen); a real id contains a slash
@@ -196,7 +199,7 @@ async function* runOpencodeRaw(args0: {
   // Spawn with reject:false so we always get the result object (never throws).
   // cancelSignal wires our AbortSignal directly to execa's termination path.
   // Prompt is delivered via STDIN (input:), never as an argv argument.
-  const { subprocess, killTree } = spawnGuarded(bin, args, {
+  const { subprocess, killTree } = spawnGuarded(bin, [...binArgs, ...args], {
     cwd: req.cwd,
     input: req.prompt,      // deliver prompt via STDIN, not argv
     cancelSignal: signal,
