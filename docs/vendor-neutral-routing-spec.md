@@ -1,5 +1,3 @@
-Read-only workspace, so I could not create `docs/vendor-neutral-routing-spec.md`. Below is the authoritative content for that file.
-
 # Vendor-Neutral Routing Build Spec
 
 ## 0. Current Anchors
