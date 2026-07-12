@@ -139,8 +139,9 @@ export function buildCodexArgs(req: ProviderRequest): string[] {
  *
  * @param opts.bin - Override the binary name/path (default: `'codex'`).
  */
-export function createCodexProvider(opts?: { bin?: string }): Provider {
+export function createCodexProvider(opts?: { bin?: string; binArgs?: readonly string[] }): Provider {
   const bin = opts?.bin ?? 'codex';
+  const binArgs = opts?.binArgs ?? [];
 
   return {
     id: 'codex',
@@ -159,6 +160,7 @@ export function createCodexProvider(opts?: { bin?: string }): Provider {
         req,
         signal,
         bin,
+        binArgs,
         register: (k) => killers.push(k),
       });
       return withHangCap(inner, {
@@ -180,9 +182,10 @@ async function* runCodexRaw(args0: {
   req: ProviderRequest;
   signal: AbortSignal;
   bin: string;
+  binArgs: readonly string[];
   register: (killTree: () => void) => void;
 }): AsyncIterable<ProviderEvent> {
-  const { req, signal, bin, register } = args0;
+  const { req, signal, bin, binArgs, register } = args0;
   const args = buildCodexArgs(req);
 
   // Point codex at the Replit-persistent CODEX_HOME when present so a plainly-
@@ -197,7 +200,7 @@ async function* runCodexRaw(args0: {
 
   // Spawn with reject:false so we always get the result object (never throws).
   // cancelSignal wires our AbortSignal directly to execa's termination path.
-  const { subprocess, killTree } = spawnGuarded(bin, args, {
+  const { subprocess, killTree } = spawnGuarded(bin, [...binArgs, ...args], {
     cwd: req.cwd,
     input: req.prompt,      // deliver prompt via STDIN, not argv
     cancelSignal: signal,

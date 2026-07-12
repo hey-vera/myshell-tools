@@ -111,6 +111,15 @@ export function spawnGuarded<OptionsType extends Options>(
     if (killed) return;
     killed = true;
     const pid = subprocess.pid;
+    if (process.platform === 'win32' && typeof pid === 'number' && pid > 0) {
+      // Windows has no POSIX process groups. Kill the captured provider root and
+      // descendants with argument-array execution; never interpolate a command.
+      void execa('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        reject: false,
+        windowsHide: true,
+      }).catch(() => undefined);
+      return;
+    }
     // Kill the whole GROUP (negative pid) so grandchildren holding the stdout pipe
     // die too. Fall back to the direct-child kill if the group signal can't be sent
     // (e.g. pid unknown, group already gone, or a platform without process groups).
@@ -128,6 +137,16 @@ export function spawnGuarded<OptionsType extends Options>(
       // Already dead — nothing to do.
     }
   };
+
+  // Execa cancels its direct child for cancelSignal, but a Windows command wrapper
+  // can leave a pipe-holding descendant alive. Route ordinary abort through the
+  // same latched process-tree kill used by the hang-cap backstop.
+  const abortListener = (): void => killTree();
+  options.cancelSignal?.addEventListener('abort', abortListener, { once: true });
+  void subprocess.then(
+    () => options.cancelSignal?.removeEventListener('abort', abortListener),
+    () => options.cancelSignal?.removeEventListener('abort', abortListener),
+  );
 
   return { subprocess, killTree };
 }
