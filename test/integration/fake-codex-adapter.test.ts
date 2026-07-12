@@ -14,19 +14,25 @@ let tempDir = '';
 let fakeBin = '';
 let fakeBinArgs: readonly string[] = [];
 
-function request() {
+function request(timeoutMs = 5_000) {
   return {
     model: 'gpt-5',
     prompt: 'synthetic prompt only',
     cwd: root,
     sandbox: 'read-only' as const,
-    timeoutMs: 5_000,
+    timeoutMs,
   };
 }
 
 async function collect(provider: { run: (req: ReturnType<typeof request>, signal: AbortSignal) => AsyncIterable<unknown> }, signal: AbortSignal) {
   const events: unknown[] = [];
   for await (const event of provider.run(request(), signal)) events.push(event);
+  return events;
+}
+
+async function collectWithTimeout(provider: { run: (req: ReturnType<typeof request>, signal: AbortSignal) => AsyncIterable<unknown> }, timeoutMs: number) {
+  const events: unknown[] = [];
+  for await (const event of provider.run(request(timeoutMs), new AbortController().signal)) events.push(event);
   return events;
 }
 
@@ -74,6 +80,15 @@ describe('built Codex adapter with deterministic fake CLI', () => {
     assert.deepEqual(events.map((event: any) => event.type), ['error']);
     assert.equal((events[0] as any).error.category, 'unknown');
     assert.match((events[0] as any).error.message, /synthetic protocol failure v1/i);
+  });
+
+  it('reports one typed timeout and never a done when the real child produces no terminal output', async () => {
+    const { createCodexProvider } = await import('../../dist/providers/codex.js');
+    const pending = withScenario('timeout', () => collectWithTimeout(createCodexProvider({ bin: fakeBin, binArgs: fakeBinArgs }), 200));
+    const events = await Promise.race([pending, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout did not settle')), 5_000))]);
+    assert.deepEqual(events.map((event: any) => event.type), ['error']);
+    assert.equal((events[0] as any).error.category, 'timeout');
+    assert.ok(!events.some((event: any) => event.type === 'done'));
   });
 
   it('cancels the real child, records its sentinel, and emits no post-cancel success', async () => {
