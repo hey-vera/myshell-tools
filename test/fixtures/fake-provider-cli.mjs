@@ -26,6 +26,8 @@ if (scenario === 'cancel') {
     process.exitCode = 17;
   } else if (scenario === 'protocol-error') {
     emit({ type: 'error', message: `synthetic protocol failure v${FIXTURE_PROTOCOL_VERSION}` });
+  } else if (scenario === 'timeout') {
+    setInterval(() => {}, 1_000);
   } else {
     emit({ type: 'thread.started', thread_id: 'fake-thread-001' });
     emit({ type: 'item.completed', item: { type: 'agent_message', text: 'partial ' } });
