@@ -31,3 +31,11 @@ the existing CI build placement (build remains after contract).
 Additive CI alignment only. Local `quality` behavior unchanged. Roll back by
 reverting this slice. Does not prove coverage job inclusion of UI tests or
 live/native-session lanes.
+
+## Follow-up: suspend-resume raw-mode assertion
+
+POSIX CI failed the win32-skipped test that expected `resume()` not to call
+`setRawMode`. Production `createInkLineReader.resume()` intentionally eager
+re-arms with `control.setRawMode(true)` (resume lag / first keystroke). The
+test in `test/ui/suspend-resume.test.tsx` now expects `['raw:true']` to match
+that behavior; production eager re-arm was left in place.
