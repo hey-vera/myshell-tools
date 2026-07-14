@@ -183,12 +183,20 @@ async function removePromptFile(path: string): Promise<void> {
  * Create a Grok provider adapter.
  *
  * @param opts.bin          - Override the binary name/path (default: `'grok'`).
+ * @param opts.binArgs      - Optional argv prefix before buildGrokArgs (default: `[]`).
+ *   Used by hermetic tests to run `node path/to/fixture.mjs` as the child; production
+ *   callers leave this empty so spawn is byte-identical to the bare `grok` binary.
  * @param opts.effortEnabled - When true, `--effort <level>` is threaded onto the
  *   CLI invocation when `req.reasoningEffort` is set and not `'none'`. Default
  *   false (MYSHELL_PROVIDER_EFFORT gate; see provider-effort-flag.ts).
  */
-export function createGrokProvider(opts?: { bin?: string; effortEnabled?: boolean }): Provider {
+export function createGrokProvider(opts?: {
+  bin?: string;
+  binArgs?: readonly string[];
+  effortEnabled?: boolean;
+}): Provider {
   const bin = opts?.bin ?? 'grok';
+  const binArgs = opts?.binArgs ?? [];
   const effortEnabled = opts?.effortEnabled === true;
 
   return {
@@ -205,6 +213,7 @@ export function createGrokProvider(opts?: { bin?: string; effortEnabled?: boolea
         req,
         signal,
         bin,
+        binArgs,
         effortEnabled,
         register: (k) => killers.push(k),
       });
@@ -227,10 +236,11 @@ async function* runGrokRaw(args0: {
   req: ProviderRequest;
   signal: AbortSignal;
   bin: string;
+  binArgs: readonly string[];
   effortEnabled: boolean;
   register: (killTree: () => void) => void;
 }): AsyncIterable<ProviderEvent> {
-  const { req, signal, bin, effortEnabled, register } = args0;
+  const { req, signal, bin, binArgs, effortEnabled, register } = args0;
   const args = buildGrokArgs(req, effortEnabled);
 
   // Deliver the prompt via a temporary file, never as an argv argument.
@@ -246,7 +256,7 @@ async function* runGrokRaw(args0: {
     ...(req.accountEnv ?? {}),
   };
 
-  const { subprocess, killTree } = spawnGuarded(bin, args, {
+  const { subprocess, killTree } = spawnGuarded(bin, [...binArgs, ...args], {
     cwd: req.cwd,
     cancelSignal: signal,
     timeout: req.timeoutMs,
