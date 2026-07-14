@@ -138,9 +138,9 @@ test.skipIf(process.platform === 'win32')('suspend() drives Ink cooked mode via 
   assert.ok(bridge.stdinControl !== null, 'an Ink stdin control should be registered after mount');
 
   // Spy on the control: suspend() forces cooked mode (belt-and-suspenders before
-  // Ink's isActive:false effect runs); resume() does NOT touch raw mode directly
-  // (Ink re-takes it on the isActive 0→1 transition — the readable-listener
-  // re-prime), so no raw call is expected on resume.
+  // Ink's isActive:false effect runs). resume() eagerly re-arms raw mode via
+  // setRawMode(true) (resume lag / first-keystroke on Replit etc.); Ink also
+  // re-takes raw mode on the isActive 0→1 transition.
   const calls: string[] = [];
   bridge.attachStdinControl({
     setRawMode: (v: boolean) => calls.push(`raw:${v}`),
@@ -152,5 +152,5 @@ test.skipIf(process.platform === 'win32')('suspend() drives Ink cooked mode via 
 
   calls.length = 0;
   reader.resume();
-  assert.deepEqual(calls, [], 'resume() leaves raw-mode re-take to Ink (isActive toggle)');
+  assert.deepEqual(calls, ['raw:true'], 'resume() eagerly re-arms raw mode (Ink also re-takes on isActive)');
 });

@@ -45,6 +45,9 @@ jobs:
       - name: Unit and architecture tests
         run: npm test
 
+      - name: UI tests
+        run: npm run test:ui
+
       - name: Contract tests
         run: npm run test:contract
 
