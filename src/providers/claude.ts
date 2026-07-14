@@ -192,12 +192,20 @@ export function buildClaudeArgs(req: ProviderRequest, effortEnabled?: boolean): 
  * Create a Claude provider adapter.
  *
  * @param opts.bin          - Override the binary name/path (default: `'claude'`).
+ * @param opts.binArgs      - Optional argv prefix inserted before CLI flags
+ *   (default empty). Used by integration tests to launch `process.execPath` +
+ *   a fixture script; production omits this and remains byte-identical.
  * @param opts.effortEnabled - When true, `--effort <level>` is threaded onto the
  *   CLI invocation when `req.reasoningEffort` is set and not `'none'`. Default
  *   false (MYSHELL_PROVIDER_EFFORT gate; see provider-effort-flag.ts).
  */
-export function createClaudeProvider(opts?: { bin?: string; effortEnabled?: boolean }): Provider {
+export function createClaudeProvider(opts?: {
+  bin?: string;
+  binArgs?: readonly string[];
+  effortEnabled?: boolean;
+}): Provider {
   const bin = opts?.bin ?? 'claude';
+  const binArgs = opts?.binArgs ?? [];
   const effortEnabled = opts?.effortEnabled === true;
 
   return {
@@ -221,6 +229,7 @@ export function createClaudeProvider(opts?: { bin?: string; effortEnabled?: bool
         req,
         signal,
         bin,
+        binArgs,
         effortEnabled,
         register: (k) => killers.push(k),
       });
@@ -316,10 +325,11 @@ async function* runClaudeRaw(args0: {
   req: ProviderRequest;
   signal: AbortSignal;
   bin: string;
+  binArgs: readonly string[];
   effortEnabled: boolean;
   register: (killTree: () => void) => void;
 }): AsyncIterable<ProviderEvent> {
-  const { req, signal, bin, effortEnabled, register } = args0;
+  const { req, signal, bin, binArgs, effortEnabled, register } = args0;
   const args = buildClaudeArgs(req, effortEnabled);
 
   const childEnv = await buildClaudeEnv(req);
@@ -328,7 +338,9 @@ async function* runClaudeRaw(args0: {
   // cancelSignal wires our AbortSignal directly to execa's termination path.
   // spawnGuarded adds detached:true (process-group leader) + forceKillAfterDelay so a
   // timed-out grandchild can be reaped via the whole-group kill the hang cap triggers.
-  const { subprocess, killTree } = spawnGuarded(bin, args, {
+  // binArgs (default empty) is a test-only prefix so process.execPath can run a
+  // fixture script; production path is [...[], ...args] === args.
+  const { subprocess, killTree } = spawnGuarded(bin, [...binArgs, ...args], {
     cwd: req.cwd,
     input: req.prompt,      // deliver prompt via STDIN, not argv
     cancelSignal: signal,
