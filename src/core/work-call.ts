@@ -114,9 +114,13 @@ import {
   renderNativeSessionTelemetry,
 } from './native-session-telemetry.js';
 import { vendorNeutralRoute } from './vendor-neutral-route.js';
-import { opencodePoolForModel, selectOpencodeAccount, selectSubscriptionAccount } from './opencode-account-routing.js';
+import { selectExecutionLane } from './execution-lane.js';
+import {
+  opencodePoolForModel,
+  selectSubscriptionAccount,
+} from './opencode-account-routing.js';
 import { accountEnvFor } from '../infra/subscriptions.js';
-import type { SubscriptionAccount } from '../infra/subscriptions.js';
+import type { SubscriptionAccount, SubscriptionProvider } from '../infra/subscriptions.js';
 import { routingReceiptFromRun } from './turn-routing-receipt.js';
 
 function blockedCodeForError(
@@ -1289,32 +1293,138 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     // currentTier (the requested tier); route() applies it after its own clamp,
     // and an entry for a tier the run clamps away simply finds no eligible match
     // and falls through to the static order.
+    // MODE-AWARE account strategy (Slice 4), applied inside atomic lane select:
+    //   cost-saver / balanced → 'sticky' (primary-first, fallback on cap)
+    //   quality-first          → 'spread'  (load-balance across accounts)
+    const accountStrategy: 'sticky' | 'spread' =
+      mode === 'quality-first' ? 'spread' : 'sticky';
+
+    // R1.1: atomic execution-lane selection (provider + model + account together).
+    // When managed accounts exist for a provider but none are eligible, that
+    // provider is blocked — never ambient fallthrough for it.
+    const laneResult = selectExecutionLane({
+      tier: currentTier,
+      available: routePool,
+      policy: effPolicy,
+      ...(deps.availableModels !== undefined ? { availableModels: deps.availableModels } : {}),
+      ...(deps.authenticatedProviders !== undefined
+        ? { authenticatedProviders: deps.authenticatedProviders }
+        : {}),
+      ...(deps.learnedProviderOrder?.[currentTier] !== undefined
+        ? { preferredOrder: deps.learnedProviderOrder[currentTier] }
+        : {}),
+      ...(capabilityContext !== undefined ? { capabilityContext } : {}),
+      ...(deps.subscriptionAccounts !== undefined
+        ? { accounts: deps.subscriptionAccounts }
+        : {}),
+      ...(deps.opencodeAccounts !== undefined
+        ? { opencodeAccounts: deps.opencodeAccounts }
+        : {}),
+      nowMs: deps.clock.now(),
+      ...((deps.accountCooldownUntil ?? deps.opencodeAccountCooldownUntil) !== undefined
+        ? { cooldownUntil: deps.accountCooldownUntil ?? deps.opencodeAccountCooldownUntil }
+        : {}),
+      ...(deps.sessionTokensByAccount !== undefined
+        ? { sessionTokensByAccount: deps.sessionTokensByAccount }
+        : {}),
+      strategy: accountStrategy,
+    });
+
     let decision: ReturnType<typeof route>;
-    const staticRoute = (): ReturnType<typeof route> =>
-      route(
-        currentTier,
-        routePool,
-        effPolicy,
-        deps.availableModels,
-        deps.authenticatedProviders,
-        deps.learnedProviderOrder?.[currentTier],
-        capabilityContext,
-      );
+    let laneAccount: SubscriptionAccount | null = null;
+
+    // Optional vendor-neutral provider/model preference, still subject to
+    // managed-account pairing (no ambient fallthrough when inventory exists).
+    let vnDecision: ReturnType<typeof route> | null = null;
     if (vendorNeutralEnabled && deps.capabilityRegistry) {
-      const vnDecision = vendorNeutralDecision(
+      vnDecision = vendorNeutralDecision(
         currentTier, routePool, deps, deps.session.id, wantsWebSearch, hasImageAttachment,
       );
-      if (vnDecision) {
+    }
+
+    if (vnDecision !== null) {
+      const vnProvider = vnDecision.provider;
+      const managedForVn: readonly SubscriptionAccount[] = (() => {
+        if (deps.subscriptionAccounts !== undefined && deps.subscriptionAccounts.length > 0) {
+          return deps.subscriptionAccounts.filter((a) => a.provider === vnProvider);
+        }
+        if (
+          vnProvider === 'opencode' &&
+          deps.opencodeAccounts !== undefined &&
+          deps.opencodeAccounts.length > 0
+        ) {
+          return deps.opencodeAccounts;
+        }
+        return [];
+      })();
+
+      if (managedForVn.length === 0) {
         decision = vnDecision;
+        laneAccount = null;
+      } else if (
+        vnProvider === 'opencode' ||
+        vnProvider === 'claude' ||
+        vnProvider === 'codex' ||
+        vnProvider === 'grok'
+      ) {
+        const picked = selectSubscriptionAccount({
+          accounts: managedForVn,
+          provider: vnProvider as SubscriptionProvider,
+          ...(vnProvider === 'opencode'
+            ? { pool: opencodePoolForModel(vnDecision.model) ?? 'zen' }
+            : {}),
+          nowMs: deps.clock.now(),
+          cooldownUntil:
+            deps.accountCooldownUntil ?? deps.opencodeAccountCooldownUntil ?? new Map(),
+          sessionTokensByAccount: deps.sessionTokensByAccount ?? {},
+          strategy: accountStrategy,
+        });
+        if (picked !== null) {
+          decision = vnDecision;
+          laneAccount = picked;
+        } else if (
+          laneResult.ok &&
+          laneResult.lane.provider !== vnProvider
+        ) {
+          // VN provider has managed accounts but none eligible — use another lane.
+          decision = {
+            tier: laneResult.lane.tier,
+            provider: laneResult.lane.provider,
+            model: laneResult.lane.model,
+            ...(laneResult.lane.capabilityReasons !== undefined
+              ? { capabilityReasons: laneResult.lane.capabilityReasons }
+              : {}),
+          };
+          laneAccount = laneResult.lane.account;
+        } else {
+          const message = !laneResult.ok
+            ? laneResult.failure.message
+            : `No eligible execution lane for managed provider "${vnProvider}" ` +
+              `(refusing ambient global credentials).`;
+          yield { type: 'notice', level: 'error', message };
+          break mainLoop;
+        }
       } else {
-        // Un-sheddable core answer: VN routing could not resolve a capable model
-        // (e.g. an authenticated provider whose model is not in the capability
-        // catalog). Rather than abort the turn with no answer, fall back to the
-        // static policy router so the core answer still runs.
-        decision = staticRoute();
+        decision = vnDecision;
+        laneAccount = null;
       }
+    } else if (laneResult.ok) {
+      decision = {
+        tier: laneResult.lane.tier,
+        provider: laneResult.lane.provider,
+        model: laneResult.lane.model,
+        ...(laneResult.lane.capabilityReasons !== undefined
+          ? { capabilityReasons: laneResult.lane.capabilityReasons }
+          : {}),
+      };
+      laneAccount = laneResult.lane.account;
     } else {
-      decision = staticRoute();
+      yield {
+        type: 'notice',
+        level: 'error',
+        message: laneResult.failure.message,
+      };
+      break mainLoop;
     }
 
     // Reasoning effort for THIS run, selected against the resolved model's
@@ -1439,52 +1549,10 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     salvagedDraft = undefined;
 
     // --- Yield tier-start ---
-    // Account-aware routing: select a subscription account when applicable.
-    // Prefers the generic deps (subscriptionAccounts + accountCooldownUntil)
-    // for both opencode and claude; falls back to the legacy opencode-only deps
-    // for backward compatibility. When no deps or no eligible account, every
-    // subsequent path is byte-for-byte unchanged.
-    //
-    // MODE-AWARE STRATEGY (Slice 4):
-    //   cost-saver / balanced → 'sticky' (primary-first, fallback on cap)
-    //   quality-first          → 'spread'  (load-balance across accounts)
-    const accountStrategy: 'sticky' | 'spread' =
-      mode === 'quality-first' ? 'spread' : 'sticky';
-    const subscriptionAccount: SubscriptionAccount | null = (() => {
-      // Generic path: when menu.ts passes provider-generic deps
-      if (
-        deps.subscriptionAccounts !== undefined &&
-        deps.subscriptionAccounts.length > 0 &&
-        (decision.provider === 'opencode' || decision.provider === 'claude' || decision.provider === 'codex' || decision.provider === 'grok')
-      ) {
-        return selectSubscriptionAccount({
-          accounts: deps.subscriptionAccounts,
-          provider: decision.provider,
-          ...(decision.provider === 'opencode'
-            ? { pool: opencodePoolForModel(decision.model) ?? 'zen' }
-            : {}),
-          nowMs: deps.clock.now(),
-          cooldownUntil: deps.accountCooldownUntil ?? new Map(),
-          sessionTokensByAccount: deps.sessionTokensByAccount ?? {},
-          strategy: accountStrategy,
-        });
-      }
-      // Backward compat: legacy opencode-only deps (tests, pre-migration callers)
-      if (
-        decision.provider === 'opencode' &&
-        deps.opencodeAccounts !== undefined &&
-        deps.opencodeAccounts.length > 0
-      ) {
-        return selectOpencodeAccount({
-          accounts: deps.opencodeAccounts,
-          pool: opencodePoolForModel(decision.model) ?? 'zen',
-          nowMs: deps.clock.now(),
-          cooldownUntil: deps.opencodeAccountCooldownUntil ?? new Map(),
-          sessionTokensByAccount: deps.sessionTokensByAccount ?? {},
-        });
-      }
-      return null;
-    })();
+    // Account is already paired atomically with provider+model via
+    // selectExecutionLane (R1.1). laneAccount is null only when the chosen
+    // provider has zero managed accounts (ambient provider-global path).
+    const subscriptionAccount: SubscriptionAccount | null = laneAccount;
     const accountEnv =
       subscriptionAccount !== null
         ? accountEnvFor(subscriptionAccount)
