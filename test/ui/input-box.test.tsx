@@ -1215,12 +1215,21 @@ test('local history ghost wins over model even when modelGhost enabled', async (
       }}
     />,
   );
+  // Mount effect runs with empty line; model ghost is allowed for empty prompts
+  // (shouldOfferModelGhost). On slower CI (Win+Node20) that setTimeout(0) can
+  // fire before stdin is processed and inflate modelCalls. Settle mount + drain
+  // empty-prompt ghost, then count only calls during the typed local-hit path.
+  await tick();
+  await ghostTick();
+  modelCalls = 0;
   stdin.write('test the');
   await ghostTick();
   await ghostTick();
-  assert.equal(modelCalls, 0, 'model must not fire when local history matches');
-  assert.ok(plain(lastFrame()).includes('migration'), 'local history ghost must show');
-  assert.ok(!plain(lastFrame()).includes('from the model'));
+  const frame = plain(lastFrame());
+  // Behavior under race: local history suffix must win the chrome; model text never.
+  assert.ok(frame.includes('migration'), `local history ghost must show, got:\n${frame}`);
+  assert.ok(!frame.includes('from the model'), `model ghost must not appear, got:\n${frame}`);
+  assert.equal(modelCalls, 0, 'model must not fire when local history matches after type');
 });
 
 // ---------------------------------------------------------------------------
