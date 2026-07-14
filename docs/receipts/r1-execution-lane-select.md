@@ -15,6 +15,7 @@ account` (via `selectExecutionLane` in `src/core/execution-lane.ts`), instead of
 ## Scope
 
 - Branch: `actualize/r1-execution-lane-select`
+- SHA: `02ade7a11339a06f8ea634155a19a96f14c68707`
 - New: `src/core/execution-lane.ts`, `test/unit/execution-lane.test.ts`, this receipt
 - Touched: `src/core/work-call.ts` (main path), `src/core/opencode-account-routing.ts`
   (shared eligibility)
@@ -29,13 +30,13 @@ still pairs accounts against its exact model and falls back to another lane or
 fails with the typed `no_eligible_lane` message when managed inventory blocks
 ambient use.
 
-## Command evidence
+## Command evidence (this slice)
 
-```
-npm run typecheck
-npx vitest run test/unit/execution-lane.test.ts
-npx vitest run test/unit/subscription-account-routing.test.ts test/unit/claude-account-routing.test.ts test/unit/codex-grok-account-routing.test.ts
-npm run lint
-npm run knip
-git diff --check
-```
+| Command | Result |
+| --- | --- |
+| `npm run typecheck` | exit 0 |
+| `npx vitest run test/unit/execution-lane.test.ts` | 15 passed |
+| account-routing unit files (subscription / claude / codex-grok) | 66 passed |
+| `npm run lint` | exit 0 (3 pre-existing no-console warnings in p0-pty-benchmark) |
+| `npm run knip` | exit 0 |
+| `git diff --check` | exit 0 |
