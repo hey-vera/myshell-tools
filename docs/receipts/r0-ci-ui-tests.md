@@ -39,3 +39,33 @@ POSIX CI failed the win32-skipped test that expected `resume()` not to call
 re-arms with `control.setRawMode(true)` (resume lag / first keystroke). The
 test in `test/ui/suspend-resume.test.tsx` now expects `['raw:true']` to match
 that behavior; production eager re-arm was left in place.
+
+## Follow-up: Win+Node20 model-ghost flake
+
+CI matrix failed only on **Windows + Node 20**:
+
+`local history ghost wins over model even when modelGhost enabled` —
+`modelCalls === 1` expected `0`.
+
+**Root cause (test race, not local-wins bug):** with `modelGhostEnabled` +
+`suggestGhost`, the ghost `useEffect` runs on mount for the empty line.
+`shouldOfferModelGhost` allows empty prompts, so `setTimeout(0)` can invoke
+the port before `stdin.write` cancels that timer. On slower Win+Node20 CI that
+empty-prompt call lands and inflates `modelCalls`; faster lanes cancel first.
+
+**Hardening** (`test/ui/input-box.test.tsx` only; production unchanged):
+
+- After `render`, `await tick()` + `await ghostTick()` so mount + empty-prompt
+  ghost drain complete, then `modelCalls = 0` before typing.
+- Prefer frame behavior: local suffix `migration` shows; model text never in
+  frame; then `modelCalls === 0` for the typed local-hit path.
+
+### Verification
+
+```
+npx vitest run test/ui/input-box.test.tsx -t "ghost"
+# 9 passed | 58 skipped
+
+npm run test:ui
+# 18 files, 272 passed | 1 skipped
+```
