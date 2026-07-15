@@ -37,6 +37,7 @@ import {
   selectSiblingSubscriptionAccount,
 } from '../../src/core/opencode-account-routing.ts';
 import type { SubscriptionProvider } from '../../src/infra/subscriptions.ts';
+import { selectExecutionLane } from '../../src/core/execution-lane.ts';
 import type {
   DetectedTestCommand,
   TestRunResult,
@@ -1174,7 +1175,7 @@ describe('account parallelism — ineligible cases', () => {
     }
   });
 
-  it('<2 eligible accounts → no sibling fanout (only one claude account)', async () => {
+  it('<2 eligible accounts → no sibling fanout; speculative keeps atomic lane account (no ambient)', async () => {
     const primaryReq = { last: undefined as ProviderRequest | undefined };
     const specReq = { last: undefined as ProviderRequest | undefined };
     let callN = 0;
@@ -1209,9 +1210,10 @@ describe('account parallelism — ineligible cases', () => {
       runHedged('hard task', deps, { ...PLAN, delayMs: 0 }, new AbortController().signal),
     );
     assert.ok(events.some((e) => e.type === 'final' && 'success' in e && e.success));
-    // Primary gets claude-1; speculative gets no sibling (only one account available)
+    // Primary gets claude-1; no distinct sibling → speculative still uses the
+    // atomic lane account (R1.3a: never ambient fallthrough with managed inventory).
     assert.equal(primaryReq.last?.accountId, 'claude-1');
-    assert.equal(specReq.last?.accountId, undefined);
+    assert.equal(specReq.last?.accountId, 'claude-1');
   });
 
   it('tripped provider (in accountParallelismDisabledProviders) → no sibling fanout', async () => {
@@ -1474,5 +1476,125 @@ describe('account parallelism — cross-vendor hedge unchanged', () => {
     assert.equal(primaryReq.last?.accountId, 'claude-1');
     // Speculative routes to codex — normal account selection, not sibling (different provider)
     assert.equal(specReq.last?.accountId, 'codex-1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R1.3a: hedge arms use atomic selectExecutionLane (no model-then-account)
+// ---------------------------------------------------------------------------
+
+describe('R1.3a — hedge atomic execution-lane selection', () => {
+  const nowMs = new Date('2026-06-15T00:00:00.000Z').getTime();
+
+  it('selectExecutionLane (hedge-shaped inputs) pairs provider+model+account atomically', () => {
+    const accounts: SubscriptionAccount[] = [
+      makeClaudeAccount({ id: 'claude-1', status: 'active' as const }),
+      makeClaudeAccount({
+        id: 'claude-bad',
+        status: 'auth-failed' as const,
+        priorityWeight: 999,
+      }),
+    ];
+    const result = selectExecutionLane({
+      tier: 'ic',
+      available: ['claude', 'codex'],
+      policy: { ...DEFAULT_POLICY, ...SAME_PROVIDER_ORDER },
+      accounts,
+      nowMs,
+      cooldownUntil: new Map(),
+      sessionTokensByAccount: {},
+      strategy: 'spread',
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    // Atomic: account provider matches lane provider; auth-failed never selected.
+    assert.equal(result.lane.provider, 'claude');
+    assert.ok(result.lane.account !== null);
+    assert.equal(result.lane.account!.id, 'claude-1');
+    assert.equal(result.lane.account!.provider, result.lane.provider);
+    assert.ok(result.lane.model.length > 0);
+  });
+
+  it('selectExecutionLane refuses ambient when only auth-failed managed accounts exist', () => {
+    const accounts: SubscriptionAccount[] = [
+      makeClaudeAccount({ id: 'claude-bad', status: 'auth-failed' as const }),
+    ];
+    const result = selectExecutionLane({
+      tier: 'ic',
+      available: ['claude'],
+      policy: { ...DEFAULT_POLICY, ...SAME_PROVIDER_ORDER },
+      accounts,
+      nowMs,
+      cooldownUntil: new Map(),
+      sessionTokensByAccount: {},
+      strategy: 'spread',
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.failure.code, 'no_eligible_lane');
+    assert.ok(result.failure.blockedProviders.includes('claude'));
+    assert.match(result.failure.message, /refusing ambient/i);
+  });
+
+  it('hedge primary refuses ambient when managed accounts are all auth-failed', async () => {
+    const primaryReq = { last: undefined as ProviderRequest | undefined };
+    const claude = makeProvider('claude', adequate('SHOULD-NOT-RUN'), {
+      reqSink: primaryReq,
+    });
+    const codex = makeProvider('codex', adequate('UNUSED'));
+    const accounts = [
+      makeClaudeAccount({ id: 'claude-bad', status: 'auth-failed' as const }),
+    ];
+    const neverSleep = (): Promise<void> => new Promise<void>(() => {});
+    const { deps } = hedgeDepsWithAccounts(
+      { claude, codex },
+      neverSleep,
+      {
+        subscriptionAccounts: accounts,
+        // Only claude is available → atomic lane has nowhere to fall through.
+        policyOverrides: {
+          providerOrderByTier: {
+            worker: ['claude'],
+            ic: ['claude'],
+            manager: ['claude'],
+          },
+        },
+      },
+    );
+    // Restrict pool to claude only so blocked managed inventory cannot skip to codex.
+    deps.authenticatedProviders = ['claude'];
+    const events = await collect(
+      runHedged('hard task', deps, PLAN, new AbortController().signal),
+    );
+    // No ambient spawn: provider must not be called with missing accountEnv.
+    assert.equal(primaryReq.last, undefined);
+    const final = events.find((e) => e.type === 'final');
+    assert.ok(final !== undefined && final.type === 'final');
+    // Hedge still terminates (failure path) rather than hanging.
+    assert.equal(typeof final.success, 'boolean');
+  });
+
+  it('hedge primary attaches accountEnv from atomic lane (not model-then-account)', async () => {
+    const primaryReq = { last: undefined as ProviderRequest | undefined };
+    const claude = makeProvider('claude', adequate('PRIMARY-OK'), {
+      reqSink: primaryReq,
+    });
+    const codex = makeProvider('codex', adequate('UNUSED'));
+    const neverSleep = (): Promise<void> => new Promise<void>(() => {});
+    const { deps } = hedgeDepsWithAccounts(
+      { claude, codex },
+      neverSleep,
+      { policyOverrides: SAME_PROVIDER_ORDER },
+    );
+    const events = await collect(
+      runHedged('hard task', deps, PLAN, new AbortController().signal),
+    );
+    assert.ok(events.some((e) => e.type === 'final' && 'success' in e && e.success));
+    assert.equal(primaryReq.last?.accountId, 'claude-1');
+    assert.ok(primaryReq.last?.accountEnv !== undefined);
+    // Atomic pairing: account id present implies model was chosen with it.
+    assert.ok(
+      primaryReq.last?.model !== undefined && primaryReq.last.model.length > 0,
+    );
   });
 });

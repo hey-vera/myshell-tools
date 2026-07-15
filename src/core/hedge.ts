@@ -66,12 +66,16 @@ import { verifyStage, type CriticRunInput, type CriticRunOutput } from './work-c
 import { effortForDecision } from './orchestrate-signals.js';
 import { parseReviewVerdict } from './review.js';
 import {
-  selectSubscriptionAccount,
   selectSiblingSubscriptionAccount,
   opencodePoolForModel,
+  selectSubscriptionAccount,
 } from './opencode-account-routing.js';
+import { selectExecutionLane } from './execution-lane.js';
 import { accountEnvFor } from '../infra/subscriptions.js';
-import type { SubscriptionProvider } from '../infra/subscriptions.js';
+import type {
+  SubscriptionAccount,
+  SubscriptionProvider,
+} from '../infra/subscriptions.js';
 import { runBudgetedProvider, type BudgetedProviderCall } from './budgeted-provider.js';
 import type { TurnCallPurpose, TurnCallBucket } from './turn-call-budget.js';
 
@@ -271,8 +275,237 @@ async function runAttempt(
           (id) => deps.providers[id] !== undefined,
         );
 
+  const mode = modeFromPolicy(deps.policy);
+  const nowMs = deps.clock.now();
+  const start = deps.clock.now();
+  const events: CoreEvent[] = [];
+  const taskKind: TaskKind = capabilityContext?.taskSignals?.taskKind ?? 'implementation';
+
+  // R1.3a: when account-parallel hedge is armed, select provider+model+account as
+  // one atom via selectExecutionLane (same rules as work-call R1.1). Never model-
+  // then-account, and never ambient fallthrough when managed inventory blocks.
+  const useAtomicLane =
+    deps.accountParallelism === true &&
+    mode === 'quality-first' &&
+    ((deps.subscriptionAccounts !== undefined && deps.subscriptionAccounts.length > 0) ||
+      (deps.opencodeAccounts !== undefined && deps.opencodeAccounts.length > 0));
+
   let decision: ReturnType<typeof route>;
-  if (vendorNeutralEnabled && deps.capabilityRegistry) {
+  let laneAccount: SubscriptionAccount | null = null;
+
+  if (useAtomicLane) {
+    // Exclude accounts for providers that tripped account-parallelism (legacy
+    // trip switch). Filtering them out means that provider has zero managed
+    // inventory for this select → ambient for that provider only, matching the
+    // pre-R1.3a "skip account attach" behaviour for tripped providers.
+    const accountsForLane =
+      deps.subscriptionAccounts !== undefined
+        ? deps.subscriptionAccounts.filter(
+            (a) =>
+              deps.accountParallelismDisabledProviders === undefined ||
+              !deps.accountParallelismDisabledProviders.has(a.provider as SubscriptionProvider),
+          )
+        : undefined;
+    const opencodeForLane =
+      deps.opencodeAccounts !== undefined
+        ? deps.opencodeAccounts.filter(
+            (_a) =>
+              deps.accountParallelismDisabledProviders === undefined ||
+              !deps.accountParallelismDisabledProviders.has('opencode'),
+          )
+        : undefined;
+
+    const laneResult = selectExecutionLane({
+      tier: requestedTier,
+      available: routePool,
+      policy: effPolicy,
+      ...(deps.availableModels !== undefined ? { availableModels: deps.availableModels } : {}),
+      ...(deps.authenticatedProviders !== undefined
+        ? { authenticatedProviders: deps.authenticatedProviders }
+        : {}),
+      ...(deps.learnedProviderOrder?.[requestedTier] !== undefined
+        ? { preferredOrder: deps.learnedProviderOrder[requestedTier] }
+        : {}),
+      ...(capabilityContext !== undefined ? { capabilityContext } : {}),
+      ...(accountsForLane !== undefined ? { accounts: accountsForLane } : {}),
+      ...(opencodeForLane !== undefined ? { opencodeAccounts: opencodeForLane } : {}),
+      nowMs,
+      ...(deps.accountCooldownUntil !== undefined
+        ? { cooldownUntil: deps.accountCooldownUntil }
+        : {}),
+      ...(deps.sessionTokensByAccount !== undefined
+        ? { sessionTokensByAccount: deps.sessionTokensByAccount }
+        : {}),
+      strategy: 'spread',
+    });
+
+    // Optional vendor-neutral preference still subject to managed-account pairing.
+    let vnDecision: ReturnType<typeof route> | null = null;
+    if (vendorNeutralEnabled && deps.capabilityRegistry) {
+      const availableModelsMap = new Map<ProviderId, readonly string[]>();
+      if (deps.availableModels) {
+        for (const [p, models] of Object.entries(deps.availableModels)) {
+          if (models !== undefined) availableModelsMap.set(p as ProviderId, models);
+        }
+      }
+      const params: VendorNeutralRouteParams = {
+        tier: requestedTier,
+        authedProviders: deps.authenticatedProviders ?? routePool,
+        availableModels: availableModelsMap,
+        registry: deps.capabilityRegistry,
+        needsWebSearch: wantsWebSearch,
+        sessionId: deps.session.id,
+      };
+      const vn = vendorNeutralRoute(params);
+      if (vn.ok) vnDecision = vn.decision;
+    }
+
+    if (vnDecision !== null) {
+      const vnProvider = vnDecision.provider;
+      const managedForVn: readonly SubscriptionAccount[] = (() => {
+        if (accountsForLane !== undefined && accountsForLane.length > 0) {
+          return accountsForLane.filter((a) => a.provider === vnProvider);
+        }
+        if (
+          vnProvider === 'opencode' &&
+          opencodeForLane !== undefined &&
+          opencodeForLane.length > 0
+        ) {
+          return opencodeForLane;
+        }
+        return [];
+      })();
+
+      if (managedForVn.length === 0) {
+        decision = vnDecision;
+        laneAccount = null;
+      } else if (
+        vnProvider === 'opencode' ||
+        vnProvider === 'claude' ||
+        vnProvider === 'codex' ||
+        vnProvider === 'grok'
+      ) {
+        const picked = selectSubscriptionAccount({
+          accounts: managedForVn,
+          provider: vnProvider as SubscriptionProvider,
+          ...(vnProvider === 'opencode'
+            ? { pool: opencodePoolForModel(vnDecision.model) ?? 'zen' }
+            : {}),
+          nowMs,
+          cooldownUntil: deps.accountCooldownUntil ?? new Map(),
+          sessionTokensByAccount: deps.sessionTokensByAccount ?? {},
+          strategy: 'spread',
+        });
+        if (picked !== null) {
+          decision = vnDecision;
+          laneAccount = picked;
+        } else if (laneResult.ok && laneResult.lane.provider !== vnProvider) {
+          decision = {
+            tier: laneResult.lane.tier,
+            provider: laneResult.lane.provider,
+            model: laneResult.lane.model,
+            ...(laneResult.lane.capabilityReasons !== undefined
+              ? { capabilityReasons: laneResult.lane.capabilityReasons }
+              : {}),
+          };
+          laneAccount = laneResult.lane.account;
+        } else {
+          const message = !laneResult.ok
+            ? laneResult.failure.message
+            : `No eligible execution lane for managed provider "${vnProvider}" ` +
+              `(refusing ambient global credentials).`;
+          return {
+            provider: vnProvider,
+            model: vnDecision.model,
+            tier: vnDecision.tier,
+            finalText: undefined,
+            usage: undefined,
+            providerCostUsd: undefined,
+            errored: {
+              category: 'unknown',
+              recoverable: false,
+              message,
+              suggestion:
+                'Add/repair an eligible subscription account or enable another provider.',
+            },
+            durationMs: deps.clock.now() - start,
+            canceled: signal.aborted,
+            events,
+            reasoningEffort: undefined,
+            taskKind,
+          };
+        }
+      } else {
+        decision = vnDecision;
+        laneAccount = null;
+      }
+    } else if (laneResult.ok) {
+      decision = {
+        tier: laneResult.lane.tier,
+        provider: laneResult.lane.provider,
+        model: laneResult.lane.model,
+        ...(laneResult.lane.capabilityReasons !== undefined
+          ? { capabilityReasons: laneResult.lane.capabilityReasons }
+          : {}),
+      };
+      laneAccount = laneResult.lane.account;
+    } else {
+      return {
+        provider: routePool[0] ?? 'claude',
+        model: 'unknown',
+        tier: requestedTier,
+        finalText: undefined,
+        usage: undefined,
+        providerCostUsd: undefined,
+        errored: {
+          category: 'unknown',
+          recoverable: false,
+          message: laneResult.failure.message,
+          suggestion:
+            'Add/repair an eligible subscription account or enable another provider.',
+        },
+        durationMs: deps.clock.now() - start,
+        canceled: signal.aborted,
+        events,
+        reasoningEffort: undefined,
+        taskKind,
+      };
+    }
+
+    // Speculative same-provider sibling preference (Slice 5): when a distinct
+    // eligible sibling exists, prefer it over the lane's default account so both
+    // arms can run in parallel without sharing quota. If no sibling, keep the
+    // atomic lane account (never ambient fallthrough when managed inventory paired).
+    if (
+      laneAccount !== null &&
+      role.role === 'speculative' &&
+      role.preferSiblingProvider !== undefined &&
+      role.preferSiblingProvider === decision.provider &&
+      role.avoidAccountId !== undefined &&
+      (deps.subscriptionAccounts !== undefined || deps.opencodeAccounts !== undefined)
+    ) {
+      const siblingAccounts =
+        accountsForLane !== undefined && accountsForLane.length > 0
+          ? accountsForLane
+          : (opencodeForLane ?? []);
+      const pool =
+        decision.provider === 'opencode'
+          ? (opencodePoolForModel(decision.model) ?? undefined)
+          : undefined;
+      const sibling = selectSiblingSubscriptionAccount({
+        accounts: siblingAccounts,
+        provider: decision.provider as SubscriptionProvider,
+        ...(pool !== undefined ? { pool } : {}),
+        primaryAccountId: role.avoidAccountId,
+        nowMs,
+        cooldownUntil: deps.accountCooldownUntil ?? new Map(),
+        sessionTokensByAccount: deps.sessionTokensByAccount ?? {},
+      });
+      if (sibling !== null) {
+        laneAccount = sibling;
+      }
+    }
+  } else if (vendorNeutralEnabled && deps.capabilityRegistry) {
     const availableModelsMap = new Map<ProviderId, readonly string[]>();
     if (deps.availableModels) {
       for (const [p, models] of Object.entries(deps.availableModels)) {
@@ -312,17 +545,18 @@ async function runAttempt(
       capabilityContext,
     );
   }
+
   // The REAL task kind + difficulty signals for this turn (P0.3): the SAME
   // taskSignals the sequential path uses, threaded via capabilityContext from
   // orchestrate (taskKind from deriveTaskKind + difficulty from engagement/intent).
   // When no taskSignals are present (registry absent), fall back to the prior
   // conservative 'implementation' default so a turn without a registry is unchanged.
-  const taskKind: TaskKind = capabilityContext?.taskSignals?.taskKind ?? 'implementation';
   // Reasoning effort for this hedge run (capability registry §3/§5). decision.tier
-  // is the tier route() resolved (admission already passed in planHedge), so this
-  // never opens manager or exceeds policy. undefined → no registry / no efforts →
-  // no flag (byte-for-byte unchanged). The selector reconciles against the model's
-  // supported set; effortForDecision feeds it the real taskKind + difficulty.
+  // is the tier route()/selectExecutionLane resolved (admission already passed in
+  // planHedge), so this never opens manager or exceeds policy. undefined → no
+  // registry / no efforts → no flag (byte-for-byte unchanged). The selector
+  // reconciles against the model's supported set; effortForDecision feeds it the
+  // real taskKind + difficulty.
   const reasoningEffort = hedgeEffort(
     deps,
     decision.provider,
@@ -332,8 +566,6 @@ async function runAttempt(
     capabilityContext?.taskSignals,
   );
   const provider = deps.providers[decision.provider];
-  const start = deps.clock.now();
-  const events: CoreEvent[] = [];
 
   let finalText: string | undefined;
   let errored: import('../providers/port.js').CliError | undefined;
@@ -381,66 +613,13 @@ async function runAttempt(
     };
   }
 
-  // --- Account-aware parallelism (Slice 5): select a subscription account for
-  // this hedge arm. Only when the flag is on, base subscriptions are on, mode is
-  // quality-first, and accounts exist. The speculative arm may additionally get a
-  // same-provider sibling distinct from the primary.
+  // Account attach from the atomic lane (R1.3a). Sibling override already applied
+  // above when the speculative arm could claim a distinct same-provider account.
   let accountId: string | undefined;
   let accountEnv: Readonly<Partial<NodeJS.ProcessEnv>> | undefined;
-  const mode = modeFromPolicy(deps.policy);
-  if (
-    deps.accountParallelism === true &&
-    mode === 'quality-first' &&
-    deps.subscriptionAccounts !== undefined &&
-    deps.subscriptionAccounts.length > 0
-  ) {
-    const provider = decision.provider as SubscriptionProvider;
-    if (
-      deps.accountParallelismDisabledProviders === undefined ||
-      !deps.accountParallelismDisabledProviders.has(provider)
-    ) {
-      const pool = provider === 'opencode'
-        ? (opencodePoolForModel(decision.model) ?? undefined)
-        : undefined;
-      const nowMs = deps.clock.now();
-      const cooldown = deps.accountCooldownUntil ?? new Map();
-      const tokensByAccount = deps.sessionTokensByAccount ?? {};
-
-      if (
-        role.role === 'speculative' &&
-        role.preferSiblingProvider !== undefined &&
-        role.preferSiblingProvider === provider &&
-        role.avoidAccountId !== undefined
-      ) {
-        const sibling = selectSiblingSubscriptionAccount({
-          accounts: deps.subscriptionAccounts,
-          provider: provider as SubscriptionProvider,
-          ...(pool !== undefined ? { pool } : {}),
-          primaryAccountId: role.avoidAccountId,
-          nowMs,
-          cooldownUntil: cooldown,
-          sessionTokensByAccount: tokensByAccount,
-        });
-        if (sibling !== null) {
-          accountId = sibling.id;
-          accountEnv = accountEnvFor(sibling);
-        }
-      } else {
-        const selected = selectSubscriptionAccount({
-          accounts: deps.subscriptionAccounts,
-          provider: provider as SubscriptionProvider,
-          ...(pool !== undefined ? { pool } : {}),
-          nowMs,
-          cooldownUntil: cooldown,
-          sessionTokensByAccount: tokensByAccount,
-          strategy: 'spread',
-        });
-        if (selected !== null) {
-          accountId = selected.id;
-          accountEnv = accountEnvFor(selected);
-        }
-      }
-    }
+  if (laneAccount !== null) {
+    accountId = laneAccount.id;
+    accountEnv = accountEnvFor(laneAccount);
   }
 
   // Emit tier-start with accountId when an account was selected.
@@ -1183,20 +1362,19 @@ export async function* runHedged(
   };
 
   try {
-    // --- Pre-select primary account for sibling fanout (Slice 5). ---
+    // --- Pre-select primary lane for sibling fanout (Slice 5 / R1.3a). ---
     // When account parallelism is on in quality-first mode, pre-compute the
     // primary arm's provider and accountId so the speculative arm can avoid
-    // reusing the same account. This runs the same routing + selection logic
-    // that runAttempt would run internally, so the sibling logic gets the
-    // identity without waiting for the primary promise to resolve (needed for
-    // CASE B where both start in parallel).
+    // reusing the same account. Uses atomic selectExecutionLane (same as
+    // runAttempt) so identity matches without waiting for the primary promise
+    // (needed for CASE B where both start in parallel).
     let primaryPreSelectedAccountId: string | undefined;
     let primaryPreSelectedProvider: ProviderId | undefined;
     if (
       deps.accountParallelism === true &&
       modeFromPolicy(deps.policy) === 'quality-first' &&
-      deps.subscriptionAccounts !== undefined &&
-      deps.subscriptionAccounts.length > 0
+      ((deps.subscriptionAccounts !== undefined && deps.subscriptionAccounts.length > 0) ||
+        (deps.opencodeAccounts !== undefined && deps.opencodeAccounts.length > 0))
     ) {
       const routePool =
         deps.authenticatedProviders !== undefined && deps.authenticatedProviders.length > 0
@@ -1204,30 +1382,55 @@ export async function* runHedged(
           : (Object.keys(deps.providers) as ProviderId[]).filter(
               (id) => deps.providers[id] !== undefined,
             );
-      const primaryDecision = route(
-        plan.primaryTier,
-        routePool,
-        deps.policy,
-        deps.availableModels,
-        deps.authenticatedProviders,
-        deps.learnedProviderOrder?.[plan.primaryTier],
-        capabilityContext,
-      );
-      primaryPreSelectedProvider = primaryDecision.provider;
-      const pool =
-        primaryPreSelectedProvider === 'opencode'
-          ? (opencodePoolForModel(primaryDecision.model) ?? undefined)
+      const accountsForLane =
+        deps.subscriptionAccounts !== undefined
+          ? deps.subscriptionAccounts.filter(
+              (a) =>
+                deps.accountParallelismDisabledProviders === undefined ||
+                !deps.accountParallelismDisabledProviders.has(
+                  a.provider as SubscriptionProvider,
+                ),
+            )
           : undefined;
-      const selected = selectSubscriptionAccount({
-        accounts: deps.subscriptionAccounts,
-        provider: primaryPreSelectedProvider as SubscriptionProvider,
-        ...(pool !== undefined ? { pool } : {}),
+      const opencodeForLane =
+        deps.opencodeAccounts !== undefined
+          ? deps.opencodeAccounts.filter(
+              (_a) =>
+                deps.accountParallelismDisabledProviders === undefined ||
+                !deps.accountParallelismDisabledProviders.has('opencode'),
+            )
+          : undefined;
+      const primaryLane = selectExecutionLane({
+        tier: plan.primaryTier,
+        available: routePool,
+        policy: deps.policy,
+        ...(deps.availableModels !== undefined
+          ? { availableModels: deps.availableModels }
+          : {}),
+        ...(deps.authenticatedProviders !== undefined
+          ? { authenticatedProviders: deps.authenticatedProviders }
+          : {}),
+        ...(deps.learnedProviderOrder?.[plan.primaryTier] !== undefined
+          ? { preferredOrder: deps.learnedProviderOrder[plan.primaryTier] }
+          : {}),
+        ...(capabilityContext !== undefined ? { capabilityContext } : {}),
+        ...(accountsForLane !== undefined ? { accounts: accountsForLane } : {}),
+        ...(opencodeForLane !== undefined
+          ? { opencodeAccounts: opencodeForLane }
+          : {}),
         nowMs: deps.clock.now(),
-        cooldownUntil: deps.accountCooldownUntil ?? new Map(),
-        sessionTokensByAccount: deps.sessionTokensByAccount ?? {},
+        ...(deps.accountCooldownUntil !== undefined
+          ? { cooldownUntil: deps.accountCooldownUntil }
+          : {}),
+        ...(deps.sessionTokensByAccount !== undefined
+          ? { sessionTokensByAccount: deps.sessionTokensByAccount }
+          : {}),
         strategy: 'spread',
       });
-      primaryPreSelectedAccountId = selected?.id;
+      if (primaryLane.ok) {
+        primaryPreSelectedProvider = primaryLane.lane.provider;
+        primaryPreSelectedAccountId = primaryLane.lane.account?.id;
+      }
     }
 
     // --- Start the PRIMARY run as a background promise. ---
