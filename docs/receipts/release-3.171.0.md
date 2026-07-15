@@ -51,3 +51,10 @@ Placeholders for orchestrator to fill with command evidence before merge auto:
 - No product `src/` behavior change in this PR.
 - No `npm publish` by agents.
 - No residual R6/R9 golden implementation in this PR.
+
+## Orchestrator evidence (2026-07-15)
+
+- `npm run typecheck`: exit 0 on main@58f766c
+- `npm run knip`: exit 0
+- `npm run smoke:packed`: ALL CHECKS PASSED (3.170.1 tarball; re-run after bump on CI)
+
