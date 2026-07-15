@@ -11,6 +11,11 @@ import {
 import { readSecretLine } from './menu-secret-input.js';
 import { dim, bold, yellow } from '../ui/theme.js';
 import { navFooterText } from './ui/nav-footer.js';
+import {
+  ACCOUNTS_LIST_FIRST_DATA_ROW,
+  isMouseInput,
+  listIndexFromMouseKey,
+} from './ui/mouse.js';
 import type { ReadlineEchoController } from './menu-readline.js';
 import type { Clock } from '../core/types.js';
 import {
@@ -505,6 +510,19 @@ export async function runOpencodeAccountsMenu(
     if (key === null || key === 'b') { getMenuStack().pop(); return; }
     if (key === NAV_ESC) { getMenuStack().requestExit(); return; }
     if (key === NAV_LEFT) { getMenuStack().pop(); return; }
+
+    // Optional mouse (Ink SGR): click a data row → same as Enter on that row.
+    // Fail-soft on miss / wrong geometry; keyboard remains primary.
+    const clickIdx = listIndexFromMouseKey(key, ACCOUNTS_LIST_FIRST_DATA_ROW, accounts.length);
+    if (clickIdx !== null) {
+      selectedIndex = clickIdx;
+      const picked = accounts[clickIdx];
+      if (picked !== undefined) {
+        await editAccountScreen(out, readLine, readlineEcho, confirm, picked, inkReadKey);
+      }
+      continue;
+    }
+    if (key !== null && isMouseInput(key)) continue;
 
     const list = interpretListKey(key, selectedIndex, accounts.length);
     if (list.kind === 'highlight') {

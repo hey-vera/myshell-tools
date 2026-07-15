@@ -10,6 +10,11 @@ import {
 } from './menu-key-confirm.js';
 import { bold, dim, yellow, green } from '../ui/theme.js';
 import { navFooterText } from './ui/nav-footer.js';
+import {
+  ACCOUNTS_LIST_FIRST_DATA_ROW,
+  isMouseInput,
+  listIndexFromMouseKey,
+} from './ui/mouse.js';
 import type { Clock } from '../core/types.js';
 import type { LoginRunner } from '../commands/login.js';
 import {
@@ -554,6 +559,19 @@ export async function runCodexAccountsMenu(
     if (key === null || key === 'b') { getMenuStack().pop(); return; }
     if (key === NAV_ESC) { getMenuStack().requestExit(); return; }
     if (key === NAV_LEFT) { getMenuStack().pop(); return; }
+
+    // Optional mouse (Ink SGR): click a data row → same as Enter on that row.
+    // Fail-soft on miss / wrong geometry; keyboard remains primary.
+    const clickIdx = listIndexFromMouseKey(key, ACCOUNTS_LIST_FIRST_DATA_ROW, accounts.length);
+    if (clickIdx !== null) {
+      selectedIndex = clickIdx;
+      const picked = accounts[clickIdx];
+      if (picked !== undefined) {
+        await editAccountScreen(out, readLine, confirm, picked, login, suspendStdin, inkReadKey);
+      }
+      continue;
+    }
+    if (key !== null && isMouseInput(key)) continue;
 
     const list = interpretListKey(key, selectedIndex, accounts.length);
     if (list.kind === 'highlight') {

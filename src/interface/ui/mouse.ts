@@ -314,3 +314,57 @@ export function hitTestPanelChromeRow(
   if (row === terminalRows - 2) return 'footer';
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// Numbered list row hit-test (accounts menus; pure, fail-soft)
+// ---------------------------------------------------------------------------
+
+/**
+ * Frame-relative 0-based row of the first account data line in all four
+ * provider account list screens.
+ *
+ * Layout (chrome frame lines):
+ *   0: leading blank (write starts with `\n` + title)
+ *   1: title ("Claude Accounts", …)
+ *   2: blank
+ *   3: column header
+ *   4+: one row per account
+ *
+ * Absolute terminal geometry may drift (Static scrollback, status chrome);
+ * callers fail-soft when the hit is outside the data range.
+ */
+export const ACCOUNTS_LIST_FIRST_DATA_ROW = 4;
+
+/**
+ * Map a 0-based mouse row to a list index given where the first data row sits.
+ * Returns null when the click is outside `[firstDataRow, firstDataRow+length)`.
+ * Pure; never throws. Empty list or invalid geometry → null.
+ */
+export function listIndexFromMouseRow(
+  mouseRow: number,
+  firstDataRow: number,
+  length: number,
+): number | null {
+  if (length <= 0) return null;
+  if (!Number.isFinite(mouseRow) || !Number.isFinite(firstDataRow)) return null;
+  if (mouseRow < 0 || firstDataRow < 0) return null;
+  const index = mouseRow - firstDataRow;
+  if (index < 0 || index >= length) return null;
+  return index;
+}
+
+/**
+ * If `raw` is a primary (left-press) SGR mouse report that hits a list data row,
+ * return the 0-based list index. Otherwise null (miss, release, wheel, non-mouse).
+ * Keyboard remains primary; wrong geometry fails soft.
+ */
+export function listIndexFromMouseKey(
+  raw: string | null | undefined,
+  firstDataRow: number,
+  length: number,
+): number | null {
+  if (raw == null || raw.length === 0 || !isMouseInput(raw)) return null;
+  const ev = parseMouseInput(raw);
+  if (ev == null || !isPrimaryClick(ev)) return null;
+  return listIndexFromMouseRow(ev.row, firstDataRow, length);
+}
