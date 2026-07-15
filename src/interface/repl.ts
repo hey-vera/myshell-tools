@@ -101,11 +101,11 @@ export async function startRepl(deps: OrchestrateDeps, out: OutputSink): Promise
       const ac = new AbortController();
       currentAc = ac;
 
-      // P1-09j-b: mint a distinct budget per REPL turn.
+      // R5.1 / P1-09j-b: mint a distinct enforcing budget per REPL turn.
       const turnId = deps.clock.uuid();
       const turnBudget = createTurnCallBudget({
         turnId: turnId,
-        mode: 'observe',
+        mode: 'enforce',
         totalUnits: 64,
         reserved: {
           work: 1,
