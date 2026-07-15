@@ -1,11 +1,13 @@
 # ROADMAP-STATUS
 
-Compact current-state record. The user-designated implementation authority is `CLAUDEPLAN.md`.
+Compact current-state record. Product north star + long-horizon plan: `CLAUDEPLAN.md`.  
+**Active external-ship sequence:** `docs/EXTERNAL-READINESS-PLAN.md` (U0–U14).
 
-_Updated 2026-07-15. Baseline: `main@9ec7c40` / package **3.173.0** (residual completion: accounts mouse `#219`, live per-account probe `#220`, detached free-loop multi-turn `#221`, fenced goal-job leases `#222`; product wave M/A/D/OS remains in **3.172.0**). Active next: FG free-loop chrome parity / full multi-OS golden journey **or** owner **npm publish**._
+_Updated 2026-07-15. Baseline: `main@003c836` / package **3.173.0** (residual completion on tip; npm `latest` still **3.170.0** — owner publish only). Active next: **U1 detached account parity** → docs honesty → multichat smoke → owner human smoke + **npm publish**._
 
-Wave summary receipt: `docs/receipts/actualization-wave-complete.md`.  
-Release receipt: `docs/receipts/release-3.173.0.md` (prior: `docs/receipts/release-3.172.0.md`).
+Wave summary receipt: `docs/receipts/actualization-wave-complete.md` (historical; residuals partially superseded by `#219`–`#222`).  
+Release receipt: `docs/receipts/release-3.173.0.md` (prior: `docs/receipts/release-3.172.0.md`).  
+External readiness plan: `docs/EXTERNAL-READINESS-PLAN.md`.
 
 ## Product truth
 
@@ -71,46 +73,33 @@ Notes:
 
 ## Honest residuals (not product-complete)
 
-These are **known gaps**. Green CI + landed slices do **not** mean every headline is fully actualized end-to-end.
+These are **known gaps**. Green CI + landed slices do **not** mean every headline is fully actualized end-to-end. Tracked as **U\*** in `docs/EXTERNAL-READINESS-PLAN.md`.
 
-1. ~~**Free-loop detached multi-turn**~~ **Done** (`#221`): multi-turn free path up to 8 with checkpoints; honest park/fail. Residual: full FG menu chrome parity (scheduler/manager UI) remains menu-owned.
-
-2. ~~**Fenced leases**~~ **Done** (`#222`): fenced renewable goal-job leases (3m TTL + generation).
-
-3. ~~**Accounts mouse**~~ **Done** (`#219`): optional mouse click-to-open on accounts list rows.
-
-4. ~~**R1 — live per-account CLI model probe**~~ **Done** (`#220`): true per-account model probe via env-scoped detect.
-
-5. **R9 — full multi-OS packed golden journey**  
-   OS1 adds win/mac packed smoke alongside required ubuntu package-check. Full multi-OS packed golden journey (auth handoff, interactive chat, resume, cancel, expanded pack matrix) remains beyond current smoke.
-
-6. **npm publish**  
-   Owner-only; agents do not publish.
+1. ~~**Free-loop detached multi-turn**~~ **Done** (`#221`). Residual: FG menu chrome parity (U post-ship / optional).
+2. ~~**Fenced leases**~~ **Done** (`#222`).
+3. ~~**Accounts mouse**~~ **Done** (`#219`).
+4. ~~**R1 live per-account probe**~~ **Done on menu enrich** (`#220`). **Gap:** detached `productionDeps` still thinner — **U1**.
+5. **U1 — Detached/worker account brain parity** (active): probe + managed accounts + no ambient fallthrough on worker path.
+6. **R9 — full multi-OS packed golden journey** beyond pack smoke (U5/U6 hermetic; live = owner).
+7. **npm publish** — owner-only; registry still **3.170.0** while tip is **3.173.0** (U13).
+8. **Docs honesty** — README/support matrix vs tip (U2/U3/U4).
 
 ### Narrow deferred items (still honest)
 
-- **Catalog-drift as first-class scenario:** partial via protocol/error fixtures only.
-- **Suite duration segmentation / hang accounting:** quality is still a full sequential gate.
-- **R3.2+** subscriptions schema lock/CAS (if still planned): not claimed by R3.1.
-- **R2 mid-chat refresh redesign** beyond freeze + lineage gate: not claimed complete as a UX redesign wave.
-- **Multi-account OS isolation proofs:** compatibility matrix territory; probe uses accountEnv isolation but full OS matrix proofs remain broader than `#220`.
-- **FG free-loop chrome parity:** scheduler/manager UI for free-loop remains menu-owned.
+- Catalog-drift as first-class scenario; suite duration segmentation; R3.2 schema lock/CAS; mid-chat refresh UX redesign; multi-account OS isolation proofs matrix; FG free-loop chrome parity.
 
 ## Active sequence
 
-1. ~~R-1: reconcile documentation authority and freeze truth.~~ **Done** (`#177`).
-2. ~~R0: green baseline and deterministic provider harness.~~ **Done** (`#178`–`#189`).
-3. ~~R1: atomic execution-lane inventory foundation.~~ **Done** (`#191`–`#197`). ~~Live per-account probe.~~ **Done** (`#220`). Residual: broader OS isolation proofs.
-4. ~~R2: turn-lane freeze + native lineage gate.~~ **Done** (`#198`–`#199`). Residual: fuller mid-chat refresh redesign if still desired.
-5. ~~R3.1: safe cooling-account selection.~~ **Done** (`#200`).
-6. ~~R4.1–R4.3: provider-owned credentials / child env / Grok auth.~~ **Done** (`#201`–`#203`).
-7. ~~R5.1: turn budget on live chat path.~~ **Done** (`#204`).
-8. ~~M3 / R6-class shared detached executor (real work after exit).~~ **Done** (`#213`). ~~Free-loop multi-turn.~~ **Done** (`#221`). ~~Fenced leases.~~ **Done** (`#222`).
-9. ~~R7.1: progress invariant / stall honesty.~~ **Done** (`#205`).
-10. ~~R8.1: dial honesty (Mode + Intensity era).~~ **Done** (`#206`); **D1** Effort/Speed user-facing dials **Done** (`#215`).
-11. ~~R9.1: packed-artifact install smoke.~~ **Done** (`#207`). ~~OS1 multi-OS win/mac smoke.~~ **Done** (`#216`). Residual: full multi-OS golden journey.
-12. ~~Product wave M1/M2/A1/A2.~~ **Done** (`#210`–`#212`, `#211`, `#214`). ~~Accounts mouse.~~ **Done** (`#219`).
-13. **Active next:** FG free-loop chrome parity / full multi-OS golden journey **or** owner **npm publish** of **3.173.0** (version bump is this release PR; publication remains manual).
+Prior waves R-1…R9 + M/A/D/OS + residual `#219`–`#222`: **Done** (tables above).
+
+**External readiness (U0–U14)** — see `docs/EXTERNAL-READINESS-PLAN.md`:
+
+1. **U0** Freeze plan + ROADMAP pointer (this edit).
+2. **U1** Detached account parity (highest code leverage).
+3. **U2–U4** README + support matrix + dial honesty.
+4. **U5–U6** Hermetic multichat / pack honesty.
+5. **U7–U9** Bounded UX polish.
+6. **U10–U14** Version/quality → **owner human smoke** → **owner npm publish**.
 
 ## Non-negotiable gate
 

@@ -50,6 +50,7 @@ import { createFileGoalStore } from '../infra/goal-store.js';
 import { sandboxForEnvironment } from '../infra/sandbox.js';
 import { nodeVerifyPort } from '../infra/verify-port.js';
 import { buildSharedOrchestrateCore } from '../interface/build-orchestrate-deps.js';
+import { enrichOrchestrateDepsWithAccounts } from '../interface/enrich-orchestrate-accounts.js';
 import { runTask, type RunTaskResult } from '../interface/run.js';
 import type { OutputSink } from '../interface/render.js';
 import { detectEnvironment, type EnvironmentStatus } from '../providers/detect.js';
@@ -89,7 +90,18 @@ type GoalStoreLike = Pick<
   'get' | 'setState' | 'setGoalVerdict' | 'setRoadmapItemStatus' | 'setRoadmapItemVerdict'
 >;
 
-async function productionDeps(
+/**
+ * Production OrchestrateDeps for detached worker / `myshell-tools worker`.
+ *
+ * Path: detect env (caller) → buildAuthenticatedProviders → base core →
+ * {@link enrichOrchestrateDepsWithAccounts} (subscriptions + probe/provisional
+ * inventory + empty accountCooldownUntil). Fail-soft enrich keeps base deps.
+ *
+ * Exported for production-path unit tests with injectable provider/env fakes
+ * via {@link createDetachedGoalExecutor} makeDeps override; this function is
+ * the default makeDeps implementation.
+ */
+export async function productionDeps(
   job: GoalJob,
   env: EnvironmentStatus,
   config: AppConfig,
@@ -99,7 +111,7 @@ async function productionDeps(
   const mode = config.mode;
   const policy =
     mode === undefined ? DEFAULT_POLICY : POLICY_PRESETS[mode] ?? DEFAULT_POLICY;
-  return {
+  const base: OrchestrateDeps = {
     clock: systemClock,
     session: createFileConversationStore({ clock: systemClock }).writer(
       job.conversationId,
@@ -114,6 +126,9 @@ async function productionDeps(
     timeoutMs: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     ...buildSharedOrchestrateCore(env),
   };
+  // Managed-account brain parity with menu enrich: subscriptionAccounts +
+  // availableModelsByAccount (probe → provisional) + accountCooldownUntil.
+  return enrichOrchestrateDepsWithAccounts(base, { cwd: job.cwd });
 }
 
 function verifiedReceipt(label: string): {
