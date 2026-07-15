@@ -71,6 +71,10 @@ import {
   selectSubscriptionAccount,
 } from './opencode-account-routing.js';
 import { selectExecutionLane } from './execution-lane.js';
+import {
+  freezeTurnInventoryFromDeps,
+  type TurnInventoryFreeze,
+} from './turn-lane-snapshot.js';
 import { accountEnvFor } from '../infra/subscriptions.js';
 import type {
   SubscriptionAccount,
@@ -267,10 +271,18 @@ async function runAttempt(
   wantsWebSearch: boolean,
   vendorNeutralEnabled: boolean,
   role: HedgeRunRole = { role: 'primary' },
+  /** R2.1: turn-frozen inventory; when absent, freeze from deps at attempt start. */
+  inventoryFreeze?: TurnInventoryFreeze,
 ): Promise<RunResult> {
+  // R2.1: one inventory freeze per hedge turn (passed in) or per attempt fallback.
+  const turnInventory =
+    inventoryFreeze ??
+    freezeTurnInventoryFromDeps(deps, 'hedge-attempt');
+
   const routePool =
-    deps.authenticatedProviders !== undefined && deps.authenticatedProviders.length > 0
-      ? [...deps.authenticatedProviders]
+    turnInventory.authenticatedProviders !== undefined &&
+    turnInventory.authenticatedProviders.length > 0
+      ? [...turnInventory.authenticatedProviders]
       : (Object.keys(deps.providers) as ProviderId[]).filter(
           (id) => deps.providers[id] !== undefined,
         );
@@ -287,8 +299,9 @@ async function runAttempt(
   const useAtomicLane =
     deps.accountParallelism === true &&
     mode === 'quality-first' &&
-    ((deps.subscriptionAccounts !== undefined && deps.subscriptionAccounts.length > 0) ||
-      (deps.opencodeAccounts !== undefined && deps.opencodeAccounts.length > 0));
+    ((turnInventory.accounts !== undefined && turnInventory.accounts.length > 0) ||
+      (turnInventory.opencodeAccounts !== undefined &&
+        turnInventory.opencodeAccounts.length > 0));
 
   let decision: ReturnType<typeof route>;
   let laneAccount: SubscriptionAccount | null = null;
@@ -299,16 +312,16 @@ async function runAttempt(
     // inventory for this select → ambient for that provider only, matching the
     // pre-R1.3a "skip account attach" behaviour for tripped providers.
     const accountsForLane =
-      deps.subscriptionAccounts !== undefined
-        ? deps.subscriptionAccounts.filter(
+      turnInventory.accounts !== undefined
+        ? turnInventory.accounts.filter(
             (a) =>
               deps.accountParallelismDisabledProviders === undefined ||
               !deps.accountParallelismDisabledProviders.has(a.provider as SubscriptionProvider),
           )
         : undefined;
     const opencodeForLane =
-      deps.opencodeAccounts !== undefined
-        ? deps.opencodeAccounts.filter(
+      turnInventory.opencodeAccounts !== undefined
+        ? turnInventory.opencodeAccounts.filter(
             (_a) =>
               deps.accountParallelismDisabledProviders === undefined ||
               !deps.accountParallelismDisabledProviders.has('opencode'),
@@ -319,12 +332,14 @@ async function runAttempt(
       tier: requestedTier,
       available: routePool,
       policy: effPolicy,
-      ...(deps.availableModels !== undefined ? { availableModels: deps.availableModels } : {}),
-      ...(deps.availableModelsByAccount !== undefined
-        ? { availableModelsByAccount: deps.availableModelsByAccount }
+      ...(turnInventory.availableModels !== undefined
+        ? { availableModels: turnInventory.availableModels }
         : {}),
-      ...(deps.authenticatedProviders !== undefined
-        ? { authenticatedProviders: deps.authenticatedProviders }
+      ...(turnInventory.availableModelsByAccount !== undefined
+        ? { availableModelsByAccount: turnInventory.availableModelsByAccount }
+        : {}),
+      ...(turnInventory.authenticatedProviders !== undefined
+        ? { authenticatedProviders: turnInventory.authenticatedProviders }
         : {}),
       ...(deps.learnedProviderOrder?.[requestedTier] !== undefined
         ? { preferredOrder: deps.learnedProviderOrder[requestedTier] }
@@ -332,10 +347,8 @@ async function runAttempt(
       ...(capabilityContext !== undefined ? { capabilityContext } : {}),
       ...(accountsForLane !== undefined ? { accounts: accountsForLane } : {}),
       ...(opencodeForLane !== undefined ? { opencodeAccounts: opencodeForLane } : {}),
-      // R1.3b: freeze caller inventory generation on the lane when present.
-      ...(deps.inventoryGeneration !== undefined
-        ? { inventoryGeneration: deps.inventoryGeneration }
-        : {}),
+      // R2.1 / R1.3b: generation frozen for the hedge turn.
+      inventoryGeneration: turnInventory.inventoryGeneration,
       nowMs,
       ...(deps.accountCooldownUntil !== undefined
         ? { cooldownUntil: deps.accountCooldownUntil }
@@ -350,14 +363,14 @@ async function runAttempt(
     let vnDecision: ReturnType<typeof route> | null = null;
     if (vendorNeutralEnabled && deps.capabilityRegistry) {
       const availableModelsMap = new Map<ProviderId, readonly string[]>();
-      if (deps.availableModels) {
-        for (const [p, models] of Object.entries(deps.availableModels)) {
+      if (turnInventory.availableModels) {
+        for (const [p, models] of Object.entries(turnInventory.availableModels)) {
           if (models !== undefined) availableModelsMap.set(p as ProviderId, models);
         }
       }
       const params: VendorNeutralRouteParams = {
         tier: requestedTier,
-        authedProviders: deps.authenticatedProviders ?? routePool,
+        authedProviders: turnInventory.authenticatedProviders ?? routePool,
         availableModels: availableModelsMap,
         registry: deps.capabilityRegistry,
         needsWebSearch: wantsWebSearch,
@@ -896,6 +909,9 @@ export async function* runHedged(
     content: task,
   });
 
+  // R2.1: freeze inventory once for the whole hedged turn (primary + speculative).
+  const turnInventory = freezeTurnInventoryFromDeps(deps, 'hedge-primary-dispatch');
+
   let totalCostUsd = 0;
   let attempts = 0;
   const terminalFinal = (
@@ -990,6 +1006,8 @@ export async function* runHedged(
         ? { intentVersionId: deps.intentVersionId }
         : {}),
       ...(result.accountId !== undefined ? { accountId: result.accountId } : {}),
+      // R2.1: same frozen generation for every arm of this hedged turn.
+      inventoryGeneration: turnInventory.inventoryGeneration,
     });
     return usd;
   };
@@ -1380,18 +1398,20 @@ export async function* runHedged(
     if (
       deps.accountParallelism === true &&
       modeFromPolicy(deps.policy) === 'quality-first' &&
-      ((deps.subscriptionAccounts !== undefined && deps.subscriptionAccounts.length > 0) ||
-        (deps.opencodeAccounts !== undefined && deps.opencodeAccounts.length > 0))
+      ((turnInventory.accounts !== undefined && turnInventory.accounts.length > 0) ||
+        (turnInventory.opencodeAccounts !== undefined &&
+          turnInventory.opencodeAccounts.length > 0))
     ) {
       const routePool =
-        deps.authenticatedProviders !== undefined && deps.authenticatedProviders.length > 0
-          ? [...deps.authenticatedProviders]
+        turnInventory.authenticatedProviders !== undefined &&
+        turnInventory.authenticatedProviders.length > 0
+          ? [...turnInventory.authenticatedProviders]
           : (Object.keys(deps.providers) as ProviderId[]).filter(
               (id) => deps.providers[id] !== undefined,
             );
       const accountsForLane =
-        deps.subscriptionAccounts !== undefined
-          ? deps.subscriptionAccounts.filter(
+        turnInventory.accounts !== undefined
+          ? turnInventory.accounts.filter(
               (a) =>
                 deps.accountParallelismDisabledProviders === undefined ||
                 !deps.accountParallelismDisabledProviders.has(
@@ -1400,8 +1420,8 @@ export async function* runHedged(
             )
           : undefined;
       const opencodeForLane =
-        deps.opencodeAccounts !== undefined
-          ? deps.opencodeAccounts.filter(
+        turnInventory.opencodeAccounts !== undefined
+          ? turnInventory.opencodeAccounts.filter(
               (_a) =>
                 deps.accountParallelismDisabledProviders === undefined ||
                 !deps.accountParallelismDisabledProviders.has('opencode'),
@@ -1411,14 +1431,14 @@ export async function* runHedged(
         tier: plan.primaryTier,
         available: routePool,
         policy: deps.policy,
-        ...(deps.availableModels !== undefined
-          ? { availableModels: deps.availableModels }
+        ...(turnInventory.availableModels !== undefined
+          ? { availableModels: turnInventory.availableModels }
           : {}),
-        ...(deps.availableModelsByAccount !== undefined
-          ? { availableModelsByAccount: deps.availableModelsByAccount }
+        ...(turnInventory.availableModelsByAccount !== undefined
+          ? { availableModelsByAccount: turnInventory.availableModelsByAccount }
           : {}),
-        ...(deps.authenticatedProviders !== undefined
-          ? { authenticatedProviders: deps.authenticatedProviders }
+        ...(turnInventory.authenticatedProviders !== undefined
+          ? { authenticatedProviders: turnInventory.authenticatedProviders }
           : {}),
         ...(deps.learnedProviderOrder?.[plan.primaryTier] !== undefined
           ? { preferredOrder: deps.learnedProviderOrder[plan.primaryTier] }
@@ -1428,10 +1448,8 @@ export async function* runHedged(
         ...(opencodeForLane !== undefined
           ? { opencodeAccounts: opencodeForLane }
           : {}),
-        // R1.3b: freeze caller inventory generation on the lane when present.
-        ...(deps.inventoryGeneration !== undefined
-          ? { inventoryGeneration: deps.inventoryGeneration }
-          : {}),
+        // R2.1: generation frozen once for the hedged turn.
+        inventoryGeneration: turnInventory.inventoryGeneration,
         nowMs: deps.clock.now(),
         ...(deps.accountCooldownUntil !== undefined
           ? { cooldownUntil: deps.accountCooldownUntil }
@@ -1461,6 +1479,7 @@ export async function* runHedged(
       wantsWebSearch,
       authority.vendorNeutralEnabled ?? false,
       { role: 'primary' },
+      turnInventory,
     );
 
     // --- Race the primary against the delay. ---
@@ -1534,6 +1553,7 @@ export async function* runHedged(
             : {}),
           preferSiblingProvider: primary.provider,
         },
+        turnInventory,
       );
       await recordRun(speculative);
 
@@ -1595,6 +1615,7 @@ export async function* runHedged(
           ? { preferSiblingProvider: primaryPreSelectedProvider }
           : {}),
       },
+      turnInventory,
     );
 
     // Take the FIRST to finish with an adequate result; cancel the other.
