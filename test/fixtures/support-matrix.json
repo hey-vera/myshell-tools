@@ -1,0 +1,89 @@
+{
+  "$schema_comment": "Minimal machine-readable support matrix for myshell-tools (R9.1). Expand rows; do not treat prose docs as the matrix source of truth.",
+  "package": "myshell-tools",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "os": [
+    {
+      "id": "linux",
+      "ci_runner": "ubuntu-latest",
+      "supported": true,
+      "notes": "Primary CI lane for package-check and packed-install smoke"
+    },
+    {
+      "id": "macos",
+      "ci_runner": "macos-latest",
+      "supported": true,
+      "notes": "Covered by multi-OS unit/integration matrix; packed smoke expandable"
+    },
+    {
+      "id": "windows",
+      "ci_runner": "windows-latest",
+      "supported": true,
+      "notes": "Covered by multi-OS unit/integration matrix; packed smoke expandable"
+    }
+  ],
+  "node": [
+    { "version": 20, "supported": true },
+    { "version": 22, "supported": true },
+    { "version": 24, "supported": true }
+  ],
+  "bins": ["myshell-tools", "myshell"],
+  "providers": [
+    {
+      "id": "claude",
+      "cli": "claude",
+      "install_package": "@anthropic-ai/claude-code",
+      "auth": "oauth",
+      "supported": true,
+      "stub": false
+    },
+    {
+      "id": "codex",
+      "cli": "codex",
+      "install_package": "@openai/codex",
+      "auth": "oauth",
+      "supported": true,
+      "stub": false
+    },
+    {
+      "id": "opencode",
+      "cli": "opencode",
+      "install_package": "opencode-ai",
+      "auth": "oauth-or-free-hosted",
+      "supported": true,
+      "experimental": true,
+      "stub": false
+    },
+    {
+      "id": "grok",
+      "cli": "grok",
+      "install_package": "@xai-official/grok",
+      "auth": "oauth",
+      "supported": true,
+      "stub": false
+    }
+  ],
+  "exclusions": [
+    {
+      "id": "api-key-owned-secrets",
+      "reason": "myshell-tools does not store or inject provider API keys; subscription/OAuth CLIs own credentials"
+    },
+    {
+      "id": "node-lt-20",
+      "reason": "engines.node requires >=20.0.0"
+    }
+  ],
+  "packed_artifact": {
+    "smoke": "scripts/packed-install-smoke.mjs",
+    "ci_job": "package-check",
+    "proves": [
+      "real npm pack tarball",
+      "install into empty project",
+      "both bin names --help and --version",
+      "no-provider actionable refusal",
+      "no project corruption"
+    ]
+  }
+}
