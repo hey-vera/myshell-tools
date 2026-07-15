@@ -141,8 +141,63 @@ jobs:
         # Real `npm pack` tarball → install into empty temp project → both bins
         # --help/--version → actionable no-provider refusal → project integrity.
         # See scripts/packed-install-smoke.mjs and test/fixtures/support-matrix.json.
-        # Primary CI proof lives here only — not in the multi-OS×Node test matrix.
+        # Required ubuntu proof lives here; win/mac use dedicated package-smoke-* jobs
+        # (not strategy.matrix — keeps this job's status-check name stable).
         # MYSHELL_PACKED_SMOKE=1 documents opt-in for the vitest wrapper if used.
+        env:
+          MYSHELL_PACKED_SMOKE: '1'
+        run: npm run smoke:packed
+
+  # OS1: multi-OS packed install smoke (optional status checks until branch protection
+  # is explicitly updated — do not reuse the required Package check name).
+  package-smoke-windows:
+    name: Package smoke (windows-latest / node 22)
+    runs-on: windows-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Real packed-artifact install smoke
+        env:
+          MYSHELL_PACKED_SMOKE: '1'
+        run: npm run smoke:packed
+
+  package-smoke-macos:
+    name: Package smoke (macos-latest / node 22)
+    runs-on: macos-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Real packed-artifact install smoke
         env:
           MYSHELL_PACKED_SMOKE: '1'
         run: npm run smoke:packed

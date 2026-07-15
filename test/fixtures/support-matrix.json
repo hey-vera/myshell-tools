@@ -1,5 +1,5 @@
 {
-  "$schema_comment": "Minimal machine-readable support matrix for myshell-tools (R9.1). Expand rows; do not treat prose docs as the matrix source of truth.",
+  "$schema_comment": "Minimal machine-readable support matrix for myshell-tools (R9.1 + OS1). Expand rows; do not treat prose docs as the matrix source of truth.",
   "package": "myshell-tools",
   "engines": {
     "node": ">=20.0.0"
@@ -9,19 +9,19 @@
       "id": "linux",
       "ci_runner": "ubuntu-latest",
       "supported": true,
-      "notes": "Primary CI lane for package-check and packed-install smoke"
+      "notes": "Required branch-protection status: Package check (ubuntu-latest / node 22) — pack dry-run contents + smoke:packed"
     },
     {
       "id": "macos",
       "ci_runner": "macos-latest",
       "supported": true,
-      "notes": "Covered by multi-OS unit/integration matrix; packed smoke expandable"
+      "notes": "Packed smoke via Package smoke (macos-latest / node 22); not a required status check until branch protection is updated"
     },
     {
       "id": "windows",
       "ci_runner": "windows-latest",
       "supported": true,
-      "notes": "Covered by multi-OS unit/integration matrix; packed smoke expandable"
+      "notes": "Packed smoke via Package smoke (windows-latest / node 22); not a required status check until branch protection is updated"
     }
   ],
   "node": [
@@ -78,12 +78,40 @@
   "packed_artifact": {
     "smoke": "scripts/packed-install-smoke.mjs",
     "ci_job": "package-check",
+    "ci_job_name": "Package check (ubuntu-latest / node 22)",
+    "ci_jobs": [
+      {
+        "id": "package-check",
+        "name": "Package check (ubuntu-latest / node 22)",
+        "os": "ubuntu-latest",
+        "node": 22,
+        "required_status_check": true,
+        "includes_dry_run_contents_check": true
+      },
+      {
+        "id": "package-smoke-windows",
+        "name": "Package smoke (windows-latest / node 22)",
+        "os": "windows-latest",
+        "node": 22,
+        "required_status_check": false,
+        "includes_dry_run_contents_check": false
+      },
+      {
+        "id": "package-smoke-macos",
+        "name": "Package smoke (macos-latest / node 22)",
+        "os": "macos-latest",
+        "node": 22,
+        "required_status_check": false,
+        "includes_dry_run_contents_check": false
+      }
+    ],
     "proves": [
       "real npm pack tarball",
       "install into empty project",
       "both bin names --help and --version",
       "no-provider actionable refusal",
-      "no project corruption"
+      "no project corruption",
+      "multi-OS packed smoke (ubuntu required; windows/macos optional checks)"
     ]
   }
 }
