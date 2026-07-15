@@ -2,8 +2,9 @@
  * src/interface/menu-render.ts — Slice 1 home render skeleton (locked).
  *
  * Renders the locked home-menu skeleton from docs/menu-build-spec-final.md:
- *   1. Effort Mode rounded box (sectionBox, two sections + internal divider) —
- *      LIVE from config.mode (not a hardcoded Auto mockup).
+ *   1. Mode rounded box (sectionBox, two sections + internal divider) —
+ *      LIVE from config.mode (not a hardcoded Auto mockup). R8.1: this is the
+ *      Mode dial (lane + verification), not an unshipped Effort/Speed pair.
  *   2. One `Recent (<workspace label>):` list (no workspace location column yet —
  *      workspace-root resolution is a later slice; the label is just the current
  *      cwd basename, never fabricated).
@@ -40,7 +41,8 @@ import { workspaceLabel, normalizeWorkspacePath } from './workspace.js';
 import { navFooterText } from './ui/nav-footer.js';
 
 // ---------------------------------------------------------------------------
-// Effort Mode box — live from config.mode (shared pure helper).
+// Mode box — live from config.mode (shared pure helper).
+// R8.1: user-facing name is "Mode" (lane + verification). Intensity is separate.
 // ---------------------------------------------------------------------------
 
 /** Inner content width matching the locked mockup box (48 columns of text). */
@@ -78,14 +80,14 @@ function wrapWords(text: string, width: number): string[] {
 }
 
 /**
- * Build the two sectionBox sections for the Effort Mode box from a persisted
+ * Build the two sectionBox sections for the Mode box from a persisted
  * config.mode. Shared by home and New Conversation. PURE.
  *
- * Header: `Effort Mode:  <label>` + LEVEL_DESC lines (wrapped to width 48).
+ * Header: `Mode:  <label>` + LEVEL_DESC lines (wrapped to width 48).
  * Footer: `m = switch modes` left + current short label right-aligned.
  *
  * When `color` is true: cyan/bold title + mode, dim description + switch hint.
- * When false (NO_COLOR / tests): byte-identical to the locked skeleton.
+ * When false (NO_COLOR / tests): plain text for golden tests.
  */
 export function buildEffortModeSections(
   mode: Mode | string | null | undefined,
@@ -94,7 +96,8 @@ export function buildEffortModeSections(
   const level: Level = migrateMode(mode);
   const short = effortModeShortLabel(mode);
   // Visual hierarchy: label + mode read as primary; description is secondary.
-  const headerLine = `${bold(cyan('Effort Mode:', color), color)}  ${bold(short, color)}`;
+  // R8.1: "Mode" not "Effort Mode" — avoids implying the unshipped Effort/Speed pair.
+  const headerLine = `${bold(cyan('Mode:', color), color)}  ${bold(short, color)}`;
   const descLines = wrapWords(LEVEL_DESC[level], EFFORT_BOX_WIDTH).map((l) => dim(l, color));
   const left = 'm = switch modes';
   const gap = Math.max(1, EFFORT_BOX_WIDTH - left.length - short.length);
@@ -105,7 +108,7 @@ export function buildEffortModeSections(
   };
 }
 
-/** Render the 48-wide Effort Mode sectionBox for the given mode. PURE (no I/O). */
+/** Render the 48-wide Mode sectionBox for the given mode. PURE (no I/O). */
 export function renderEffortModeBox(
   mode: Mode | string | null | undefined,
   color: boolean,
@@ -335,7 +338,7 @@ export async function renderMainScreen(
 
   const color = out.color;
 
-  // 1. Effort Mode box — live from config.mode (blank line after for section rhythm).
+  // 1. Mode box — live from config.mode (blank line after for section rhythm).
   out.write(renderEffortModeBox(mutableCtx.config.mode, color) + '\n\n');
 
   // 2. Recent (<current workspace label>): — one list, no workspace split.
