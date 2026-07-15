@@ -13,6 +13,7 @@
  */
 
 import type {
+  AccountStatus,
   OpencodePool,
   OpencodeSubscriptionAccount,
   SubscriptionAccount,
@@ -32,14 +33,54 @@ export function opencodePoolForModel(model: string): OpencodePool | null {
 }
 
 /**
+ * Account statuses that must never be selected for work-call spawn.
+ * `unknown` is not silently routable (auth not positively confirmed).
+ */
+const NON_ROUTABLE_STATUSES: ReadonlySet<AccountStatus> = new Set([
+  'auth-failed',
+  'unknown',
+  'disabled',
+  'expired',
+]);
+
+/**
+ * Structural + status eligibility for a subscription account (no cooldown).
+ *
+ * Returns true when the account is enabled, not priority-disabled, has
+ * priorityWeight > 0, is not past expiresAt, and does not carry a
+ * non-routable {@link AccountStatus} (`auth-failed` / `unknown` / `disabled` /
+ * `expired`). Absent `status` is treated as eligible for backward-compat
+ * fixtures; production accounts should set an explicit status after detect.
+ *
+ * Pure; shared by {@link selectSubscriptionAccount} and execution-lane
+ * inventory so eligibility is never reimplemented ad hoc.
+ */
+export function isSubscriptionAccountStructurallyEligible(
+  account: SubscriptionAccount,
+  nowMs: number,
+): boolean {
+  if (account.enabled !== true) return false;
+  if (account.priority === 'disabled') return false;
+  if (account.priorityWeight <= 0) return false;
+  if (account.expiresAt !== undefined && Date.parse(account.expiresAt) <= nowMs) {
+    return false;
+  }
+  const status = account.status;
+  if (status !== undefined && NON_ROUTABLE_STATUSES.has(status)) return false;
+  return true;
+}
+
+/**
  * Select the best subscription account for the given provider for the current turn.
  *
- * Returns `null` when no eligible account exists — the caller MUST fall back to
- * the provider's global path with NO account env injection.
+ * Returns `null` when no eligible account exists. Callers that have managed
+ * accounts for this provider MUST NOT fall through to ambient global credentials
+ * (see selectExecutionLane in execution-lane.ts); only zero-managed-account
+ * providers may use the provider-global path.
  *
  * Algorithm:
- *  1. Keep only accounts matching `provider`, enabled, not disabled-priority,
- *     not expired, priorityWeight > 0.
+ *  1. Keep only accounts matching `provider`, structurally eligible
+ *     ({@link isSubscriptionAccountStructurallyEligible}).
  *  2. For opencode, additionally filter by `pool`.
  *  3. Exclude cooling accounts (cooldownUntil > nowMs).
  *  4. If all eligible are cooling → never-strand: ignore cooldown for this
@@ -74,23 +115,16 @@ export function selectSubscriptionAccount<T extends SubscriptionAccount>(input: 
 
   const eligible: Array<T & { load: number }> = [];
   for (const a of accounts) {
-    if (
-      a.provider === provider &&
-      a.enabled === true &&
-      a.priority !== 'disabled' &&
-      a.priorityWeight > 0 &&
-      (a.expiresAt === undefined || Date.parse(a.expiresAt) > nowMs)
-    ) {
-      if (provider === 'opencode') {
-        const opencode = a as unknown as OpencodeSubscriptionAccount;
-        if (pool !== undefined && opencode.pool !== pool) continue;
-      }
-      eligible.push({
-        ...a,
-        load:
-          (sessionTokensByAccount[a.id] ?? 0) / a.priorityWeight,
-      });
+    if (a.provider !== provider) continue;
+    if (!isSubscriptionAccountStructurallyEligible(a, nowMs)) continue;
+    if (provider === 'opencode') {
+      const opencode = a as unknown as OpencodeSubscriptionAccount;
+      if (pool !== undefined && opencode.pool !== pool) continue;
     }
+    eligible.push({
+      ...a,
+      load: (sessionTokensByAccount[a.id] ?? 0) / a.priorityWeight,
+    });
   }
 
   if (eligible.length === 0) return null;
