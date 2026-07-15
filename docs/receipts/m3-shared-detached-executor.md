@@ -1,6 +1,7 @@
 # Receipt: M3 — Shared detached goal executor
 
 **Branch:** `product/m3-shared-detached-executor`  
+**Commit:** `6f20df2aeb61926c35e03d1a25a78d51562ac4bf`  
 **Date:** 2026-07-15  
 **Scope:** After Esc/process death, claimed goal jobs continue **real** provider work via `myshell-tools worker`, not park-only skeleton.
 
@@ -40,13 +41,14 @@
 5. **Verification policy:** todo/goal evidence uses detectTestCommand + runTests only; no diff-scoped critic path on the detached free-loop step.
 6. **waiting_on_auth as first-class job status:** no providers → job outcome `parked` (goal store parked); no dedicated `waiting_on_auth` job status enum.
 
-## Verification (local)
-
-Commands to re-run:
+## Verification (local) — green on this commit
 
 ```text
-npx tsc --noEmit
-npx vitest run test/unit/durable-goal-runner.test.ts test/unit/detached-goal-execution.test.ts test/unit/goal-job-store.test.ts
-npx eslint src/commands/worker.ts src/commands/detached-goal-execution.ts src/core/durable-goal-runner.ts
-npx knip
+npm run typecheck          # pass
+npm run lint               # pass (0 errors; pre-existing integration console warnings only)
+npm run knip               # pass
+npx vitest run test/unit/durable-goal-runner.test.ts \
+  test/unit/detached-goal-execution.test.ts \
+  test/unit/goal-job-store.test.ts
+# → 3 files, 21 tests passed
 ```
