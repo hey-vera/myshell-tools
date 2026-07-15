@@ -16,6 +16,7 @@ import {
   routingInventoryFromDetectAndRegistry,
   withUpdatedAvailableModels,
   buildAvailableModelsByAccount,
+  provisionalAvailableModelsByAccount,
 } from '../../src/core/live-model-inventory.ts';
 import type { CapabilityRegistry, ModelCapability } from '../../src/core/model-capabilities.ts';
 import type { EnvironmentStatus, ProviderStatus } from '../../src/providers/detect.ts';
@@ -177,5 +178,46 @@ describe('buildAvailableModelsByAccount (R1.5)', () => {
     assert.deepEqual(map.claude?.['acc-a'], ['model-a', 'model-a2']);
     assert.deepEqual(map.claude?.['acc-b'], ['model-b']);
     assert.deepEqual(map.codex?.['cx-1'], ['gpt-future']);
+  });
+});
+
+describe('provisionalAvailableModelsByAccount (P1 wire)', () => {
+  it('returns undefined when no accounts or no models', () => {
+    assert.equal(
+      provisionalAvailableModelsByAccount({ claude: ['sonnet'] }, []),
+      undefined,
+    );
+    assert.equal(
+      provisionalAvailableModelsByAccount(undefined, [{ provider: 'claude', id: 'a1' }]),
+      undefined,
+    );
+    assert.equal(
+      provisionalAvailableModelsByAccount(
+        { claude: [] },
+        [{ provider: 'claude', id: 'a1' }],
+      ),
+      undefined,
+    );
+  });
+
+  it('copies provider-global lists onto each matching account key', () => {
+    const map = provisionalAvailableModelsByAccount(
+      {
+        claude: ['sonnet', 'opus'],
+        codex: ['gpt-5'],
+      },
+      [
+        { provider: 'claude', id: 'claude-a' },
+        { provider: 'claude', id: 'claude-b' },
+        { provider: 'codex', id: 'codex-1' },
+        { provider: 'grok', id: 'grok-no-models' },
+        { provider: 'claude', id: '  ' },
+      ],
+    );
+    assert.deepEqual(map?.claude?.['claude-a'], ['sonnet', 'opus']);
+    assert.deepEqual(map?.claude?.['claude-b'], ['sonnet', 'opus']);
+    assert.deepEqual(map?.codex?.['codex-1'], ['gpt-5']);
+    assert.equal(map?.grok, undefined);
+    assert.equal(map?.claude?.[''], undefined);
   });
 });

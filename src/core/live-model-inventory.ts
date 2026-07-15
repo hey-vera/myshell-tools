@@ -164,3 +164,49 @@ export function buildAvailableModelsByAccount(
   }
   return acc;
 }
+
+/**
+ * Provisional per-account model inventory for multi-account routing (P1 wire).
+ *
+ * When managed subscription accounts exist, copy the current provider-global
+ * `availableModels` list onto each account key for that provider so
+ * `OrchestrateDeps.availableModelsByAccount` is populated and turn-lane freeze /
+ * `selectExecutionLane` see account-keyed rows.
+ *
+ * Honest limitation: this does **not** isolate true per-account entitlements.
+ * Detect still probes ambient/home credentials once; each managed account gets
+ * the same provider list until a future per-account CLI probe (accountEnv /
+ * isolated homeDir) lands. Empty/missing provider lists skip that account.
+ *
+ * Pure. Returns `undefined` when there are no account rows to emit (no accounts,
+ * or no non-empty provider model lists matching any account).
+ */
+export function provisionalAvailableModelsByAccount(
+  availableModels: Partial<Record<ProviderId, readonly string[]>> | undefined,
+  accounts: readonly {
+    readonly provider: ProviderId;
+    readonly id: string;
+  }[],
+): Partial<Record<ProviderId, Readonly<Record<string, readonly string[]>>>> | undefined {
+  if (availableModels === undefined || accounts.length === 0) {
+    return undefined;
+  }
+  const entries: {
+    readonly provider: ProviderId;
+    readonly accountId: string;
+    readonly models: readonly string[];
+  }[] = [];
+  for (const account of accounts) {
+    const models = availableModels[account.provider];
+    if (models === undefined || models.length === 0) continue;
+    const accountId = account.id.trim();
+    if (accountId.length === 0) continue;
+    entries.push({
+      provider: account.provider,
+      accountId,
+      models,
+    });
+  }
+  if (entries.length === 0) return undefined;
+  return buildAvailableModelsByAccount(entries);
+}
