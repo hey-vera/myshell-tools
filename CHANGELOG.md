@@ -4,6 +4,54 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.171.0] - 2026-07-15 - actualization wave R0–R9.1
+
+Ships the **actualization wave** production slices on main after **3.170.x**:
+deterministic quality gate + fake-provider harness (R0), atomic execution lanes
+and inventory foundation (R1), same-chat turn freeze + native session lineage
+(R2), cooldown-safe account pick (R3), provider-owned auth + child env + Grok
+auth signature (R4), live TurnCallBudget enforcement (R5), progress-invariant
+manager auto-continue stop (R7), honest Mode + Intensity dial claims (R8), and
+real packed-tarball install smoke (R9.1). Acceptances remain human-smoke
+pending; **`npm publish` is owner-only** (agents do not publish).
+
+### Added
+- **R0 quality baseline** — deterministic quality release gate, Node 20 matrix
+  alignment, UI tests in required CI, fake Claude/Codex/OpenCode/Grok adapter
+  harness (`#178`–`#189`).
+- **R1 atomic execution lanes** — work-call / strong-meta / hedge lanes, inventory
+  generation, progressive model admission, per-account model inventory API
+  (`#191`–`#197`).
+- **R2 same-chat coherence** — freeze one turn-lane inventory snapshot at
+  dispatch; native session lineage gate for A→B→A continuity (`#198`–`#199`).
+- **R3 cooldown honesty** — never silently pick cooling subscription accounts
+  (`#200`).
+- **R4 auth + process security** — default official Claude CLI auth with legacy
+  token opt-in only; minimal child env allowlist; positive Grok auth signature
+  + secure prompt files (`#201`–`#203`).
+- **R5 turn budget** — enforce `TurnCallBudget` on the live chat path (`#204`).
+- **R7 progress invariant** — manager auto-continue stops after bounded
+  no-meaningful-progress cycles (no fake green) (`#205`).
+- **R8 dial honesty** — product copy and proofs for shipped Mode + Intensity
+  only; no Effort/Speed two-dial fantasy on main (`#206`).
+- **R9.1 packed install smoke** — real `npm pack` → empty-project install;
+  both bins answer `--help`/`--version`; actionable no-provider guidance;
+  `smoke:packed` + package-check CI (`#207`).
+
+### Changed
+- **Docs board tip** — package **3.171.0** after actualization wave R0–R9.1.
+- Package version **3.170.1 → 3.171.0**.
+
+### Honest residuals (not claimed done)
+- **R6** — detached / shared executor skeleton not fully actualized as a
+  production-complete lifecycle.
+- **R1 follow-ons** — live per-account CLI model probe E2E; multi-account OS
+  isolation proofs.
+- **R9 follow-ons** — multi-OS full golden journey beyond ubuntu package-check.
+- **Two-dial orchestration-profile** branch not merged wholesale.
+- Status docs PR (`docs: actualization wave status`) may land separately on
+  main before or after this release metadata.
+
 ## [3.170.0] - 2026-07-10 - multi-chat orchestration + daemon-lite workers
 
 Ships the multi-chat orchestration foundation (#170-#174) on main after
