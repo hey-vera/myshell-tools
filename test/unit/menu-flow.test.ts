@@ -36,6 +36,8 @@ import { readSingleKey, createLineReader, normalizeMenuKey, resolveRawKeyInput, 
 import {
   NAV_ESC,
   NAV_LEFT,
+  NAV_UP,
+  NAV_DOWN,
   attachChatTurnKeyListener,
   confirmViaKey,
   getMenuStack,
@@ -5049,8 +5051,9 @@ describe('readMenuKey — single-key main-menu choice', () => {
     assert.equal(await readMenuKey(ttySink(), neverLine, ttyStream(['\x04'])), null);
   });
 
-  it('ignores escape sequences (arrow keys) as no-ops', async () => {
-    assert.equal(await readMenuKey(ttySink(), neverLine, ttyStream(['\x1b[A'])), '');
+  it('classifies up/down arrows as NAV_UP / NAV_DOWN (list highlight; non-list menus no-op them)', async () => {
+    assert.equal(await readMenuKey(ttySink(), neverLine, ttyStream(['\x1b[A'])), NAV_UP);
+    assert.equal(await readMenuKey(ttySink(), neverLine, ttyStream(['\x1b[B'])), NAV_DOWN);
   });
 
   it('falls back to a line read when stdin is not a raw TTY', async () => {
