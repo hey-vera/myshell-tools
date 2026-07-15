@@ -406,7 +406,7 @@ describe('parseGrokAuth — unauthenticated output', () => {
   });
 });
 
-describe('parseGrokAuth — authenticated output', () => {
+describe('parseGrokAuth — authenticated output (positive signature)', () => {
   // Real `grok models` output when signed in (verified G2).
   const stdout =
     'You are logged in with grok.com.\n\nDefault model: grok-composer-2.5-fast\n\nAvailable models:\n  - grok-build\n  * grok-composer-2.5-fast (default)\n';
@@ -421,8 +421,54 @@ describe('parseGrokAuth — authenticated output', () => {
   });
 });
 
+describe('parseGrokAuth — R4.3 positive signature required', () => {
+  it('exit 0 with empty stdout is NOT authenticated (no positive marker)', () => {
+    const result = parseGrokAuth('', '', 0);
+    assert.equal(result.authenticated, false);
+    assert.equal(result.plan, null);
+  });
+
+  it('exit 0 with unrelated text is NOT authenticated', () => {
+    // Pre-R4.3: mere absence of "not authenticated" would have been true.
+    const result = parseGrokAuth('ok\nready\n', '', 0);
+    assert.equal(result.authenticated, false);
+  });
+
+  it('exit 0 with only Default model banner (no list / login) is NOT authenticated', () => {
+    const result = parseGrokAuth('Default model: grok-build\n', '', 0);
+    assert.equal(result.authenticated, false);
+  });
+
+  it('logged-in banner alone is a positive signature', () => {
+    const result = parseGrokAuth('You are logged in with grok.com.\n', '', 0);
+    assert.equal(result.authenticated, true);
+  });
+
+  it('Available models list alone (no banner) is a positive signature', () => {
+    const result = parseGrokAuth(
+      'Available models:\n  - grok-build\n  - grok-composer-2.5-fast\n',
+      '',
+      0,
+    );
+    assert.equal(result.authenticated, true);
+  });
+
+  it('not-authenticated banner wins even if a models-looking fragment appears', () => {
+    const result = parseGrokAuth(
+      'You are not authenticated.\nAvailable models:\n  - grok-build\n',
+      '',
+      0,
+    );
+    assert.equal(result.authenticated, false);
+  });
+});
+
 describe('parseGrokAuth — non-zero exit code', () => {
-  const result = parseGrokAuth('Default model: grok-build', '', 1);
+  const result = parseGrokAuth(
+    'You are logged in with grok.com.\nAvailable models:\n  - grok-build\n',
+    '',
+    1,
+  );
 
   it('authenticated is false', () => {
     assert.equal(result.authenticated, false);
