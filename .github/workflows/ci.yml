@@ -147,4 +147,8 @@ jobs:
         # Real `npm pack` tarball → install into empty temp project → both bins
         # --help/--version → actionable no-provider refusal → project integrity.
         # See scripts/packed-install-smoke.mjs and test/fixtures/support-matrix.json.
+        # Primary CI proof lives here only — not in the multi-OS×Node test matrix.
+        # MYSHELL_PACKED_SMOKE=1 documents opt-in for the vitest wrapper if used.
+        env:
+          MYSHELL_PACKED_SMOKE: '1'
         run: npm run smoke:packed

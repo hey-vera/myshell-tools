@@ -1,9 +1,10 @@
 /**
  * Integration: real packed-artifact install smoke (R9.1).
  *
- * Delegates to scripts/packed-install-smoke.mjs so CI package-check and the
- * vitest integration lane share one implementation. Slow (pack + install);
- * timeout is generous. Skips only if explicitly disabled via env.
+ * Delegates to scripts/packed-install-smoke.mjs so CI package-check and local
+ * opt-in runs share one implementation. Slow (pack + install); too heavy for
+ * the multi-OS×Node unit/integration matrix — opt-in only via
+ * MYSHELL_PACKED_SMOKE=1. Default CI proof is package-check's `npm run smoke:packed`.
  */
 
 import { describe, it } from 'vitest';
@@ -16,10 +17,11 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const script = join(root, 'scripts', 'packed-install-smoke.mjs');
 
-const SKIP = process.env['MYSHELL_SKIP_PACKED_SMOKE'] === '1';
+// Opt-in only. Default test:integration must not run pack+install on every matrix cell.
+const RUN = process.env['MYSHELL_PACKED_SMOKE'] === '1';
 
 describe('packed-install-smoke (R9.1 real tarball)', () => {
-  it.skipIf(SKIP)(
+  it.skipIf(!RUN)(
     'npm pack → install empty project → both bins help/version → actionable no-provider',
     () => {
       assert.ok(existsSync(script), `missing ${script}`);

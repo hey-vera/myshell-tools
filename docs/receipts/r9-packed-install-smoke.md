@@ -18,15 +18,21 @@ A new (or CI) runner can prove the **published-shaped** artifact works:
 
 | Path | Role |
 |------|------|
-| `scripts/packed-install-smoke.mjs` | Shared smoke implementation (CI + local + integration) |
+| `scripts/packed-install-smoke.mjs` | Shared smoke implementation (CI package-check + local) |
 | `package.json` | `smoke:packed` script |
-| `test/integration/packed-install-smoke.test.ts` | Vitest wrapper (same script; skip with `MYSHELL_SKIP_PACKED_SMOKE=1`) |
+| `test/integration/packed-install-smoke.test.ts` | Vitest wrapper; **opt-in only** via `MYSHELL_PACKED_SMOKE=1` (skipped in default `test:integration` / multi-OS matrix) |
 | `test/fixtures/support-matrix.json` | Minimal machine-readable OS/node/provider matrix |
-| `test/unit/support-matrix-fixture.test.ts` | Loads + validates matrix; aligns engines/bins with package.json |
-| `.github/workflows/ci.yml` | `package-check` gains expandable matrix + real pack smoke step |
+| `test/unit/support-matrix-fixture.test.ts` | Loads + validates matrix; aligns engines/bins with package.json (stays in cheap unit suite) |
+| `.github/workflows/ci.yml` | `package-check` gains expandable matrix + real pack smoke step (`MYSHELL_PACKED_SMOKE=1`) |
 | `README.md` | One-line link to the support-matrix fixture |
 
 No product `src/` behavior change in this slice.
+
+## CI placement (important)
+
+- **Default multi-OS×Node `test` job** runs `npm run test:integration` — packed smoke is **skipped** unless `MYSHELL_PACKED_SMOKE=1` (avoids Windows Node 20 vitest worker OOM/exit after ~55s pack+install).
+- **`package-check` job** (ubuntu-latest / node 22 first; matrix keys ready to expand) is the **only** CI lane that runs the real smoke by default: dry-run forbidden-path check **plus** `npm run smoke:packed` with `MYSHELL_PACKED_SMOKE=1`.
+- Support matrix documents the smoke path under `packed_artifact`.
 
 ## Intentional non-claims (later R9)
 
@@ -36,12 +42,6 @@ No product `src/` behavior change in this slice.
 
 This slice establishes the **install substrate** and a checked-in expandable matrix fixture.
 
-## CI
-
-- Job: `package-check` (ubuntu-latest / node 22 first; matrix keys ready to expand).
-- Steps: dry-run forbidden-path check **plus** `npm run smoke:packed`.
-- Support matrix documents the smoke path under `packed_artifact`.
-
 ## Verification commands
 
 From repo root:
@@ -50,12 +50,13 @@ From repo root:
 npm run build
 npm run smoke:packed
 npx vitest run test/unit/support-matrix-fixture.test.ts
-npx vitest run test/integration/packed-install-smoke.test.ts
+# opt-in vitest wrapper (same script as smoke:packed):
+MYSHELL_PACKED_SMOKE=1 npx vitest run test/integration/packed-install-smoke.test.ts
+# default integration suite must skip packed smoke:
+npm run test:integration
 npm run typecheck
 npm run knip
 ```
-
-Optional skip for local integration suite: `MYSHELL_SKIP_PACKED_SMOKE=1 npm run test:integration`.
 
 ## Rollback
 
