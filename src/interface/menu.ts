@@ -163,7 +163,14 @@ import type { Mode } from '../core/policy.js';
 import { planNativeSession } from '../core/native-session.js';
 import { decideHistoryPolicy } from '../core/turn-directive.js';
 import { availableAfterCooldown, cooldownExpiry } from '../core/cooldown.js';
-import { autoIntensityForTurn, concurrencyCeilingForRegime, deriveBaselineOrder, deriveLiveProviderOrder, regimeForIntensity } from '../core/capacity-allocator.js';
+import {
+  autoIntensityForTurn,
+  concurrencyCeilingForRegime,
+  deriveBaselineOrder,
+  deriveLiveProviderOrder,
+  regimeForIntensity,
+  type Intensity,
+} from '../core/capacity-allocator.js';
 // routing-memory retained for diagnostics/reporting only (cost/insights), not routing input
 import type { OutputSink, Verbosity } from './render.js';
 import {
@@ -228,7 +235,16 @@ import {
   planBudgetCeiling,
   accountPlanStrings,
 } from './menu-auto-mode.js';
-import { levelToMode, migrateMode, levelLabel, nextLevel, isLevel } from '../core/mode-levels.js';
+import {
+  levelToMode,
+  migrateMode,
+  levelLabel,
+  nextLevel,
+  isLevel,
+  speedLabel,
+  ALL_SPEEDS,
+  type SpeedLevel,
+} from '../core/mode-levels.js';
 import type { Level } from '../core/mode-levels.js';
 import {
   decidePostTurn,
@@ -797,7 +813,7 @@ export async function runChatLoop(
   // App/global operations (menu nav, account menus, capability refresh) stay on
   // `ctx.cwd`; only `ctx.cwd` references *inside* runChatLoop are converted below.
   const activeCwd = convMeta?.workspaceRoot ?? ctx.cwd;
-  const CHAT_HINTS = ['/help', 'Shift+Tab mode'] as const;
+  const CHAT_HINTS = ['/help', 'Shift+Tab Effort', '/speed'] as const;
   let convLevel: Level =
     convMeta?.mode !== undefined && isLevel(convMeta.mode) ? convMeta.mode : 'auto';
   // Accounts inventory for Auto posture (loaded lazily; empty until first read).
@@ -1462,12 +1478,12 @@ export async function runChatLoop(
     if (inkSetInputInfo === undefined) {
       out.write(
         dim(
-          `Type a message and press Enter.  Mode: ${entryMode} (Shift+Tab)  ·  b back  ·  c panel  ·  Esc exit\n`,
+          `Type a message and press Enter.  Effort: ${entryMode} (Shift+Tab)  ·  Speed: /speed  ·  b back  ·  c panel  ·  Esc exit\n`,
           out.color,
         ),
       );
     }
-    // Shift+Tab → cycle THIS conversation's Effort Mode (Budget…Auto). Persists
+    // Shift+Tab → cycle THIS conversation's Effort dial (Budget…Auto). Persists
     // via setMode; never mutates global config.mode (home default). Fire-and-
     // forget: the key handler is sync; store I/O is best-effort fail-soft.
     inkSetCycleMode?.(() => {
@@ -2231,7 +2247,8 @@ export async function runChatLoop(
         '  /goals        — list goals by state; show/go/drop/cancel a parked one\n' +
         '  /goals cancel <n> — cancel goal #n + its live work (done/verified work preserved; not a filesystem undo)\n' +
         '  /rule <text>  — set a standing rule I remember + enforce (/rule list, /rule rm <n>)\n' +
-        '  /mode         — Mode dial (Budget / Balanced / High / Max / Auto): model lane + verification\n' +
+        '  /mode         — Effort dial (Budget / Balanced / High / Max / Auto): model lane + verification\n' +
+        '  /speed        — Speed dial (Auto / 1–5): multi-goal concurrency (crossGoalCap); NOT topology\n' +
         '  /memory       — see, edit, export, or delete what I remember (/forget to remove)\n' +
         '  /recap        — short recap of where this conversation left off\n' +
         '  /taste, /prefs — view what the system has learned about *your* style (free observed prefs for plans/asks/etc.)\n' +
@@ -2242,10 +2259,10 @@ export async function runChatLoop(
         '  /back, /exit  — return to the main menu\n' +
         '  /help         — show this help\n' +
         '\n' +
-        dim('  Dials (honest product truth — Mode + Intensity, not Effort/Speed):\n', out.color) +
-        dim('    Mode       — Budget…Auto (m / Shift+Tab / /mode): model lane + verification\n', out.color) +
-        dim('    Intensity  — 1–5 multi-goal concurrency ceiling (crossGoalCap via capacity-allocator);\n', out.color) +
-        dim('                 config/conversation intensity, or derived from Mode when unset\n', out.color) +
+        dim('  Dials (honest product truth — Effort + Speed; storage keys mode + intensity):\n', out.color) +
+        dim('    Effort     — Budget…Auto (m / Shift+Tab / /mode): model lane + verification\n', out.color) +
+        dim('    Speed      — Auto / 1–5 multi-goal concurrency ceiling (crossGoalCap via capacity-allocator);\n', out.color) +
+        dim('                 Settings [2] / /speed; derives from Effort when unset — not topology/fan-out\n', out.color) +
         dim('    Claude/Grok provider-native --effort is EXPERIMENTAL and OFF by default\n', out.color) +
         dim('                 (MYSHELL_PROVIDER_EFFORT=1 or experimentalProviderEffort in config)\n', out.color) +
         '\n' +
@@ -2366,12 +2383,70 @@ export async function runChatLoop(
       return 'continue';
     }
 
-    // Change the (single, global) mode from inside the chat — same knob as the
-    // home [m], so there is one source of truth and never a global/per-chat drift.
+    // Change the (single, global) Effort default from inside the chat — same
+    // knob as home [m] / Settings [1]. Storage key remains `mode`.
     if (line === '/mode') {
       await refreshChatAccounts();
       const autoMode = resolveAutoMode(mutableCtx.env, chatAccounts);
       mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode, mutableCtx.env, inkReadKey);
+      return 'continue';
+    }
+
+    // Conversation-scoped Speed dial (storage key `intensity`). Honest: multi-goal
+    // concurrency / crossGoalCap only — not topology. Global default is Settings [2].
+    if (line === '/speed') {
+      const metas = await ctx.store.list().catch(() => [] as Awaited<ReturnType<typeof ctx.store.list>>);
+      const meta = metas.find((m) => m.id === convId);
+      const current: SpeedLevel =
+        meta?.intensity === 1 ||
+        meta?.intensity === 2 ||
+        meta?.intensity === 3 ||
+        meta?.intensity === 4 ||
+        meta?.intensity === 5
+          ? meta.intensity
+          : meta?.intensity === 'auto'
+            ? 'auto'
+            : mutableCtx.config.intensity === 1 ||
+                mutableCtx.config.intensity === 2 ||
+                mutableCtx.config.intensity === 3 ||
+                mutableCtx.config.intensity === 4 ||
+                mutableCtx.config.intensity === 5
+              ? mutableCtx.config.intensity
+              : 'auto';
+      const speedLines = [
+        '',
+        bold('Conversation Speed — multi-goal concurrency', out.color),
+        dim('Speed sets the multi-goal concurrency ceiling (crossGoalCap). Not topology or worker fan-out. Storage: intensity.', out.color),
+        '',
+      ];
+      for (const speed of ALL_SPEEDS) {
+        const label = speedLabel(speed);
+        const idx = ALL_SPEEDS.indexOf(speed) + 1;
+        const active = speed === current ? '  ‹active›' : '';
+        speedLines.push(
+          speed === current
+            ? `  [${idx}] ${bold(label, out.color)}${speed === 'auto' ? ' (smart)' : ''}${active}`
+            : dim(`  [${idx}] ${label}${speed === 'auto' ? ' (smart)' : ''}`, out.color),
+        );
+      }
+      out.write(speedLines.join('\n') + '\n\n');
+      out.write('[1-6 to change, Enter to keep] ');
+      const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+      if (key === NAV_ESC) {
+        getMenuStack().requestExit();
+        return 'continue';
+      }
+      const keyIdx = key !== null && key.length === 1 ? key.charCodeAt(0) - '1'.charCodeAt(0) : -1;
+      if (keyIdx >= 0 && keyIdx < ALL_SPEEDS.length) {
+        const picked = ALL_SPEEDS[keyIdx] as SpeedLevel;
+        const toPersist: Intensity | undefined = picked === 'auto' ? undefined : picked;
+        try {
+          await ctx.store.setIntensity(convId, toPersist);
+          out.write(dim(`  Speed: ${speedLabel(picked)} (this conversation)\n`, out.color));
+        } catch {
+          out.write(dim("  Couldn't save Speed for this conversation — try Settings.\n", out.color));
+        }
+      }
       return 'continue';
     }
 
@@ -7697,6 +7772,14 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       const cfg = mutableCtx.config;
       const settings: UiSettingsSnapshot = {
         mode: cfg.mode === undefined ? 'auto' : levelLabel(migrateMode(cfg.mode)).toLowerCase(),
+        intensity:
+          cfg.intensity === 1 ||
+          cfg.intensity === 2 ||
+          cfg.intensity === 3 ||
+          cfg.intensity === 4 ||
+          cfg.intensity === 5
+            ? String(cfg.intensity)
+            : 'auto',
         oversight: resolveOversight(cfg),
         verbosity: cfg.verbosity ?? 'normal',
         colorTheme: cfg.colorTheme ?? 'dark',

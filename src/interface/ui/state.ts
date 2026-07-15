@@ -342,8 +342,16 @@ export interface UiCapacityState {
  * src/interface/menu-settings.ts.
  */
 export interface UiSettingsSnapshot {
-  /** Mode label for display ('auto' | 'budget' | 'balanced' | 'high' | 'max'). */
+  /**
+   * Effort dial label for display ('auto' | 'budget' | 'balanced' | 'high' | 'max').
+   * Storage key remains config.mode.
+   */
   readonly mode: string;
+  /**
+   * Speed dial label for display ('auto' | '1'…'5' or full labels).
+   * Storage key remains config.intensity. Speed = multi-goal concurrency only.
+   */
+  readonly intensity: string;
   /** Oversight level ('review-all' | 'checkpoint' | 'autonomous'). */
   readonly oversight: string;
   /** Output detail / verbosity ('quiet' | 'normal' | 'verbose'). */

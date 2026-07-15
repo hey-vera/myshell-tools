@@ -37,6 +37,7 @@ export const CHAT_SLASH_COMMANDS: readonly string[] = [
   '/style',
   '/oversight',
   '/mode',
+  '/speed',
   '/goal',
   '/goals',
   '/todo',
@@ -84,7 +85,8 @@ export function completeSlash(
  * subcommands).
  */
 export const CHAT_SLASH_ARG_MAP: Readonly<Record<string, readonly string[]>> = {
-  '/mode': ['Efficient', 'Balanced', 'Max'],
+  '/mode': ['Budget', 'Balanced', 'High', 'Max', 'Auto'],
+  '/speed': ['Auto', '1', '2', '3', '4', '5'],
   '/style': ['Direct', 'Balanced', 'Collaborative'],
   '/memory': ['list', 'all', 'loaded', 'export', 'edit'],
   '/goals': ['list', 'show', 'go', 'drop', 'cancel'],

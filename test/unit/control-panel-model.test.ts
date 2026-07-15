@@ -608,6 +608,7 @@ describe('buildControlPanelModel settings', () => {
   it('interactive rows built from settings snapshot', () => {
     const snapshot = {
       mode: 'auto',
+      intensity: 'auto',
       oversight: 'checkpoint',
       verbosity: 'normal',
       colorTheme: 'dark' as const,
@@ -618,23 +619,29 @@ describe('buildControlPanelModel settings', () => {
       modelGhost: false,
     };
     const m = buildControlPanelModel(baseState({ settings: snapshot }));
-    // 9 interactive rows + 1 board read-only = 10
-    assert.strictEqual(m.settings.length, 10);
+    // 10 interactive rows + 1 board read-only = 11 (D1 added Speed/intensity)
+    assert.strictEqual(m.settings.length, 11);
     const modelGhost = m.settings.find((r) => r.id === 'model-ghost');
     assert.ok(modelGhost);
     assert.strictEqual(modelGhost.kind, 'toggle');
     assert.strictEqual(modelGhost.value, false);
-    // First row: mode (segmented)
+    // First row: Effort (segmented, storage key mode)
     const mode = m.settings[0];
     assert.strictEqual(mode.id, 'mode');
     assert.strictEqual(mode.kind, 'segmented');
     assert.strictEqual(mode.value, 'auto');
-    // Second row: oversight
-    const oversight = m.settings[1];
+    assert.strictEqual(mode.label, 'New conversation Effort');
+    // Second row: Speed (storage key intensity)
+    const speed = m.settings[1];
+    assert.strictEqual(speed.id, 'intensity');
+    assert.strictEqual(speed.kind, 'segmented');
+    assert.strictEqual(speed.label, 'New conversation Speed');
+    // Third row: oversight
+    const oversight = m.settings[2];
     assert.strictEqual(oversight.id, 'oversight');
     assert.strictEqual(oversight.kind, 'segmented');
-    // Fourth row: color-theme (toggle) with note
-    const theme = m.settings[3];
+    // Fifth row: color-theme (toggle) with note
+    const theme = m.settings[4];
     assert.strictEqual(theme.id, 'color-theme');
     assert.strictEqual(theme.kind, 'toggle');
     assert.strictEqual(theme.note, 'takes effect next launch');

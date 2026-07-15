@@ -86,7 +86,9 @@ export async function runNewConversationScreen(
 
       const color = out.color;
       out.write('\n');
-      out.write(renderEffortModeBox(mutableCtx.config.mode, color) + '\n\n');
+      out.write(
+        renderEffortModeBox(mutableCtx.config.mode, color, mutableCtx.config.intensity) + '\n\n',
+      );
       out.write(titleBox('New Conversation', { padding: 6, color }) + '\n\n');
       // S.1: bold key tokens + dim path secondary (identity when color off).
       out.write('         ' + formatControlLine('[1] Current', color) + '\n');
