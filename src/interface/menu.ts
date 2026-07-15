@@ -34,6 +34,13 @@ import {
   fixItTodo,
   CLARIFY_PREFIX,
 } from '../core/goal-manager.js';
+import {
+  createProgressInvariantState,
+  observeProgressCycle,
+  classifyManagerCycleProgress,
+  fingerprintRoadmap,
+  DEFAULT_NO_PROGRESS_LIMIT,
+} from '../core/progress-invariant.js';
 import { deriveWorkStateFromHistory, renderWorkStateBlock } from '../core/work-state.js';
 import { isKeepGoingOffer } from '../core/questions.js';
 import { assessGoalConfidence, decideGoalActivation, detectActivationOverride } from '../core/autonomy.js';
@@ -5280,6 +5287,10 @@ Output ONLY valid JSON (no prose, no markdown).`;
             let roadmap: readonly RoadmapItem[] = stored.roadmap;
             let usedTurns = 0;
             let stoppedEarly = false;
+            // R7.1 progress invariant: stop auto-continue after N no-progress cycles
+            // (verdict/evidence/blocker/diff only — reworded status is never progress).
+            let progressInv = createProgressInvariantState();
+            let stoppedForNoProgress = false;
 
             // ---- AUTOMATIC LIVING-PLAN MAINTENANCE (re-plan) ------------------
             // The partner maintains its OWN to-do list: before working a step, a
@@ -5351,6 +5362,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
               );
 
               // ONE worker turn on this to-do.
+              const fpBefore = fingerprintRoadmap(roadmap);
               const turn = await runOneWorkerTurn(buildTodoTask(stored, next));
               usedTurns += 1;
               if (control.exit) { control.result = 'exit'; return true; }
@@ -5403,6 +5415,30 @@ Output ONLY valid JSON (no prose, no markdown).`;
                   const refreshed = await goalStore.get(cycleGoalId).catch(() => null);
                   if (refreshed !== null && refreshed !== undefined) roadmap = refreshed.roadmap;
                   await syncBoard();
+                  // Parking is a durable blocker_code_change (status → blocked).
+                  {
+                    const obs = classifyManagerCycleProgress({
+                      blockedItemId: next.id,
+                      roadmapFingerprintBefore: fpBefore,
+                      roadmapFingerprintAfter: fingerprintRoadmap(roadmap),
+                    });
+                    const stepped = observeProgressCycle(progressInv, obs, {
+                      nowTick: usedTurns,
+                      noProgressLimit: DEFAULT_NO_PROGRESS_LIMIT,
+                    });
+                    progressInv = stepped.state;
+                    if (stepped.decision.shouldStopAutoContinue) {
+                      stoppedForNoProgress = true;
+                      stoppedEarly = true;
+                      goalOut.write(
+                        dim(
+                          `\n  ■ ${stepped.decision.reason}\n`,
+                          goalOut.color,
+                        ),
+                      );
+                      break;
+                    }
+                  }
                   continue;
                 }
                 goalOut.write(
@@ -5430,6 +5466,8 @@ Output ONLY valid JSON (no prose, no markdown).`;
                 .catch(() => null);
 
               const itemDone = verdict.state === 'passing' || verdict.state === 'reviewed';
+              let fixSpawnedThisCycle = false;
+              let blockedItemThisCycle: string | undefined;
               if (itemDone) {
                 // OVERSIGHT 'review-all' (Phase 2b): before this verified to-do is marked
                 // done, PAUSE and show the changed files + the item's approach, then a
@@ -5504,6 +5542,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
                 const fix = fixItTodo(next, verdict.receipt);
                 if (fix !== null) {
                   await goalStore.addRoadmapItem(cycleGoalId, fix).catch(() => null);
+                  fixSpawnedThisCycle = true;
                   goalOut.write(
                     dim(
                       `    ⚠ not verified — ${verdict.receipt}. Spawned a fix-it to-do.\n`,
@@ -5520,6 +5559,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
                       .setRoadmapItemStatus(cycleGoalId, idx, 'blocked')
                       .catch(() => null);
                   }
+                  blockedItemThisCycle = next.id;
                   goalOut.write(
                     dim(
                       `    ⚠ "${next.text}" still isn't verifying after my fix-it attempts — ${verdict.receipt}. I've hit my retry cap; this one needs your call before I push further.\n`,
@@ -5535,6 +5575,41 @@ Output ONLY valid JSON (no prose, no markdown).`;
               const refreshed = await goalStore.get(cycleGoalId).catch(() => null);
               if (refreshed !== null && refreshed !== undefined) roadmap = refreshed.roadmap;
               await syncBoard();
+
+              // R7.1: observe durable progress for this cycle; stop auto-continue
+              // when N consecutive cycles produce only status theater / identical
+              // fingerprints (never chat-spam heartbeats as progress).
+              {
+                const obs = classifyManagerCycleProgress({
+                  verdictState: verdict.state,
+                  verdictReceipt: verdict.receipt,
+                  ...(verdict.changedPaths !== undefined
+                    ? { changedPaths: verdict.changedPaths }
+                    : {}),
+                  ...(blockedItemThisCycle !== undefined
+                    ? { blockedItemId: blockedItemThisCycle }
+                    : {}),
+                  fixItSpawned: fixSpawnedThisCycle,
+                  roadmapFingerprintBefore: fpBefore,
+                  roadmapFingerprintAfter: fingerprintRoadmap(roadmap),
+                });
+                const stepped = observeProgressCycle(progressInv, obs, {
+                  nowTick: usedTurns,
+                  noProgressLimit: DEFAULT_NO_PROGRESS_LIMIT,
+                });
+                progressInv = stepped.state;
+                if (stepped.decision.shouldStopAutoContinue) {
+                  stoppedForNoProgress = true;
+                  stoppedEarly = true;
+                  goalOut.write(
+                    dim(
+                      `\n  ■ ${stepped.decision.reason}\n`,
+                      goalOut.color,
+                    ),
+                  );
+                }
+              }
+              if (stoppedForNoProgress) break;
 
               // A FAILURE is the strongest signal the plan needs maintenance — the
               // assumption a step encoded was wrong. Re-plan now (bounded + fail-
@@ -5559,13 +5634,15 @@ Output ONLY valid JSON (no prose, no markdown).`;
               // so the stop reason is sharp ("blocked on <to-do>"), not a vague "needs
               // input". Falls back to a plain count when nothing is specifically blocked.
               const firstBlocked = finalGoal.roadmap.find((i) => i.status === 'blocked');
-              const why = stoppedEarly
-                ? 'stopped'
-                : usedTurns >= DEFAULT_MAX_GOAL_ITERATIONS
-                  ? 'reached the work budget'
-                  : firstBlocked !== undefined
-                    ? `blocked on "${firstBlocked.text}" — your call needed`
-                    : 'a to-do needs your call';
+              const why = stoppedForNoProgress
+                ? 'stopped — no meaningful progress (auto-continue halted)'
+                : stoppedEarly
+                  ? 'stopped'
+                  : usedTurns >= DEFAULT_MAX_GOAL_ITERATIONS
+                    ? 'reached the work budget'
+                    : firstBlocked !== undefined
+                      ? `blocked on "${firstBlocked.text}" — your call needed`
+                      : 'a to-do needs your call';
               goalOut.write(
                 dim(
                   `\n  ${why} — ${String(finalProg.done)}/${String(finalProg.total)} to-dos verified. Keeping the goal open.\n`,
