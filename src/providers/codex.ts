@@ -36,6 +36,7 @@ import { createCodexParser } from './codex-parse.js';
 import { replitPersistentEnv } from '../infra/credentials.js';
 import { DECLARATIVE_MODEL_CAPABILITIES, findCapability } from '../core/model-capabilities.js';
 import { spawnGuarded, withHangCap, providerHangCapMs } from './hang-cap.js';
+import { resolveProviderParentEnv } from './child-env.js';
 
 // ---------------------------------------------------------------------------
 // Sandbox argument mapping
@@ -175,6 +176,23 @@ export function createCodexProvider(opts?: { bin?: string; binArgs?: readonly st
 }
 
 /**
+ * Build the child env for a codex spawn (R4.2 allowlist + replit + accountEnv last).
+ * Exported for unit tests.
+ */
+export function buildCodexEnv(
+  req: ProviderRequest,
+  parentEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  // Allowlist (or FULL_ENV escape), then replit additions, accountEnv LAST.
+  const base = resolveProviderParentEnv(parentEnv, 'codex');
+  return {
+    ...base,
+    ...replitPersistentEnv(base, req.cwd),
+    ...(req.accountEnv ?? {}),
+  };
+}
+
+/**
  * The raw Codex spawn + stdout drain — factored out so the public `run` can wrap it
  * with `withHangCap` while the happy path stays byte-identical.
  */
@@ -188,15 +206,8 @@ async function* runCodexRaw(args0: {
   const { req, signal, bin, binArgs, register } = args0;
   const args = buildCodexArgs(req);
 
-  // Point codex at the Replit-persistent CODEX_HOME when present so a plainly-
-  // launched run finds the durable one-time sign-in (matches replit-tools).
-  // Account-scoped env (CODEX_HOME from subscription account) is merged LAST
-  // so it overrides any default — absent → byte-identical to today.
-  const childEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    ...replitPersistentEnv(process.env, req.cwd),
-    ...(req.accountEnv ?? {}),
-  };
+  // R4.2: allowlisted parent + Replit CODEX_HOME + accountEnv LAST.
+  const childEnv = buildCodexEnv(req);
 
   // Spawn with reject:false so we always get the result object (never throws).
   // cancelSignal wires our AbortSignal directly to execa's termination path.
