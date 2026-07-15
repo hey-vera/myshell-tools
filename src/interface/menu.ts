@@ -145,6 +145,7 @@ import { detectEnvironment, refreshProviderModels } from '../providers/detect.js
 import { installProvider } from '../providers/install.js';
 import type { Provider, ProviderId, ProviderRequest, SandboxLevel } from '../providers/port.js';
 import { route } from '../core/route.js';
+import { selectStrongMetaLane } from '../core/strong-meta-lane.js';
 import {
   POLICY_PRESETS,
   classifyPlan,
@@ -287,7 +288,13 @@ import { tribunalEnabled } from './ui/tribunal-flag.js';
 import { experimentalEnabledByDefault } from './ui/experimental-default.js';
 
 import { accountParallelismEnabled } from './ui/account-parallelism-flag.js';
-import { readSubscriptions, type SubscriptionAccount, type SubscriptionProvider, type SubscriptionsFileV1 } from '../infra/subscriptions.js';
+import {
+  accountEnvFor,
+  readSubscriptions,
+  type SubscriptionAccount,
+  type SubscriptionProvider,
+  type SubscriptionsFileV1,
+} from '../infra/subscriptions.js';
 
 
 
@@ -3660,22 +3667,62 @@ export async function runChatLoop(
           },
         ],
       });
-      // ---- Strong meta model helper for conscious orchestration (provider-agnostic, high effort via real CLIs)
-      // Picks the best *available signed-in* provider for high-intel meta (intent parse, critique, refine, decisions).
-      // Supports any user combo: only-claude, only-codex, only-opencode, mixes, etc.
-      // Always routes through the CLI adapter (spawns claude/codex/opencode binary) with proper effort flag.
-      // No API world drift. Prefers claude (deep reasoning for orchestration) then codex high then opencode kimi-max.
-      // The model still gets full picture + is trusted for the thinking (no dumb wiring).
+      // ---- Strong meta model helper for conscious orchestration (provider-agnostic)
+      // Live inventory + atomic lane selection (R1.2): manager-tier model from
+      // availableModels / route(), paired with an eligible managed account when
+      // subscription inventory exists — never a dated hard-coded model table.
       const pickStrongMeta = () => {
-        const ps = ctx.providers || {};
-        if (ps['claude']) return { id: 'claude' as const, model: 'claude-opus-4-8', effort: 'high' as const };
-        if (ps['codex']) return { id: 'codex' as const, model: 'gpt-5.5', effort: 'high' as const };
-        if (ps['opencode']) return { id: 'opencode' as const, model: 'opencode-go/kimi-k2.7-code', effort: 'max' as const };
-        if (ps['grok']) return { id: 'grok' as const, model: 'grok', effort: 'high' as const };
-        return null;
+        const available = (Object.keys(ctx.providers) as ProviderId[]).filter(
+          (id) => ctx.providers[id] !== undefined,
+        );
+        if (available.length === 0) return null;
+
+        const availableModels: Partial<Record<ProviderId, readonly string[]>> = {};
+        if (mutableCtx.env.claude.installed && mutableCtx.env.claude.availableModels.length > 0) {
+          availableModels['claude'] = mutableCtx.env.claude.availableModels;
+        }
+        if (mutableCtx.env.codex.installed && mutableCtx.env.codex.availableModels.length > 0) {
+          availableModels['codex'] = mutableCtx.env.codex.availableModels;
+        }
+        if (mutableCtx.env.opencode.installed && mutableCtx.env.opencode.availableModels.length > 0) {
+          availableModels['opencode'] = mutableCtx.env.opencode.availableModels;
+        }
+        if (mutableCtx.env.grok.installed && mutableCtx.env.grok.availableModels.length > 0) {
+          availableModels['grok'] = mutableCtx.env.grok.availableModels;
+        }
+        const authenticatedProviders: ProviderId[] = [];
+        if (mutableCtx.env.claude.authenticated) authenticatedProviders.push('claude');
+        if (mutableCtx.env.codex.authenticated) authenticatedProviders.push('codex');
+        if (mutableCtx.env.opencode.authenticated) authenticatedProviders.push('opencode');
+        if (mutableCtx.env.grok.authenticated) authenticatedProviders.push('grok');
+
+        const accountStrategy: 'sticky' | 'spread' =
+          effectiveMode === 'quality-first' ? 'spread' : 'sticky';
+        const result = selectStrongMetaLane({
+          available,
+          policy: POLICY_PRESETS[effectiveMode],
+          nowMs: ctx.clock.now(),
+          strategy: accountStrategy,
+          accounts: chatAccounts,
+          cooldownUntil: accountCooldownUntil,
+          sessionTokensByAccount,
+          ...(Object.keys(availableModels).length > 0 ? { availableModels } : {}),
+          ...(authenticatedProviders.length > 0 ? { authenticatedProviders } : {}),
+          ...(caps.registry !== undefined ? { capabilityRegistry: caps.registry } : {}),
+        });
+        if (!result.ok) return null;
+        return {
+          id: result.lane.provider,
+          model: result.lane.model,
+          effort: result.lane.effort,
+          account: result.lane.account,
+        };
       };
 
       const callStrongMeta = async (prompt: string, signal: AbortSignal, extraContext?: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
+        // Ensure managed-account inventory is loaded before lane select so we
+        // never ambient-fallthrough when subscriptions exist but are unread.
+        await refreshChatAccounts();
         const pick = pickStrongMeta();
         if (!pick) return null;
         const prov = ctx.providers[pick.id];
@@ -3700,7 +3747,16 @@ Output ONLY valid JSON (no prose, no markdown).`;
           cwd: activeCwd,
           sandbox: 'workspace-write',
           timeoutMs: 45000,
-          reasoningEffort: pick.effort,  // Proper high effort launch via the chosen CLI (claude --effort, codex model_reasoning_effort, opencode --variant)
+          // High effort when the selected model's capability record supports it
+          // (selectStrongMetaLane / effortForDecision); omitted otherwise.
+          ...(pick.effort !== undefined ? { reasoningEffort: pick.effort } : {}),
+          // Atomic lane account env (R1.1/R1.2) — never ambient when managed.
+          ...(pick.account !== null
+            ? {
+                accountId: pick.account.id,
+                accountEnv: accountEnvFor(pick.account),
+              }
+            : {}),
         };
         let text = '';
         try {
