@@ -4,6 +4,25 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.173.0] - 2026-07-15 - residual completion (mouse, probe, freeloop, leases)
+
+Residual completion wave on main after **3.172.0**: accounts list mouse click-to-open, live per-account model probe (accountEnv isolation), detached free-loop multi-turn (up to 8), and fenced goal-job leases (3m TTL + generation). Earlier product wave (multi-chat workers, accounts UX, Effort/Speed dials, multi-OS packed smoke) remains in **3.172.0**. Acceptances remain human-smoke pending; **`npm publish` is owner-only** (agents do not publish).
+
+### Added
+- **Accounts list mouse click-to-open** — optional mouse open on list rows (`#219`).
+- **Live per-account model probe** — true per-account model probe via env-scoped detect / `accountEnv` isolation (`#220`).
+- **Detached free-loop multi-turn** — free-loop multi-turn up to 8 with continue checkpoints; complete / ask_user / abort park honestly (`#221`).
+- **Fenced goal-job leases** — renewable fenced leases (3m TTL + generation) for reclaim without trusting PID alone (`#222`).
+
+### Changed
+- **Docs board tip** — package **3.173.0** after residual completion wave.
+- Package version **3.172.0 → 3.173.0**.
+
+### Honest residuals (not claimed done)
+- Full FG menu-parity free-loop chrome (scheduler/manager UI) still menu-owned; detached free multi-turn control plane landed.
+- Full multi-OS packed golden journey beyond current smoke.
+- **`npm publish` is owner-only.**
+
 ## [3.172.0] - 2026-07-15 - multi-chat workers, accounts UX, Effort/Speed dials
 
 Product wave on main after **3.171.0**: home multi-chat live work status, exit handoff honesty, shared detached goal executor, accounts list navigation + rename, Effort/Speed dials (mode + intensity storage with user-facing Effort/Speed), and multi-OS packed smoke (win/mac) without renaming the required ubuntu package-check. Acceptances remain human-smoke pending; **`npm publish` is owner-only** (agents do not publish).
@@ -21,15 +40,8 @@ Product wave on main after **3.171.0**: home multi-chat live work status, exit h
 - **Docs board tip** — package **3.172.0** after product wave M/A/D/OS.
 - Package version **3.171.0 → 3.172.0**.
 
-### Added (post-release main)
-- **Residual detached free-loop multi-turn** — `runDetachedFreeGoal` multi-turn free path (DEFAULT_MAX_GOAL_ITERATIONS=8) with GOAL_CONTINUE checkpoints; GOAL_COMPLETE / ask_user / abort park (no silent verified-done); fail → failed.
-
-### Honest residuals (not claimed done)
-- Full FG menu-parity free loop chrome (scheduler/manager UI) still menu-owned; detached free multi-turn control plane landed.
-- Mouse on accounts.
-- Live per-account model probe.
-- Fenced leases.
-- **`npm publish` is owner-only.**
+### Note
+Residual completion items (mouse, probe, freeloop multi-turn, fenced leases) shipped in **3.173.0** (`#219`–`#222`), not in this tag’s residual claims.
 
 ## [3.171.0] - 2026-07-15 - actualization wave R0–R9.1
 

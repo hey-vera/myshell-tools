@@ -2,10 +2,10 @@
 
 Compact current-state record. The user-designated implementation authority is `CLAUDEPLAN.md`.
 
-_Updated 2026-07-15. Baseline: package **3.172.0** + residual detached free-loop multi-turn on mainline product branch. Active next: fenced leases / live model probe / accounts mouse **or** owner **npm publish**._
+_Updated 2026-07-15. Baseline: `main@9ec7c40` / package **3.173.0** (residual completion: accounts mouse `#219`, live per-account probe `#220`, detached free-loop multi-turn `#221`, fenced goal-job leases `#222`; product wave M/A/D/OS remains in **3.172.0**). Active next: FG free-loop chrome parity / full multi-OS golden journey **or** owner **npm publish**._
 
 Wave summary receipt: `docs/receipts/actualization-wave-complete.md`.  
-Release receipt: `docs/receipts/release-3.172.0.md`.
+Release receipt: `docs/receipts/release-3.173.0.md` (prior: `docs/receipts/release-3.172.0.md`).
 
 ## Product truth
 
@@ -13,8 +13,8 @@ myshell-tools is a local, subscription-aware terminal partner that delegates thr
 
 ## Current evidence (main tip)
 
-- GitHub `main@9c02738` tip: OS1 multi-OS packed install smoke win/mac (`#216`); package **3.172.0** release metadata on `release/3.172.0`.
-- Actualization wave R-1 through R9.1 **and** product wave **M1–M3 / A1–A2 / D1 / OS1** are **landed** on `main` (see tables below).
+- GitHub `main@9ec7c40` tip: fenced goal-job leases (`#222`); residual completion `#219`–`#222` on main; package **3.173.0** release metadata on `release/3.173.0`.
+- Actualization wave R-1 through R9.1, product wave **M1–M3 / A1–A2 / D1 / OS1**, and residual completion **mouse / probe / freeloop / leases** are **landed** on `main` (see tables below).
 
 ### Slice map — actualization (DONE with PR numbers)
 
@@ -52,27 +52,34 @@ myshell-tools is a local, subscription-aware terminal partner that delegates thr
 | **D1** | Effort + Speed dials (mode + intensity storage; user-facing Effort/Speed) | `#215` |
 | **OS1** | Multi-OS packed smoke (win/mac) without renaming required ubuntu package-check | `#216` |
 
+### Slice map — residual completion (DONE; in 3.173.0)
+
+| Slice | What landed | PRs |
+| --- | --- | --- |
+| **Accounts mouse** | Optional mouse click-to-open on accounts list rows | `#219` |
+| **Live per-account model probe** | Env-scoped detect / `accountEnv` isolation | `#220` |
+| **Detached free-loop multi-turn** | Up to 8 turns with continue checkpoints; honest park/fail | `#221` |
+| **Fenced goal-job leases** | Renewable leases (3m TTL + generation); reclaim without PID-alone trust | `#222` |
+
 Notes:
 
 - R0 docs advance to R1: `#190` (between harness and R1).
 - R1 progress docs: `#194` (partial lanes) before `#195`–`#197`.
-- **M3** advances the former R6 shared-executor residual: real detached work after shell exit, not park-only. Free-loop multi-turn residual landed (`product/residual-detached-freeloop`); fenced leases remain open (see residuals).
+- **M3** advances the former R6 shared-executor residual: real detached work after shell exit, not park-only. Free-loop multi-turn + fenced leases landed in residual completion (`#221`, `#222`).
 - **D1** ships user-facing Effort/Speed on top of mode + intensity storage (supersedes the pre-wave “no Effort/Speed on main” claim from R8.1 docs era).
+- Provisional `availableModelsByAccount` wiring (`#218`) precedes the live probe (`#220`).
 
 ## Honest residuals (not product-complete)
 
 These are **known gaps**. Green CI + landed slices do **not** mean every headline is fully actualized end-to-end.
 
-1. ~~**Free-loop detached multi-turn**~~ **Done** (`product/residual-detached-freeloop`): `runDetachedFreeGoal` multi-turn with pure goal helpers; GOAL_COMPLETE parks without roadmap/acceptance; ask_user/abort park; fail failed; CONTINUE checkpoints. Residual: full FG menu chrome parity (scheduler/manager UI) remains menu-owned.
+1. ~~**Free-loop detached multi-turn**~~ **Done** (`#221`): multi-turn free path up to 8 with checkpoints; honest park/fail. Residual: full FG menu chrome parity (scheduler/manager UI) remains menu-owned.
 
-2. **Fenced leases**  
-   Shared FG/detached leasing fences are **not** fully productized.
+2. ~~**Fenced leases**~~ **Done** (`#222`): fenced renewable goal-job leases (3m TTL + generation).
 
-3. **Accounts mouse**  
-   Mouse interaction on accounts list is **not** claimed.
+3. ~~**Accounts mouse**~~ **Done** (`#219`): optional mouse click-to-open on accounts list rows.
 
-4. **R1 — live per-account CLI model probe**  
-   Structural inventory is on main. A live per-account **CLI model probe** wired end-to-end is **not**.
+4. ~~**R1 — live per-account CLI model probe**~~ **Done** (`#220`): true per-account model probe via env-scoped detect.
 
 5. **R9 — full multi-OS packed golden journey**  
    OS1 adds win/mac packed smoke alongside required ubuntu package-check. Full multi-OS packed golden journey (auth handoff, interactive chat, resume, cancel, expanded pack matrix) remains beyond current smoke.
@@ -86,23 +93,24 @@ These are **known gaps**. Green CI + landed slices do **not** mean every headlin
 - **Suite duration segmentation / hang accounting:** quality is still a full sequential gate.
 - **R3.2+** subscriptions schema lock/CAS (if still planned): not claimed by R3.1.
 - **R2 mid-chat refresh redesign** beyond freeze + lineage gate: not claimed complete as a UX redesign wave.
-- **Multi-account OS isolation proofs:** compatibility matrix territory, not R1 foundation.
+- **Multi-account OS isolation proofs:** compatibility matrix territory; probe uses accountEnv isolation but full OS matrix proofs remain broader than `#220`.
+- **FG free-loop chrome parity:** scheduler/manager UI for free-loop remains menu-owned.
 
 ## Active sequence
 
 1. ~~R-1: reconcile documentation authority and freeze truth.~~ **Done** (`#177`).
 2. ~~R0: green baseline and deterministic provider harness.~~ **Done** (`#178`–`#189`).
-3. ~~R1: atomic execution-lane inventory foundation.~~ **Done** (`#191`–`#197`). Residual: live per-account probe; OS isolation proofs.
+3. ~~R1: atomic execution-lane inventory foundation.~~ **Done** (`#191`–`#197`). ~~Live per-account probe.~~ **Done** (`#220`). Residual: broader OS isolation proofs.
 4. ~~R2: turn-lane freeze + native lineage gate.~~ **Done** (`#198`–`#199`). Residual: fuller mid-chat refresh redesign if still desired.
 5. ~~R3.1: safe cooling-account selection.~~ **Done** (`#200`).
 6. ~~R4.1–R4.3: provider-owned credentials / child env / Grok auth.~~ **Done** (`#201`–`#203`).
 7. ~~R5.1: turn budget on live chat path.~~ **Done** (`#204`).
-8. ~~M3 / R6-class shared detached executor (real work after exit).~~ **Done** (`#213`). ~~Residual free-loop multi-turn.~~ **Done** (`product/residual-detached-freeloop`). Residual: fenced leases.
+8. ~~M3 / R6-class shared detached executor (real work after exit).~~ **Done** (`#213`). ~~Free-loop multi-turn.~~ **Done** (`#221`). ~~Fenced leases.~~ **Done** (`#222`).
 9. ~~R7.1: progress invariant / stall honesty.~~ **Done** (`#205`).
 10. ~~R8.1: dial honesty (Mode + Intensity era).~~ **Done** (`#206`); **D1** Effort/Speed user-facing dials **Done** (`#215`).
 11. ~~R9.1: packed-artifact install smoke.~~ **Done** (`#207`). ~~OS1 multi-OS win/mac smoke.~~ **Done** (`#216`). Residual: full multi-OS golden journey.
-12. ~~Product wave M1/M2/A1/A2.~~ **Done** (`#210`–`#212`, `#211`, `#214`).
-13. **Active next:** fenced leases / live model probe / accounts mouse **or** owner **npm publish** of **3.172.0** (version bump is this release PR; publication remains manual).
+12. ~~Product wave M1/M2/A1/A2.~~ **Done** (`#210`–`#212`, `#211`, `#214`). ~~Accounts mouse.~~ **Done** (`#219`).
+13. **Active next:** FG free-loop chrome parity / full multi-OS golden journey **or** owner **npm publish** of **3.173.0** (version bump is this release PR; publication remains manual).
 
 ## Non-negotiable gate
 
