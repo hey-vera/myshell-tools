@@ -2,7 +2,7 @@
 
 Compact current-state record. The user-designated implementation authority is `CLAUDEPLAN.md`.
 
-_Updated 2026-07-14. Baseline: `main@3af24a3`; active next: R1 remaining (per-account inventory / progressive admission), then R2._
+_Updated 2026-07-14. Baseline: `main@5a178ef` (R1.5); active next: R2.1 turn-lane freeze then R2 remainder._
 
 ## Product truth
 
@@ -10,21 +10,16 @@ myshell-tools is a local, subscription-aware terminal partner that delegates thr
 
 ## Current evidence
 
-- GitHub `main@3af24a3` tip includes R1 partial lane progress: work-call atomic lanes (`#191`), strong-meta live lane (`#192`), hedge atomic lanes (`#193`); prior tip UI ghost flake harden (`#189`) with `test:ui` in required CI and `node: [20, 22, 24]`.
-- R-1 authority reconciliation merged: `#177` (receipt: `docs/receipts/r-minus-1-authority-reconciliation.md`).
-- R0 quality gate: `#178` — `npm run quality` / `prepublishOnly` sequential release path (receipt: `docs/receipts/r0-quality-command.md`).
-- R0 fake adapters (Codex/OpenCode and related fixture/timeout slices): `#179`–`#184` (receipts under `docs/receipts/r0-fake-*`, `r0-provider-fixture-matrix.md`).
-- R0 Claude fake harness: `#186` (receipt: `docs/receipts/r0-fake-claude-adapter.md`).
-- R0 Node 20 CI matrix: `#185` — engines alignment with Node 20/22/24 (receipt: `docs/receipts/r0-node20-ci.md`).
-- R0 Grok fake harness: `#187` (receipt: `docs/receipts/r0-fake-grok-adapter.md`).
-- R0 UI tests in required CI: `#188` (receipt: `docs/receipts/r0-ci-ui-tests.md`); ghost flake harden: `#189`.
-- Four-provider deterministic fake harness on main: Codex, OpenCode, Claude, Grok — built-adapter paths without live quota.
-- Completion writeup: `docs/receipts/r0-complete.md`.
-- **R1 partial (lanes on primary call sites):**
-  - R1.1 atomic work-call execution lane: `#191` (receipt: `docs/receipts/r1-execution-lane-select.md`).
-  - R1.2 strong-meta live lane (no dated model bypass): `#192` (receipt: `docs/receipts/r1-pick-strong-meta-lane.md`).
-  - R1.3a hedge primary/speculative atomic lanes: `#193` (receipt: `docs/receipts/r1-hedge-execution-lane.md`).
-  - Progress summary: `docs/receipts/r1-progress.md`.
+- GitHub `main@5a178ef` tip: R1.5 per-account model inventory on execution lanes (`#197`).
+- R-1 authority reconciliation: `#177` (receipt: `docs/receipts/r-minus-1-authority-reconciliation.md`).
+- R0 quality gate + four-provider fake harness + UI in CI: `#178`–`#189` (receipt: `docs/receipts/r0-complete.md`).
+- **R1 core complete** (`#191`–`#197`; receipt: `docs/receipts/r1-complete.md`):
+  - R1.1 atomic work-call lane: `#191`
+  - R1.2 strong-meta live lane: `#192`
+  - R1.3a hedge atomic lanes: `#193`
+  - R1.3b inventory generation: `#195`
+  - R1.4 progressive admission: `#196`
+  - R1.5 per-account model inventory foundation: `#197`
 - The previous `feature/two-dial-orchestration-profile` branch remains preserved at `97ade64` with 13 unmerged commits (not release-ready; later slices absorb proven pieces).
 - `CLAUDEPLAN.md` remains the sole active implementation authority.
 
@@ -34,29 +29,26 @@ myshell-tools is a local, subscription-aware terminal partner that delegates thr
 - **Suite duration segmentation:** quality remains a full sequential gate; long-suite segmentation and hang/handle accounting are not fully closed as a separate product claim.
 - **Packed-tarball journey:** R9 territory, not R0.
 
-### R1 still open (honest partial)
+### R1 residuals (honest — not claimed product-complete)
 
-R1 is **not complete**. Merged so far is structural atomic selection on work-call, strong-meta, and hedge arms. Still open for R1:
+R1 **core** (structural lanes + generation + admission + per-account inventory API) is done. Still open as follow-ons:
 
-- **Per-account model inventory** — true entitlement isolation (not provider-global inventory paired after the fact).
-- **Progressive admission** — capability/auth/health as supported / unsupported / unknown / temporarily_unavailable with source, freshness, and inventory generation.
-- **Inventory generation freeze** for all call sites that still route or attach outside the atomic lane path.
-- **Remaining ambient / dated bypass audit** — any leftover call sites that still hard-code models or fall through to ambient credentials when managed accounts exist.
+- **Live per-account CLI model probe** — structural-ready (`availableModelsByAccount`); probe not yet.
+- **Multi-account OS isolation proofs** — deferred (compatibility matrix, not R1 foundation).
 
 ## Active sequence
 
 1. ~~R-1: reconcile documentation authority and freeze truth.~~ **Done** (`#177`).
 2. ~~R0: green baseline and deterministic provider harness.~~ **Done** (`#178`–`#189`; see `docs/receipts/r0-complete.md`).
-3. **R1–R2 (active next: finish R1 remaining, then R2):** atomic execution-lane inventory and safe same-chat adaptation.
-   - ~~R1.1 work-call atomic lane~~ **Done** (`#191`).
-   - ~~R1.2 strong-meta live lane~~ **Done** (`#192`).
-   - ~~R1.3a hedge atomic lanes~~ **Done** (`#193`).
-   - **R1 remaining:** per-account inventory, progressive admission, inventory-generation freeze, ambient/dated bypass audit.
-4. R3–R4: safe account selection, provider-owned credentials, and state security.
-5. R5–R7: context/quota/acceptance contract, unified lifecycle, durable truth, and stall recovery.
-6. R8: prove or narrow the two-dial product claims.
-7. R9: generated support matrix and real packed-artifact golden journeys.
-8. Merge clean/green slices, verify `main`, make a separate bump PR, and stop for the user's manual npm publication.
+3. ~~R1: atomic execution-lane inventory foundation.~~ **Done** (`#191`–`#197`; see `docs/receipts/r1-complete.md`). Residuals: live per-account probe, OS isolation proofs.
+4. **R2 (active next): same-chat hot adaptation and coherence**
+   - **R2.1:** freeze one lane snapshot (inventory + generation) per dispatched turn; mid-turn mutation does not change in-flight lane; next turn may adopt new inventory at a safe boundary.
+   - R2.2+: A→B→A continuity bridge, mid-chat refresh redesign, native session resume lineage (non-goals of R2.1).
+5. R3–R4: safe account selection, provider-owned credentials, and state security.
+6. R5–R7: context/quota/acceptance contract, unified lifecycle, durable truth, and stall recovery.
+7. R8: prove or narrow the two-dial product claims.
+8. R9: generated support matrix and real packed-artifact golden journeys.
+9. Merge clean/green slices, verify `main`, make a separate bump PR, and stop for the user's manual npm publication.
 
 ## Non-negotiable gate
 
