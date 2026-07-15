@@ -227,6 +227,13 @@ export interface LedgerEntry {
    * Type-only import to keep types.ts a leaf module.
    */
   readonly accountId?: string;
+  /**
+   * Inventory generation frozen for the turn that produced this ledger row
+   * (R2.1 / R1.3b). When present, identifies the catalog snapshot used for
+   * lane selection so mid-chat inventory refresh can be attributed per call.
+   * Absent on older entries and on paths that never froze a turn inventory.
+   */
+  readonly inventoryGeneration?: string | number;
 }
 
 export interface LedgerWriter {
