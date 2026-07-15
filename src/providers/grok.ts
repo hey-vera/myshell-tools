@@ -55,6 +55,7 @@ import { classifyError } from './errors.js';
 import { createGrokParser } from './grok-parse.js';
 import { replitPersistentEnv } from '../infra/credentials.js';
 import { spawnGuarded, withHangCap, providerHangCapMs } from './hang-cap.js';
+import { resolveProviderParentEnv } from './child-env.js';
 
 /** Prefix for temp dirs that hold Grok prompt files (scavenger key). */
 export const GROK_PROMPT_DIR_PREFIX = 'grok-prompt-';
@@ -313,6 +314,24 @@ export function createGrokProvider(opts?: {
 }
 
 /**
+ * Build the child env for a grok spawn (R4.2 allowlist + replit + accountEnv last).
+ * Exported for unit tests. Never injects XAI_API_KEY.
+ */
+export function buildGrokEnv(
+  req: ProviderRequest,
+  parentEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  // Allowlist (or FULL_ENV escape), then replit additions, accountEnv LAST.
+  // Never injects XAI_API_KEY — subscription OAuth only.
+  const base = resolveProviderParentEnv(parentEnv, 'grok');
+  return {
+    ...base,
+    ...replitPersistentEnv(base, req.cwd),
+    ...(req.accountEnv ?? {}),
+  };
+}
+
+/**
  * The raw grok spawn + stdout drain — factored out so the public `run` can wrap
  * it with `withHangCap` while the happy path stays byte-identical.
  */
@@ -333,14 +352,9 @@ async function* runGrokRaw(args0: {
   args.push('--prompt-file', promptFile);
 
   try {
-    // Account-scoped env (GROK_HOME from subscription account) + Replit-persistent
-    // env (matches codex.ts pattern). Account env is merged LAST so it overrides
-    // any default — absent → byte-identical to today.
-    const childEnv: NodeJS.ProcessEnv = {
-      ...process.env,
-      ...replitPersistentEnv(process.env, req.cwd),
-      ...(req.accountEnv ?? {}),
-    };
+    // R4.2: allowlisted parent + Replit GROK_HOME + accountEnv LAST.
+    // Never spreads full process.env; never injects XAI_API_KEY.
+    const childEnv = buildGrokEnv(req);
 
     const { subprocess, killTree } = spawnGuarded(bin, [...binArgs, ...args], {
       cwd: req.cwd,
