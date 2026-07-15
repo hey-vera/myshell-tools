@@ -220,6 +220,34 @@ describe('Claude account record management', () => {
     assert.equal(result.accounts[0]!.priorityWeight, 200);
   });
 
+  it('renames Claude account label (A2 [l] label)', async () => {
+    const account: ClaudeSubscriptionAccount = {
+      id: 'acct_lbl',
+      provider: 'claude',
+      kind: 'oauth-sub',
+      label: 'Old Label',
+      homeDir: join(stateHome, '.myshell-tools', 'provider-homes', 'claude', 'acct_lbl'),
+      priority: 'medium',
+      priorityWeight: 100,
+      enabled: true,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+
+    await writeSubscriptions({ version: 1, accounts: [account] }, stateHome);
+
+    const { updateSubscriptions } = await import('../../src/infra/subscriptions.js');
+    await updateSubscriptions((file) => ({
+      ...file,
+      accounts: file.accounts.map((a) =>
+        a.id === 'acct_lbl' ? { ...a, label: 'Claude Max personal' } : a,
+      ),
+    }), stateHome);
+
+    const result = await readSubscriptions(stateHome);
+    assert.equal(result.accounts[0]!.label, 'Claude Max personal');
+    assert.equal(result.accounts[0]!.id, 'acct_lbl'); // id stable across rename
+  });
+
   it('toggles Claude account enabled state', async () => {
     const account: ClaudeSubscriptionAccount = {
       id: 'acct_tog',

@@ -224,6 +224,7 @@ async function editAccountScreen(
     out.write(`  ${dim(PRIORITY_WEIGHT_DETAIL_NOTE, out.color)}\n`);
     out.write(`  expiry: ${expiryDisplay}\n`);
     out.write(`  enabled: ${account.enabled ? 'yes' : 'no'}\n\n`);
+    out.write('  [l] label\n');
     out.write('  [p] priority\n');
     out.write('  [x] set/clear expiry\n');
     out.write('  [t] toggle enabled\n');
@@ -237,7 +238,14 @@ async function editAccountScreen(
     if (key === NAV_ESC) { getMenuStack().requestExit(); return; }
     if (key === NAV_LEFT) { getMenuStack().pop(); return; }
 
-    if (key === 'p') {
+    if (key === 'l') {
+      const newLabel = await labelPrompt(out, readLine, account.label);
+      if (newLabel !== null) {
+        await applyAccountUpdate(account.id, { label: newLabel });
+        const updated = await findAccount(account.id);
+        if (updated) account = updated;
+      }
+    } else if (key === 'p') {
       const sel = await prioritySelectScreen(out, readLine, inkReadKey);
       if (sel !== null) {
         if (sel === 'custom') {
@@ -363,6 +371,24 @@ async function customWeightPrompt(
     return null;
   }
   return num;
+}
+
+/** Prompt for a new account label. Empty/cancel keeps current (returns null). */
+async function labelPrompt(
+  out: OutputSink,
+  readLine: () => Promise<string | null>,
+  currentLabel: string,
+): Promise<string | null> {
+  out.beginFrame?.();
+  out.write(`\nLabel (Enter keep "${currentLabel}"): `);
+  out.endFrame?.();
+  out.flush?.();
+  const raw = await readLine();
+  if (raw === null) return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  // Cap length so list columns stay scannable.
+  return trimmed.length > 64 ? trimmed.slice(0, 64) : trimmed;
 }
 
 async function expirySelectScreen(
