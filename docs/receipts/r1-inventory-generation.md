@@ -22,6 +22,7 @@ Plumbed without user-facing text changes:
 ## Scope
 
 - Branch: `actualize/r1-inventory-generation`
+- SHA: `169df5d5b2f3f5f31d5199f523121a955bc0ea56`
 - Core: `src/core/execution-lane.ts` (`deriveInventoryGeneration`,
   `resolveInventoryGeneration`, field on `ExecutionLane`)
 - Plumb: `src/core/work-call.ts`, `src/core/hedge.ts`,
