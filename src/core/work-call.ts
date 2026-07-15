@@ -116,6 +116,12 @@ import {
 import { vendorNeutralRoute } from './vendor-neutral-route.js';
 import { selectExecutionLane } from './execution-lane.js';
 import {
+  freezeTurnInventoryFromDeps,
+  turnLaneSnapshotFromLane,
+  type TurnInventoryFreeze,
+  type TurnLaneSnapshot,
+} from './turn-lane-snapshot.js';
+import {
   opencodePoolForModel,
   selectSubscriptionAccount,
 } from './opencode-account-routing.js';
@@ -644,18 +650,23 @@ function vendorNeutralDecision(
   sessionId: string,
   wantsWebSearch: boolean,
   hasImageAttachment: boolean,
+  /** R2.1: use turn-frozen inventory when present (not live deps mutation). */
+  inventoryFreeze?: TurnInventoryFreeze,
 ): ReturnType<typeof route> | null {
   const registry = deps.capabilityRegistry;
   if (!registry) return null;
+  const frozenModels = inventoryFreeze?.availableModels ?? deps.availableModels;
+  const frozenAuth =
+    inventoryFreeze?.authenticatedProviders ?? deps.authenticatedProviders;
   const availableModelsMap = new Map<ProviderId, readonly string[]>();
-  if (deps.availableModels) {
-    for (const [p, models] of Object.entries(deps.availableModels)) {
+  if (frozenModels) {
+    for (const [p, models] of Object.entries(frozenModels)) {
       if (models !== undefined) availableModelsMap.set(p as ProviderId, models);
     }
   }
   const result = vendorNeutralRoute({
     tier,
-    authedProviders: deps.authenticatedProviders ?? pool,
+    authedProviders: frozenAuth ?? pool,
     availableModels: availableModelsMap,
     registry,
     sessionId,
@@ -697,6 +708,19 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     priorCostUsd,
     vendorNeutralEnabled,
   } = input;
+
+  // -------------------------------------------------------------------------
+  // R2.1 — freeze inventory once at work-call dispatch.
+  // Mid-turn mutation of deps.availableModels / accounts / inventoryGeneration
+  // must not change what this turn's selectExecutionLane / VN route sees.
+  // Next turn freezes a fresh bag from updated deps.
+  // -------------------------------------------------------------------------
+  const turnInventory: TurnInventoryFreeze = freezeTurnInventoryFromDeps(
+    deps,
+    'work-call-dispatch',
+  );
+  /** Last successful atomic-lane snapshot for this turn (in-memory; ledger rows also carry generation). */
+  let lastLaneSnapshot: TurnLaneSnapshot | undefined;
 
   // -------------------------------------------------------------------------
   // (e) Loop state — owned by this stage.
@@ -1140,6 +1164,8 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       ...(deps.accountAux === true && deps.intentVersionId !== undefined
         ? { intentVersionId: deps.intentVersionId }
         : {}),
+      // R2.1: same frozen generation as the parent work attempt.
+      inventoryGeneration: turnInventory.inventoryGeneration,
     });
     yield {
       type: 'tier-done',
@@ -1302,32 +1328,34 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     // R1.1: atomic execution-lane selection (provider + model + account together).
     // When managed accounts exist for a provider but none are eligible, that
     // provider is blocked — never ambient fallthrough for it.
+    // R2.1: inventory + generation come from turnInventory (frozen at dispatch),
+    // not live deps — mid-turn catalog/account mutation cannot change this turn.
     const laneResult = selectExecutionLane({
       tier: currentTier,
       available: routePool,
       policy: effPolicy,
-      ...(deps.availableModels !== undefined ? { availableModels: deps.availableModels } : {}),
-      // R1.5: per-account model inventory when callers have entitlement rows.
-      ...(deps.availableModelsByAccount !== undefined
-        ? { availableModelsByAccount: deps.availableModelsByAccount }
+      ...(turnInventory.availableModels !== undefined
+        ? { availableModels: turnInventory.availableModels }
         : {}),
-      ...(deps.authenticatedProviders !== undefined
-        ? { authenticatedProviders: deps.authenticatedProviders }
+      // R1.5: per-account model inventory when callers have entitlement rows.
+      ...(turnInventory.availableModelsByAccount !== undefined
+        ? { availableModelsByAccount: turnInventory.availableModelsByAccount }
+        : {}),
+      ...(turnInventory.authenticatedProviders !== undefined
+        ? { authenticatedProviders: turnInventory.authenticatedProviders }
         : {}),
       ...(deps.learnedProviderOrder?.[currentTier] !== undefined
         ? { preferredOrder: deps.learnedProviderOrder[currentTier] }
         : {}),
       ...(capabilityContext !== undefined ? { capabilityContext } : {}),
-      ...(deps.subscriptionAccounts !== undefined
-        ? { accounts: deps.subscriptionAccounts }
+      ...(turnInventory.accounts !== undefined
+        ? { accounts: turnInventory.accounts }
         : {}),
-      ...(deps.opencodeAccounts !== undefined
-        ? { opencodeAccounts: deps.opencodeAccounts }
+      ...(turnInventory.opencodeAccounts !== undefined
+        ? { opencodeAccounts: turnInventory.opencodeAccounts }
         : {}),
-      // R1.3b: freeze caller inventory generation on the lane when present.
-      ...(deps.inventoryGeneration !== undefined
-        ? { inventoryGeneration: deps.inventoryGeneration }
-        : {}),
+      // R2.1 / R1.3b: generation frozen once at dispatch for every attempt.
+      inventoryGeneration: turnInventory.inventoryGeneration,
       nowMs: deps.clock.now(),
       ...((deps.accountCooldownUntil ?? deps.opencodeAccountCooldownUntil) !== undefined
         ? { cooldownUntil: deps.accountCooldownUntil ?? deps.opencodeAccountCooldownUntil }
@@ -1346,22 +1374,28 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     let vnDecision: ReturnType<typeof route> | null = null;
     if (vendorNeutralEnabled && deps.capabilityRegistry) {
       vnDecision = vendorNeutralDecision(
-        currentTier, routePool, deps, deps.session.id, wantsWebSearch, hasImageAttachment,
+        currentTier,
+        routePool,
+        deps,
+        deps.session.id,
+        wantsWebSearch,
+        hasImageAttachment,
+        turnInventory,
       );
     }
 
     if (vnDecision !== null) {
       const vnProvider = vnDecision.provider;
       const managedForVn: readonly SubscriptionAccount[] = (() => {
-        if (deps.subscriptionAccounts !== undefined && deps.subscriptionAccounts.length > 0) {
-          return deps.subscriptionAccounts.filter((a) => a.provider === vnProvider);
+        if (turnInventory.accounts !== undefined && turnInventory.accounts.length > 0) {
+          return turnInventory.accounts.filter((a) => a.provider === vnProvider);
         }
         if (
           vnProvider === 'opencode' &&
-          deps.opencodeAccounts !== undefined &&
-          deps.opencodeAccounts.length > 0
+          turnInventory.opencodeAccounts !== undefined &&
+          turnInventory.opencodeAccounts.length > 0
         ) {
-          return deps.opencodeAccounts;
+          return turnInventory.opencodeAccounts;
         }
         return [];
       })();
@@ -1434,6 +1468,28 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       };
       break mainLoop;
     }
+
+    // R2.1: snapshot the lane actually used for this attempt (frozen generation).
+    lastLaneSnapshot =
+      laneResult.ok &&
+      laneResult.lane.provider === decision.provider &&
+      laneResult.lane.model === decision.model
+        ? turnLaneSnapshotFromLane(
+            laneResult.lane,
+            attempts === 1 ? 'work-call-dispatch' : 'work-call-attempt',
+          )
+        : {
+            provider: decision.provider,
+            model: decision.model,
+            accountId: laneAccount?.id ?? null,
+            tier: decision.tier,
+            inventoryGeneration: turnInventory.inventoryGeneration,
+            frozenAt: attempts === 1 ? 'work-call-dispatch' : 'work-call-attempt',
+            ...(decision.capabilityReasons !== undefined &&
+            decision.capabilityReasons.length > 0
+              ? { capabilityReasons: [...decision.capabilityReasons] }
+              : {}),
+          };
 
     // Reasoning effort for THIS run, selected against the resolved model's
     // capability facts (capability registry §3/§5). decision.tier is the tier the
@@ -1748,6 +1804,9 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
         ? { intentVersionId: deps.intentVersionId }
         : {}),
       ...(subscriptionAccount !== null ? { accountId: subscriptionAccount.id } : {}),
+      // R2.1: persist the turn-frozen inventory generation on the durable ledger row.
+      inventoryGeneration:
+        lastLaneSnapshot?.inventoryGeneration ?? turnInventory.inventoryGeneration,
     });
 
     // --- Yield tier-done ---
