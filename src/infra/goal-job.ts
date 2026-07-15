@@ -300,6 +300,41 @@ export function applyTerminal(
 }
 
 /**
+ * Release TUI (or dead-owner) claim so a detached worker can claim immediately.
+ * Clears ownership metadata and returns status to `pending` without parking.
+ * Pure — used on Esc/process exit handoff (M2). Does not invent work text.
+ */
+export function applyReleaseForHandoff(
+  job: GoalJob,
+  nowIso: string,
+  note: string = 'tui exit handoff — released for worker claim',
+): GoalJob {
+  return {
+    version: job.version,
+    conversationId: job.conversationId,
+    goalId: job.goalId,
+    work: job.work,
+    title: job.title,
+    cwd: job.cwd,
+    status: 'pending',
+    createdAt: job.createdAt,
+    updatedAt: nowIso,
+    note: note.slice(0, 500),
+  };
+}
+
+/**
+ * Whether this process still owns an active job claim (TUI path).
+ * Used so spawn finally does not stomp a handoff/worker claim.
+ */
+export function isOwnedByPid(job: GoalJob, pid: number, owner: GoalJobOwner = 'tui'): boolean {
+  if (!isActiveGoalJob(job)) return false;
+  if (job.owner !== owner) return false;
+  if (job.claimedBy === undefined) return false;
+  return job.claimedBy === pid;
+}
+
+/**
  * Pure: filter running goal ids that have neither a live in-process controller
  * nor an active detached job. Used by TUI zombie heal so reattach after restart
  * does not park goals the worker still owns.
@@ -312,6 +347,88 @@ export function zombieRunningGoalIdsWithJobs(
   return runningGoalIds.filter(
     (id) => !liveControllerIds.has(id) && !activeDetachedGoalIds.has(id),
   );
+}
+
+/** Reopen-chat honesty categories for active/settled job files (M2). */
+export type GoalJobReopenKind = 'worker-running' | 'pending-handoff' | 'parked-job' | 'other-active';
+
+/**
+ * Pure classifier for one job on chat re-enter messaging.
+ * - worker-running: detached worker owns claimed/running
+ * - pending-handoff: pending (released or never claimed)
+ * - parked-job: terminal parked (worker skeleton or TUI settle)
+ * - other-active: claimed/running under tui or unknown owner
+ */
+export function classifyGoalJobForReopen(job: GoalJob): GoalJobReopenKind {
+  if (job.status === 'parked') return 'parked-job';
+  if (job.status === 'pending') return 'pending-handoff';
+  if (
+    (job.status === 'claimed' || job.status === 'running') &&
+    job.owner === 'worker'
+  ) {
+    return 'worker-running';
+  }
+  if (isActiveGoalJob(job)) return 'other-active';
+  return 'parked-job';
+}
+
+/**
+ * Build dim reopen lines from job classification + zombie heal counts.
+ * Pure; caller writes. Empty array when nothing to say.
+ */
+export function formatExitHandoffReopenMessages(input: {
+  readonly healedOrphans: number;
+  readonly workerRunning: number;
+  readonly pendingHandoff: number;
+  readonly parkedGoals: number;
+  readonly storeRunning: number;
+}): string[] {
+  const lines: string[] = [];
+  if (input.healedOrphans > 0) {
+    lines.push(
+      `(healed ${input.healedOrphans} orphaned running goal(s) → parked — no live worker or job)`,
+    );
+  }
+  if (input.workerRunning > 0) {
+    lines.push(
+      `(detached worker running ${input.workerRunning} goal(s) — work continues outside this chat)`,
+    );
+  }
+  if (input.pendingHandoff > 0) {
+    lines.push(
+      `(${input.pendingHandoff} goal job(s) queued for detached worker — may park until full executor lands)`,
+    );
+  }
+  const parts: string[] = [];
+  if (input.storeRunning > 0) parts.push(`${input.storeRunning} running`);
+  if (input.parkedGoals > 0) parts.push(`${input.parkedGoals} parked`);
+  if (parts.length > 0) {
+    lines.push(
+      `(resuming — ${parts.join(', ')} goal(s) active; chat "status", "accept", "pause", or "adjust" to control)`,
+    );
+  }
+  return lines;
+}
+
+// ---------------------------------------------------------------------------
+// Process-exit handoff latch (in-memory, this TUI process only)
+// ---------------------------------------------------------------------------
+
+let tuiExitHandoffActive = false;
+
+/** Arm when Esc/process exit begins goal handoff (before abort/release). */
+export function beginTuiExitHandoff(): void {
+  tuiExitHandoffActive = true;
+}
+
+/** True while this process is handing jobs to the detached worker. */
+export function isTuiExitHandoffActive(): boolean {
+  return tuiExitHandoffActive;
+}
+
+/** Test-only reset. */
+export function resetTuiExitHandoffForTests(): void {
+  tuiExitHandoffActive = false;
 }
 
 /**

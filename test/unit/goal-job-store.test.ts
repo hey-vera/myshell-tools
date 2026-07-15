@@ -155,6 +155,52 @@ describe('createGoalJobStore', () => {
       undefined,
     );
   });
+
+  it('releaseTuiOwnership returns jobs to pending for worker claim', async () => {
+    await store.enqueue({
+      conversationId: 'conv1',
+      goalId: 'goal_hand',
+      work: 'w',
+      title: 't',
+      cwd: '/c',
+    });
+    alive.add(100);
+    await store.claim('conv1', 'goal_hand', 'tui', 100);
+    await store.markRunning('conv1', 'goal_hand', 'tui in-process');
+    // While TUI pid is still "alive", worker cannot claim.
+    alive.add(200);
+    assert.equal(await store.claim('conv1', 'goal_hand', 'worker', 200), null);
+
+    const released = await store.releaseTuiOwnership({
+      pid: 100,
+      nowIso: '2026-07-10T12:10:00.000Z',
+    });
+    assert.equal(released.length, 1);
+    assert.equal(released[0]?.status, 'pending');
+    assert.equal(released[0]?.owner, undefined);
+    assert.equal(released[0]?.claimedBy, undefined);
+
+    const claimed = await store.claim('conv1', 'goal_hand', 'worker', 200);
+    assert.equal(claimed?.owner, 'worker');
+    assert.equal(claimed?.claimedBy, 200);
+  });
+
+  it('releaseTuiOwnership does not strip worker-owned jobs', async () => {
+    await store.enqueue({
+      conversationId: 'conv1',
+      goalId: 'goal_w',
+      work: 'w',
+      title: 't',
+      cwd: '/c',
+    });
+    alive.add(9);
+    await store.claim('conv1', 'goal_w', 'worker', 9);
+    const released = await store.releaseTuiOwnership({ pid: 9 });
+    assert.equal(released.length, 0);
+    const still = await store.get('conv1', 'goal_w');
+    assert.equal(still?.owner, 'worker');
+    assert.equal(still?.status, 'claimed');
+  });
 });
 
 describe('isProcessAlive', () => {

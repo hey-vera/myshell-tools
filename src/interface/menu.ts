@@ -236,15 +236,24 @@ import {
   mergeLiveNotesIntoEnvironmentContext,
   parsePreemptiveControlCommand,
 } from './menu-post-turn.js';
-import { zombieRunningGoalIdsWithJobs } from '../infra/goal-job.js';
+import {
+  beginTuiExitHandoff,
+  classifyGoalJobForReopen,
+  formatExitHandoffReopenMessages,
+  isOwnedByPid,
+  isTuiExitHandoffActive,
+  zombieRunningGoalIdsWithJobs,
+} from '../infra/goal-job.js';
 import { createGoalJobStore } from '../infra/goal-job-store.js';
 import { ensureWorkerProcess } from '../infra/detached-worker-spawn.js';
 import {
+  abortAllGoalWorkers,
   abortConversationGoalWorkers,
   abortGoalWorker,
   conversationWorkerCount,
   liveGoalIds,
   registerGoalWorker,
+  totalWorkerCount,
   unregisterGoalWorker,
 } from './goal-worker-registry.js';
 import { planRetryTruncation, recentUserMessages } from './menu-message-redo.js';
@@ -2086,13 +2095,51 @@ export async function runChatLoop(
     process.removeListener('SIGINT', sigintHandler);
     loopBreaker = null;
     // Leave chat ≠ kill goals (multi-chat PR-B): do NOT abortConversationGoalWorkers
-    // here — process-scoped registry keeps A’s workers alive while user is in home/B.
-    // Process exit (home Esc) eventually kills in-process workers; PR-D detaches them.
+    // here when returning to menu — process-scoped registry keeps A’s workers alive.
+    // Process exit (Esc / control.exit): M2 handoff — release TUI claims + ensure
+    // detached worker so jobs are not stuck owner:tui with a dead PID forever.
     // Clear the idle Esc exit handler so menu/home Esc owns process exit again.
     if (inkSetInterrupt !== undefined) inkSetInterrupt(null);
     // Mark the conversation no longer live FIRST so a still-pending concurrent recap
     // (fired on resume) sees the gate closed and skips its dock/write into the menu.
     conversationLive = false;
+    // M2: on process exit, hand off durable jobs before the TUI dies.
+    if (control.result === 'exit') {
+      try {
+        beginTuiExitHandoff();
+        // Stop in-process goal loops so they do not race the worker (spawn finally
+        // skips markTerminal when handoff is active / ownership already released).
+        abortAllGoalWorkers();
+        const exitJobStore = createGoalJobStore();
+        await exitJobStore
+          .releaseTuiOwnership({
+            pid: process.pid,
+            note: 'tui exit handoff — released for worker claim',
+          })
+          .catch(() => []);
+        const stillActive = await exitJobStore.listActive().catch(() => []);
+        if (stillActive.length > 0 || totalWorkerCount() > 0) {
+          const ensured = await ensureWorkerProcess({ cwd: process.cwd() });
+          if (ensured.ok) {
+            out.write(
+              dim(
+                `  (exit handoff — detached worker ${ensured.alreadyRunning ? 'already running' : 'spawned'}${ensured.pid !== undefined ? ` pid=${ensured.pid}` : ''}; goals continue or park for resume)\n`,
+                out.color,
+              ),
+            );
+          } else {
+            out.write(
+              dim(
+                `  (exit handoff — worker spawn failed (${ensured.reason ?? 'unknown'}); goals parked on disk for next open)\n`,
+                out.color,
+              ),
+            );
+          }
+        }
+      } catch {
+        /* fail-soft: never block process exit on handoff */
+      }
+    }
     // Durable draft: flush any pending debounce + live buffer before process exit
     // or leave-chat. Never deletes goals; empty buffer clears the draft file.
     try {
@@ -3452,17 +3499,19 @@ export async function runChatLoop(
       await refreshGoalContext();
       await refreshRulesContext();
 
-      // Goal integrity (control-plane PR3 / multi-chat PR-B+D): store `running`
-      // with no live AC for THIS conversation AND no active detached job is a
-      // zombie (process restart / silent death). Other conversations' workers
-      // and active job files (worker may own work after Esc) are untouched.
-      // Park + dim notice for true orphans only — never silent.
+      // Goal integrity (control-plane PR3 / multi-chat PR-B+D / M2): store
+      // `running` with no live AC for THIS conversation AND no active detached
+      // job is a zombie (process restart / silent death). Worker-owned and
+      // pending-handoff jobs are NOT orphans. Park + clear reopen messaging.
       try {
         const allForHeal = await goalStore.listByConversation(convId).catch(() => []);
         const runningIds = allForHeal.filter((g) => g.state === 'running').map((g) => g.id);
         const liveIds = liveGoalIds(convId);
-        // Active detached jobs — worker may own work after Esc/process exit.
-        const activeJobs = await goalJobStore.listActive().catch(() => [] as const);
+        // Jobs for this conversation (active + recently parked) for honesty.
+        const convJobs = await goalJobStore.listByConversation(convId).catch(() => []);
+        const activeJobs = convJobs.filter(
+          (j) => j.status === 'pending' || j.status === 'claimed' || j.status === 'running',
+        );
         const detachedIds = new Set(activeJobs.map((j) => j.goalId));
         const zombies = zombieRunningGoalIdsWithJobs(runningIds, liveIds, detachedIds);
         if (zombies.length > 0) {
@@ -3474,25 +3523,39 @@ export async function runChatLoop(
               .catch(() => null);
           }
           await syncBoard();
+        }
+        let workerRunning = 0;
+        let pendingHandoff = 0;
+        for (const j of convJobs) {
+          const kind = classifyGoalJobForReopen(j);
+          if (kind === 'worker-running') workerRunning += 1;
+          else if (kind === 'pending-handoff') pendingHandoff += 1;
+        }
+        const runningCount = boardSummary.running ?? 0;
+        const reopenLines = formatExitHandoffReopenMessages({
+          healedOrphans: zombies.length,
+          workerRunning,
+          pendingHandoff,
+          parkedGoals: parkedGoals.length,
+          storeRunning: runningCount,
+        });
+        for (const line of reopenLines) {
+          out.write(dim(`  ${line}\n`, out.color));
+        }
+      } catch {
+        /* fail-soft: never block the turn on integrity heal */
+        const runningCount = boardSummary.running ?? 0;
+        if (parkedGoals.length > 0 || runningCount > 0) {
+          const parts: string[] = [];
+          if (runningCount > 0) parts.push(`${runningCount} running`);
+          if (parkedGoals.length > 0) parts.push(`${parkedGoals.length} parked`);
           out.write(
             dim(
-              `  (healed ${zombies.length} orphaned running goal(s) → parked — no live worker)\n`,
+              `  (resuming — ${parts.join(', ')} goal(s) active; chat "status", "accept", "pause", or "adjust" to control)\n`,
               out.color,
             ),
           );
         }
-      } catch {
-        /* fail-soft: never block the turn on integrity heal */
-      }
-
-      // Resume note: if there are active/parked goals from a previous session,
-      // surface them so the user knows the chat context is continuous.
-      const runningCount = boardSummary.running ?? 0;
-      if (parkedGoals.length > 0 || runningCount > 0) {
-        const parts: string[] = [];
-        if (runningCount > 0) parts.push(`${runningCount} running`);
-        if (parkedGoals.length > 0) parts.push(`${parkedGoals.length} parked`);
-        out.write(dim(`  (resuming — ${parts.join(', ')} goal(s) active; chat "status", "accept", "pause", or "adjust" to control)\n`, out.color));
       }
 
       // ---- VERIFIED-DONE goal-completion GATE (Elite-partner Part 3) -----------
@@ -4382,21 +4445,30 @@ Output ONLY valid JSON (no prose, no markdown).`;
           } finally {
             unregisterGoalWorker(convId, goalId, ac);
             // Integrity: never leave store `running` with no live AC (no silent zombie).
+            // M2: on process-exit handoff, do NOT park the durable job — ownership was
+            // released for the detached worker (or will be). Stomping → parked would
+            // block worker claim and lie about handoff.
             try {
+              const handingOff = isTuiExitHandoffActive();
               const goal = await goalStore.get(goalId).catch(() => null);
-              if (goal?.state === 'running' && !verifiedDone) {
+              if (!handingOff && goal?.state === 'running' && !verifiedDone) {
                 await goalStore.setState(goalId, 'parked').catch(() => null);
               }
-              // Settle durable job for board/reattach (PR-D).
-              await goalJobStore
-                .markTerminal(
-                  convId,
-                  goalId,
-                  verifiedDone ? 'done' : 'parked',
-                  verifiedDone ? 'tui completed' : 'tui parked',
-                )
-                .catch(() => null);
-              if (conversationLive) {
+              const job = await goalJobStore.get(convId, goalId).catch(() => null);
+              const stillOurs =
+                job !== null && isOwnedByPid(job, process.pid, 'tui');
+              if (verifiedDone && stillOurs) {
+                await goalJobStore
+                  .markTerminal(convId, goalId, 'done', 'tui completed')
+                  .catch(() => null);
+              } else if (!handingOff && stillOurs) {
+                // Normal settle (pause / natural end) — park durable job.
+                await goalJobStore
+                  .markTerminal(convId, goalId, 'parked', 'tui parked')
+                  .catch(() => null);
+              }
+              // else: released for worker, worker-owned, or already terminal — leave disk alone
+              if (conversationLive && !handingOff) {
                 await syncBoard();
                 out.write(
                   '\n' +
@@ -8516,6 +8588,31 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       }
     }
   } finally {
+    // M2: home Esc / q / EOF also ends the process — hand off any TUI-owned jobs
+    // that survived leave-chat (multi-chat PR-B registry) so they are not stuck
+    // owner:tui with a dead PID after process.exit.
+    try {
+      if (totalWorkerCount() > 0 || !isTuiExitHandoffActive()) {
+        beginTuiExitHandoff();
+        abortAllGoalWorkers();
+        const exitJobStore = createGoalJobStore();
+        await exitJobStore
+          .releaseTuiOwnership({
+            pid: process.pid,
+            note: 'tui exit handoff — released for worker claim',
+          })
+          .catch(() => []);
+        const stillActive = await exitJobStore.listActive().catch(() => []);
+        if (stillActive.length > 0) {
+          await ensureWorkerProcess({ cwd: ctx.cwd }).catch(() => ({
+            ok: false as const,
+            alreadyRunning: false,
+          }));
+        }
+      }
+    } catch {
+      /* fail-soft */
+    }
     await clearActiveConversation();
     if (inkHandle !== null) {
       inkHandle.unmount();

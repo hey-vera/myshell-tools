@@ -118,6 +118,23 @@ export function totalWorkerCount(): number {
 }
 
 /**
+ * Abort every live in-process goal worker (all conversations).
+ * Used on Esc/process exit handoff so TUI stops racing the detached worker.
+ * Does not clear map entries — each spawn's finally unregisters.
+ * Returns how many controllers were aborted.
+ */
+export function abortAllGoalWorkers(): number {
+  let n = 0;
+  for (const inner of registry.values()) {
+    for (const ac of inner.values()) {
+      ac.abort();
+      n += 1;
+    }
+  }
+  return n;
+}
+
+/**
  * Test-only: clear the process registry so unit tests do not leak across cases.
  * Not for production leave-chat / pause paths.
  */

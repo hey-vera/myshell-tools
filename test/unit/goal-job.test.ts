@@ -8,18 +8,25 @@ import { join } from 'node:path';
 import {
   ACTIVE_GOAL_JOB_STATUSES,
   applyClaim,
+  applyReleaseForHandoff,
   applyRunning,
   applyTerminal,
+  beginTuiExitHandoff,
   canClaimGoalJob,
+  classifyGoalJobForReopen,
   createPendingGoalJob,
+  formatExitHandoffReopenMessages,
   goalJobConversationDir,
   goalJobFilePath,
   isActiveGoalJob,
   isGoalJobStatus,
+  isOwnedByPid,
   isSafeJobSegment,
   isTerminalGoalJob,
+  isTuiExitHandoffActive,
   parseGoalJob,
   parseWorkerPidFile,
+  resetTuiExitHandoffForTests,
   serializeGoalJob,
   serializeWorkerPidFile,
   workerPidFilePath,
@@ -143,6 +150,63 @@ describe('createPendingGoalJob + transitions', () => {
     assert.equal(done.status, 'done');
     assert.equal(isTerminalGoalJob(done), true);
     assert.equal(ACTIVE_GOAL_JOB_STATUSES.has('pending'), true);
+  });
+
+  it('applyReleaseForHandoff clears ownership and returns pending', () => {
+    const running = sampleJob({
+      status: 'running',
+      owner: 'tui',
+      claimedBy: 42,
+      claimedAt: NOW,
+      note: 'tui in-process',
+    });
+    const released = applyReleaseForHandoff(running, '2026-07-10T12:05:00.000Z');
+    assert.equal(released.status, 'pending');
+    assert.equal(released.owner, undefined);
+    assert.equal(released.claimedBy, undefined);
+    assert.equal(released.claimedAt, undefined);
+    assert.match(released.note ?? '', /handoff/);
+    assert.equal(canClaimGoalJob(released, () => true), true);
+    assert.equal(isOwnedByPid(running, 42, 'tui'), true);
+    assert.equal(isOwnedByPid(released, 42, 'tui'), false);
+  });
+});
+
+describe('exit handoff reopen messaging', () => {
+  it('classifies worker-running / pending / parked', () => {
+    assert.equal(
+      classifyGoalJobForReopen(sampleJob({ status: 'running', owner: 'worker' })),
+      'worker-running',
+    );
+    assert.equal(classifyGoalJobForReopen(sampleJob({ status: 'pending' })), 'pending-handoff');
+    assert.equal(classifyGoalJobForReopen(sampleJob({ status: 'parked' })), 'parked-job');
+    assert.equal(
+      classifyGoalJobForReopen(sampleJob({ status: 'running', owner: 'tui' })),
+      'other-active',
+    );
+  });
+
+  it('formats distinct reopen lines for heal / worker / parked', () => {
+    const lines = formatExitHandoffReopenMessages({
+      healedOrphans: 1,
+      workerRunning: 2,
+      pendingHandoff: 1,
+      parkedGoals: 3,
+      storeRunning: 0,
+    });
+    assert.ok(lines.some((l) => l.includes('healed 1 orphaned')));
+    assert.ok(lines.some((l) => l.includes('detached worker running 2')));
+    assert.ok(lines.some((l) => l.includes('queued for detached worker')));
+    assert.ok(lines.some((l) => l.includes('3 parked')));
+  });
+
+  it('tui exit handoff latch arms', () => {
+    resetTuiExitHandoffForTests();
+    assert.equal(isTuiExitHandoffActive(), false);
+    beginTuiExitHandoff();
+    assert.equal(isTuiExitHandoffActive(), true);
+    resetTuiExitHandoffForTests();
+    assert.equal(isTuiExitHandoffActive(), false);
   });
 });
 
