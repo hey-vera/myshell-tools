@@ -1060,9 +1060,14 @@ async function detectOpencodeProvider(
  *     - grok-build
  *     * grok-composer-2.5-fast (default)
  *
- * Authenticated when: exitCode === 0 AND the output does NOT contain the
- * "not authenticated" substring (case-insensitive). Plan is always null —
- * `grok models` text exposes no subscription/plan label.
+ * Authenticated only on a **positive versioned signature** (R4.3): exitCode
+ * === 0 AND at least one of:
+ *   - the known logged-in banner (`You are logged in with grok.com` / `You are
+ *     logged in`)
+ *   - a non-empty "Available models:" list (parsed by `parseGrokModels`)
+ * Mere absence of "not authenticated" is NOT enough — empty / garbage / future
+ * CLI wording without a known positive marker stays unauthenticated.
+ * Plan is always null — `grok models` text exposes no subscription/plan label.
  * Conservative: on any parse error, authenticated stays false and plan is null.
  */
 export function parseGrokAuth(
@@ -1074,8 +1079,14 @@ export function parseGrokAuth(
     return { authenticated: false, plan: null };
   }
   const haystack = stdout.toLowerCase();
-  const authenticated = !haystack.includes('not authenticated');
-  return { authenticated, plan: null };
+  // Explicit unauth banner short-circuits even if other fragments match.
+  if (haystack.includes('not authenticated')) {
+    return { authenticated: false, plan: null };
+  }
+  // Positive signatures (versioned against live G2 `grok models` output).
+  const hasLoggedInBanner = /\byou are logged in(?:\s+with\s+grok\.com)?\b/.test(haystack);
+  const hasModelsList = parseGrokModels(stdout).length > 0;
+  return { authenticated: hasLoggedInBanner || hasModelsList, plan: null };
 }
 
 /**
@@ -1115,7 +1126,8 @@ export function parseGrokModels(stdout: string): string[] {
 /**
  * Detect the Grok CLI. `installed` is true when `grok --version` succeeds;
  * `authenticated` reflects a REAL credential probe — we spawn `grok models` and
- * treat it as authenticated when the output does not say "not authenticated".
+ * require a positive versioned auth signature (logged-in banner and/or
+ * non-empty Available models list), not mere absence of "not authenticated".
  * `availableModels` is parsed from the "Available models:" list.
  *
  * Auth is exclusively grok's own OAuth subscription flow; this function NEVER
