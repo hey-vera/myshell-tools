@@ -1,6 +1,13 @@
 import type { OutputSink } from './render.js';
 import type { Confirm } from './menu-key-confirm.js';
-import { readMenuKey, NAV_ESC, NAV_LEFT, getMenuStack } from './menu-key-confirm.js';
+import {
+  readMenuKey,
+  NAV_ESC,
+  NAV_LEFT,
+  getMenuStack,
+  interpretListKey,
+  moveListHighlight,
+} from './menu-key-confirm.js';
 import { bold, dim, yellow, green } from '../ui/theme.js';
 import { navFooterText } from './ui/nav-footer.js';
 import type { Clock } from '../core/types.js';
@@ -28,7 +35,13 @@ function isClaudeAccount(a: SubscriptionAccount): a is ClaudeSubscriptionAccount
   return a.provider === 'claude' && subscriptionAccountKind(a) === 'oauth-sub';
 }
 
-function formatAccountRow(acc: SubscriptionAccount, index: number): string {
+function formatAccountRow(
+  acc: SubscriptionAccount,
+  index: number,
+  selected: boolean,
+  color: boolean,
+): string {
+  const marker = selected ? '\u25B8' : ' ';
   const num = index.toString().padStart(2);
   const label = acc.label.padEnd(21);
   const weight = `(${acc.priorityWeight})`;
@@ -39,7 +52,8 @@ function formatAccountRow(acc: SubscriptionAccount, index: number): string {
     : acc.status === 'auth-failed' ? 'auth-failed'
     : acc.status === 'active' ? 'active'
     : 'unknown';
-  return `  ${num}  ${label}  ${priority}  ${expiry}  ${status}`;
+  const row = ` ${marker}${num}  ${label}  ${priority}  ${expiry}  ${status}`;
+  return selected ? bold(row, color) : row;
 }
 
 async function createClaudeAccountFlow(
@@ -471,6 +485,7 @@ export async function runClaudeAccountsMenu(
 ): Promise<void> {
   const { login, suspendStdin, inkReadKey } = deps;
   getMenuStack().push();
+  let selectedIndex = 0;
   for (;;) {
     let allAccounts: readonly SubscriptionAccount[];
     try {
@@ -480,21 +495,24 @@ export async function runClaudeAccountsMenu(
       allAccounts = [];
     }
     const accounts = allAccounts.filter(isClaudeAccount);
+    selectedIndex = moveListHighlight(selectedIndex, 0, accounts.length);
 
     out.beginFrame?.();
     out.write('\n' + bold('Claude Accounts', out.color) + '\n');
 
     if (accounts.length === 0) {
       out.write('\n  (no accounts)\n');
+      out.write(`  ${dim('Enter create  ·  ↑↓ when listed', out.color)}\n`);
     } else {
       out.write('\n');
-      out.write('  #  label                 priority          expiry       status\n');
+      out.write('     #  label                 priority          expiry       status\n');
       let index = 1;
       for (const acc of accounts) {
-        out.write(formatAccountRow(acc, index) + '\n');
+        out.write(formatAccountRow(acc, index, index - 1 === selectedIndex, out.color) + '\n');
         index++;
       }
       out.write(`\n  ${dim(PRIORITY_WEIGHT_LIST_HINT, out.color)}\n`);
+      out.write(`  ${dim('↑↓ select  ·  Enter open  ·  1-9 jump', out.color)}\n`);
     }
 
     out.write('\n');
@@ -511,7 +529,12 @@ export async function runClaudeAccountsMenu(
     if (key === NAV_ESC) { getMenuStack().requestExit(); return; }
     if (key === NAV_LEFT) { getMenuStack().pop(); return; }
 
-    if (key === 'c') {
+    const list = interpretListKey(key, selectedIndex, accounts.length);
+    if (list.kind === 'highlight') {
+      selectedIndex = list.index;
+      continue;
+    }
+    if (list.kind === 'create-empty' || (list.kind === 'other' && list.key === 'c')) {
       await createClaudeAccountFlow(
         out,
         readLine,
@@ -521,7 +544,17 @@ export async function runClaudeAccountsMenu(
         suspendStdin,
         inkReadKey,
       );
-    } else if (key === 'e' && accounts.length > 0) {
+      continue;
+    }
+    if (list.kind === 'activate') {
+      selectedIndex = list.index;
+      const picked = accounts[list.index];
+      if (picked !== undefined) {
+        await editAccountScreen(out, readLine, confirm, picked, login, suspendStdin, inkReadKey);
+      }
+      continue;
+    }
+    if (list.kind === 'other' && list.key === 'e' && accounts.length > 0) {
       await editAccountFlow(
         out,
         readLine,

@@ -325,6 +325,8 @@ import {
   makeConfirm,
   NAV_ESC,
   NAV_LEFT,
+  NAV_UP,
+  NAV_DOWN,
   getMenuStack,
   resetMenuStack,
 } from './menu-key-confirm.js';
@@ -8160,10 +8162,11 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
         break;
       }
 
-      // ---- Enter / no-op key → just re-render the menu ------------------------
+      // ---- Enter / list-arrow no-ops → just re-render the menu -----------------
       // The live frame stays as-is; the next iteration's beginFrame/endFrame
       // REPLACES it in place — zero <Static> growth across no-op keypresses.
-      if (key === '') {
+      // NAV_UP/NAV_DOWN are list-selection keys on accounts screens; root ignores.
+      if (key === '' || key === NAV_UP || key === NAV_DOWN) {
         continue;
       }
 
@@ -8343,15 +8346,28 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           const acctStates = await loadProviderAccountStates();
           // Provider selection submenu for Accounts management.
           const activeTotal = Object.values(acctStates).reduce((sum, s) => sum + s.active, 0);
+          const attentionTotal = Object.values(acctStates).filter((s) => s.needsAttention).length;
           out.write('\n  Accounts\n');
-          out.write(`    ${activeTotal} active\n`);
+          out.write(
+            attentionTotal > 0
+              ? `    ${activeTotal} active  ·  ${attentionTotal} provider${attentionTotal === 1 ? '' : 's'} need attention\n`
+              : `    ${activeTotal} active\n`,
+          );
           for (const provider of ['claude', 'codex', 'opencode', 'grok'] as const) {
             const s = acctStates[provider];
             if (s === undefined) continue;
             const provKey = provider === 'claude' ? 'j' : provider === 'codex' ? 'k' : provider === 'opencode' ? 'o' : 'p';
-            const statusLine = s.total > 0
-              ? `${s.active} active${s.total !== s.active ? `, ${s.total - s.active} disabled` : ''}`
-              : 'no accounts';
+            let statusLine: string;
+            if (s.total === 0) {
+              statusLine = 'no accounts';
+            } else if (s.needsAttention) {
+              const disabled = s.total - s.active;
+              statusLine = `needs attention (${s.total} total${disabled > 0 ? `, ${disabled} disabled` : ''})`;
+            } else {
+              const disabled = s.total - s.active;
+              const plans = s.planLabels.length > 0 ? ` · ${s.planLabels.join(', ')}` : '';
+              statusLine = `${s.active} active${disabled > 0 ? `, ${disabled} disabled` : ''}${plans}`;
+            }
             out.write(`    [${provKey}] ${provider}  ${statusLine}\n`);
           }
           out.write(`    [b] Back  (${navFooterText('back-and-exit', out.color)})\n\n> `);
