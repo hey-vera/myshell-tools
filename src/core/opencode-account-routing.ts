@@ -83,14 +83,15 @@ export function isSubscriptionAccountStructurallyEligible(
  *     ({@link isSubscriptionAccountStructurallyEligible}).
  *  2. For opencode, additionally filter by `pool`.
  *  3. Exclude cooling accounts (cooldownUntil > nowMs).
- *  4. If all eligible are cooling → never-strand: ignore cooldown for this
- *     selection.
+ *  4. If only cooling candidates remain → return `null` (R3.1: never silently
+ *     pick a cooling account). Callers surface waiting_on_quota / no_eligible_lane
+ *     with retryAfter and may still choose a healthy alternate lane/provider.
  *
  * Strategy:
  *  - `spread` (default): pick the minimum normalizedLoad =
  *      (sessionTokensByAccount[id] ?? 0) / priorityWeight.
  *    Stable tiebreaker: createdAt, then id lexical.
- *  - `sticky`: pick the HIGHEST effective priorityWeight eligible account.
+ *  - `sticky`: pick the HIGHEST effective priorityWeight non-cooling account.
  *    Tie → min normalizedLoad; only fall to a lower-weight sibling when
  *    higher-weight ones are all excluded (disabled/expired) or cooling.
  */
@@ -134,13 +135,14 @@ export function selectSubscriptionAccount<T extends SubscriptionAccount>(input: 
     return until !== undefined && until > nowMs;
   };
 
-  const notCooling = eligible.filter((a) => !isCooling(a));
-  const candidates = notCooling.length > 0 ? notCooling : eligible;
+  // R3.1: do not silently pick a cooling account. Healthy siblings still win;
+  // all-cooling returns null so the caller can fail over or surface quota wait.
+  const candidates = eligible.filter((a) => !isCooling(a));
+  if (candidates.length === 0) return null;
 
   if (strategy === 'sticky') {
-    // Group by priorityWeight (highest first), pick within the top group
-    // that has at least one non-cooling candidate, ignoring cooling for
-    // lower groups. Within a group, use min normalizedLoad + tiebreaker.
+    // Group by priorityWeight (highest first). Candidates are already non-cooling.
+    // Within a group, use min normalizedLoad + tiebreaker.
     const byWeight = new Map<number, Array<T & { load: number }>>();
     for (const c of candidates) {
       const list = byWeight.get(c.priorityWeight) ?? [];
@@ -150,10 +152,8 @@ export function selectSubscriptionAccount<T extends SubscriptionAccount>(input: 
     const sortedWeights = [...byWeight.keys()].sort((a, b) => b - a);
     for (const w of sortedWeights) {
       const group = byWeight.get(w);
-      if (group === undefined) continue;
-      const groupNotCooling = group.filter((a) => !isCooling(a));
-      const pickFrom = groupNotCooling.length > 0 ? groupNotCooling : group;
-      pickFrom.sort((a, b) => {
+      if (group === undefined || group.length === 0) continue;
+      group.sort((a, b) => {
         if (a.load !== b.load) return a.load - b.load;
         if (a.createdAt < b.createdAt) return -1;
         if (a.createdAt > b.createdAt) return 1;
@@ -161,7 +161,7 @@ export function selectSubscriptionAccount<T extends SubscriptionAccount>(input: 
         if (a.id > b.id) return 1;
         return 0;
       });
-      return pickFrom[0] ?? null;
+      return group[0] ?? null;
     }
     return null;
   }
@@ -184,6 +184,7 @@ export function selectSubscriptionAccount<T extends SubscriptionAccount>(input: 
  *
  * Eligibility: only accounts that are NOT the primary, NOT low/very-low-weight
  * (priorityWeight >= 100), enabled, not expired, not cooling, not overflow-only.
+ * All-cooling sibling set returns null (R3.1 — no silent cooling pick for hedge).
  *
  * Delegates to {@link selectSubscriptionAccount} with `strategy: 'spread'`
  * after filtering out the primary and low-weight/overflow accounts.

@@ -120,7 +120,12 @@ export interface ExecutionLane {
 
 /** Typed failure when no lane can be formed without ambient fallthrough. */
 export interface ExecutionLaneSelectFailure {
-  readonly code: 'no_eligible_lane';
+  /**
+   * `waiting_on_quota` — every remaining managed path is account-cooldown only
+   * (R3.1; do not spawn on a cooling account). `no_eligible_lane` — structural /
+   * admission / entitlement / mixed reasons.
+   */
+  readonly code: 'no_eligible_lane' | 'waiting_on_quota';
   /**
    * Actionable message: which managed providers were blocked and why ambient
    * credentials were not used.
@@ -128,6 +133,11 @@ export interface ExecutionLaneSelectFailure {
   readonly message: string;
   /** Providers that had managed accounts but no eligible account for a lane. */
   readonly blockedProviders: readonly ProviderId[];
+  /**
+   * When failure is driven by account cooldown, ms until the earliest cooling
+   * account becomes selectable again (bounded Retry-After signal).
+   */
+  readonly retryAfterMs?: number;
 }
 
 export type ExecutionLaneSelectResult =
@@ -551,6 +561,10 @@ export function selectExecutionLane(
   const blockedProviders: ProviderId[] = [];
   const admissionBlocked: ProviderId[] = [];
   const entitlementBlocked: ProviderId[] = [];
+  /** Providers whose only remaining selectable accounts were in cooldown (R3.1). */
+  const cooldownBlocked: ProviderId[] = [];
+  /** Earliest account cooldown expiry (epoch ms) among cooldown-blocked paths. */
+  let earliestCooldownUntil: number | undefined;
 
   if (baseInventory !== undefined) {
     const filtered = filterAvailableModelsForTier(
@@ -719,9 +733,46 @@ export function selectExecutionLane(
       };
     }
 
+    // selectSubscriptionAccount returned null. Detect all-cooling among the
+    // structurally eligible entitled accounts (same pool filter as selection)
+    // so we can surface waiting_on_quota + retryAfter instead of silent pick.
+    const pool =
+      provider === 'opencode'
+        ? (opencodePoolForModel(decision.model) ?? 'zen')
+        : undefined;
+    const structuralEntitled = entitled.filter((a) => {
+      if (!isSubscriptionAccountStructurallyEligible(a, nowMs)) return false;
+      if (provider === 'opencode' && pool !== undefined) {
+        const opencode = a as unknown as OpencodeSubscriptionAccount;
+        return opencode.pool === pool;
+      }
+      return true;
+    });
+    const coolingStructural = structuralEntitled.filter((a) => {
+      const until = cooldownUntil.get(a.id);
+      return until !== undefined && until > nowMs;
+    });
+    const allCooling =
+      structuralEntitled.length > 0 &&
+      coolingStructural.length === structuralEntitled.length;
+
+    if (allCooling) {
+      if (!cooldownBlocked.includes(provider)) {
+        cooldownBlocked.push(provider);
+      }
+      for (const a of coolingStructural) {
+        const until = cooldownUntil.get(a.id);
+        if (until === undefined) continue;
+        if (earliestCooldownUntil === undefined || until < earliestCooldownUntil) {
+          earliestCooldownUntil = until;
+        }
+      }
+    }
+
     // Entitled accounts present but none selectable (status/cooldown/pool).
     // If any managed account is still structurally eligible for *some* other
     // model, drop only this model; otherwise block the provider.
+    // (Other pools / entitlements may still have healthy accounts.)
     const anyStructurallyEligible = managed.some((a) =>
       isSubscriptionAccountStructurallyEligible(a, nowMs),
     );
@@ -759,6 +810,54 @@ export function selectExecutionLane(
       ? ` Per-account inventory blocked cross-entitlement pairing for: ` +
         `${entitlementBlocked.join(', ')}.`
       : '';
+
+  const retryAfterMs =
+    earliestCooldownUntil !== undefined && earliestCooldownUntil > nowMs
+      ? earliestCooldownUntil - nowMs
+      : undefined;
+
+  // Pure cooldown failure: every blocked managed path was all-cooling and no
+  // other admission/entitlement reason applied (R3.1 waiting_on_quota).
+  const pureCooldown =
+    cooldownBlocked.length > 0 &&
+    admissionBlocked.length === 0 &&
+    entitlementBlocked.length === 0 &&
+    cooldownBlocked.length === blockedProviders.length &&
+    cooldownBlocked.every((p) => blockedProviders.includes(p));
+
+  if (pureCooldown) {
+    const secs =
+      retryAfterMs !== undefined
+        ? Math.max(1, Math.ceil(retryAfterMs / 1000))
+        : undefined;
+    const waitHint =
+      secs !== undefined
+        ? ` Earliest account cooldown ends in ~${secs}s (retryAfterMs=${retryAfterMs}).`
+        : '';
+    return {
+      ok: false,
+      failure: {
+        code: 'waiting_on_quota',
+        message:
+          `All eligible subscription accounts are in rate-limit cooldown for ` +
+          `managed providers: ${blockedList}. Not spawning on a cooling account.` +
+          `${waitHint} Wait for cooldown, enable another provider/account, or ` +
+          `retry after the earliest account is available. Refusing ambient global ` +
+          `credentials for those providers.`,
+        blockedProviders,
+        ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+      },
+    };
+  }
+
+  const cooldownNote =
+    cooldownBlocked.length > 0
+      ? ` Account cooldown blocked (no healthy sibling): ${cooldownBlocked.join(', ')}` +
+        (retryAfterMs !== undefined
+          ? ` (earliest retryAfterMs=${retryAfterMs}).`
+          : '.')
+      : '';
+
   return {
     ok: false,
     failure: {
@@ -766,13 +865,14 @@ export function selectExecutionLane(
       message:
         `No eligible execution lane: managed subscription accounts exist but none ` +
         `are selectable (status auth-failed/unknown/disabled/expired, disabled, ` +
-        `cooled without alternate provider, pool mismatch, or model not entitled ` +
-        `on any account), or progressive admission refused all inventory for this ` +
-        `tier. Blocked managed providers: ${blockedList}.${admissionNote}` +
-        `${entitlementNote} Refusing ambient global credentials for those ` +
-        `providers. Add/repair an eligible account, enable another provider, or ` +
-        `wait for model admission promotion.`,
+        `all eligible accounts cooling without a healthy alternate lane, pool ` +
+        `mismatch, or model not entitled on any account), or progressive admission ` +
+        `refused all inventory for this tier. Blocked managed providers: ${blockedList}.` +
+        `${admissionNote}${entitlementNote}${cooldownNote} Refusing ambient global ` +
+        `credentials for those providers. Add/repair an eligible account, enable ` +
+        `another provider, wait for cooldown/admission, or retry later.`,
       blockedProviders,
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     },
   };
 }

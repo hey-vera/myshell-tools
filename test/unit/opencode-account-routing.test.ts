@@ -241,7 +241,7 @@ describe('selectOpencodeAccount', () => {
     assert.equal(result!.id, 'zen-b'); // zenA cooldown expired, but zenB wins on tie (older)
   });
 
-  it('never-strands: returns one of all-cooling candidates', () => {
+  it('all cooling → null (R3.1: no silent cooling pick)', () => {
     const cd = new Map<string, number>([
       ['zen-a', nowMs + 60_000],
       ['zen-b', nowMs + 120_000],
@@ -253,8 +253,7 @@ describe('selectOpencodeAccount', () => {
       cooldownUntil: cd,
       sessionTokensByAccount: {},
     });
-    assert.ok(result !== null); // still returns one
-    assert.ok(result!.id === 'zen-a' || result!.id === 'zen-b');
+    assert.equal(result, null);
   });
 
   it('returns null when no accounts match the pool', () => {
@@ -449,7 +448,7 @@ describe('per-account cooldown', () => {
     assert.equal(result!.id, 'go-b');
   });
 
-  it('cooling both still returns one (never-strand)', () => {
+  it('cooling both → null (R3.1: no silent cooling pick)', () => {
     const cd = new Map<string, number>([
       ['go-a', nowMs + 300_000],
       ['go-b', nowMs + 300_000],
@@ -461,6 +460,6 @@ describe('per-account cooldown', () => {
       cooldownUntil: cd,
       sessionTokensByAccount: {},
     });
-    assert.ok(result !== null); // never stranded
+    assert.equal(result, null);
   });
 });

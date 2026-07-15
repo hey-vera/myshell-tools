@@ -170,7 +170,7 @@ describe('per-account cooldown — claude', () => {
     assert.equal(result!.id, 'c2');
   });
 
-  it('cooling both claude accounts still returns one (never-strand)', () => {
+  it('cooling both claude accounts → null (R3.1: no silent cooling pick)', () => {
     const cd = new Map<string, number>([
       ['c1', nowMs + 300_000],
       ['c2', nowMs + 300_000],
@@ -182,8 +182,7 @@ describe('per-account cooldown — claude', () => {
       cooldownUntil: cd,
       sessionTokensByAccount: {},
     });
-    assert.ok(result !== null);
-    assert.ok(result!.id === 'c1' || result!.id === 'c2');
+    assert.equal(result, null);
   });
 
   it('ignores expired cooldown on a claude account', () => {

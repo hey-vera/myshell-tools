@@ -183,7 +183,7 @@ describe('selectSubscriptionAccount', () => {
     assert.equal(result!.id, 'c2'); // c1 cooling, c2 available
   });
 
-  it('never-strands: returns one of all-cooling candidates', () => {
+  it('all cooling → null (R3.1: no silent cooling pick)', () => {
     const cd = new Map<string, number>([
       ['c1', nowMs + 60_000],
       ['c2', nowMs + 120_000],
@@ -197,8 +197,7 @@ describe('selectSubscriptionAccount', () => {
       cooldownUntil: cd,
       sessionTokensByAccount: {},
     });
-    assert.ok(result !== null);
-    assert.ok(result!.id === 'c1' || result!.id === 'c2');
+    assert.equal(result, null);
   });
 
   it('picks minimum normalized load', () => {
@@ -373,7 +372,7 @@ describe('selectSubscriptionAccount', () => {
     assert.equal(result!.id, 'low');
   });
 
-  it('sticky never-strands: returns highest-weight of all-cooling', () => {
+  it('sticky all cooling → null (R3.1: no silent cooling pick)', () => {
     const cd = new Map<string, number>([
       ['high', nowMs + 120_000],
       ['low', nowMs + 60_000],
@@ -388,8 +387,7 @@ describe('selectSubscriptionAccount', () => {
       sessionTokensByAccount: {},
       strategy: 'sticky',
     });
-    assert.ok(result !== null);
-    assert.equal(result!.id, 'high');
+    assert.equal(result, null);
   });
 
   // --- priorityWeight honesty: proportional within-provider load (PR-C) ---
