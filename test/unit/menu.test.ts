@@ -995,6 +995,7 @@ describe('CHAT_SLASH_COMMANDS includes /todo and /goals (FIX 4)', () => {
       '/style',
       '/oversight',
       '/mode',
+      '/speed',
       '/goal',
       '/goals',
       '/todo',
