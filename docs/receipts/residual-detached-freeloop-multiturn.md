@@ -1,7 +1,7 @@
 # Receipt: residual detached free-loop multi-turn
 
 **Branch:** `product/residual-detached-freeloop`  
-**Commit:** `e524ade`  
+**Commit:** `d1686e374c3cc9b315dc5c0b5ac2b0d92d1ae8a3`  
 **Date:** 2026-07-15  
 **Scope:** Detached worker free-loop goals run multi-turn (not one-turn-then-park), using `core/goal.ts` pure helpers + `runTask`, with honest park/fail outcomes.
 
