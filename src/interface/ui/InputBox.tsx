@@ -454,6 +454,10 @@ export function InputBox({
   // typed prefix. Local-first; model only when enabled + local empty. Debounced;
   // dismissed by Esc / typing / Tab-accept. Never blocks input.
   const [ghost, setGhost] = useState<GhostSuggestion | null>(null);
+  // Esc dismisses ghost without changing `value`. Without this, a re-run of the
+  // ghost effect (parent re-render / late timer / dep identity churn) would
+  // re-propose the same history ghost for the same line. Suppress until replace/submit.
+  const ghostSuppressedForLineRef = useRef<string | null>(null);
   /** Session-local cache of recently accepted completions (history-layer boost). */
   const recentCompletionsRef = useRef<string[]>([]);
   // Live mirrors of value/cursor so the async completeChat() resolve can race-guard
@@ -574,6 +578,8 @@ export function InputBox({
     setSuggIndex(0);
     // Typing / edits also dismiss ghost immediately (P0.18).
     setGhost(null);
+    // Buffer changed → allow ghost for the new line (Esc suppress is line-scoped).
+    ghostSuppressedForLineRef.current = null;
     notifyDraft(next);
   };
 
@@ -603,6 +609,7 @@ export function InputBox({
     setSuggestions([]);
     setSuggIndex(0);
     setGhost(null);
+    ghostSuppressedForLineRef.current = null;
     lastCompletionRef.current = null;
     notifyDraft('');
     bridge._submit?.(submitted);
@@ -626,8 +633,16 @@ export function InputBox({
     const ac = new AbortController();
     const delay = Math.max(0, ghostDebounceMs);
 
+    const isGhostSuppressed = (): boolean =>
+      ghostSuppressedForLineRef.current !== null &&
+      valueRef.current === ghostSuppressedForLineRef.current;
+
     const tryModelGhost = (lineToCursor: string, local: GhostSuggestion | null, kind: string): void => {
       if (cancelled) return;
+      if (isGhostSuppressed()) {
+        setGhost(null);
+        return;
+      }
       const enabled = modelGhostEnabledRef.current === true;
       const port = suggestGhostRef.current;
       if (
@@ -643,6 +658,10 @@ export function InputBox({
         .then((raw) => {
           if (cancelled || ac.signal.aborted) return;
           if (valueRef.current !== requestedValue || cursorRef.current !== requestedCursor) return;
+          if (isGhostSuppressed()) {
+            setGhost(null);
+            return;
+          }
           // Re-check local still empty at resolve time (another path may have filled).
           if (local !== null) return;
           const model = parseModelGhostCompletion(lineToCursor, raw ?? undefined);
@@ -654,6 +673,11 @@ export function InputBox({
     };
 
     const timer = setTimeout(() => {
+      // Esc dismissed ghost for this exact buffer — do not re-propose until edit.
+      if (isGhostSuppressed()) {
+        if (!cancelled) setGhost(null);
+        return;
+      }
       const lineToCursor = valueRef.current.slice(0, cursorRef.current);
       const classified = classifyCompletion(lineToCursor);
       const hints = goalHintsRef.current;
@@ -695,6 +719,10 @@ export function InputBox({
         .then(([hits]) => {
           if (cancelled) return;
           if (valueRef.current !== requestedValue || cursorRef.current !== requestedCursor) return;
+          if (isGhostSuppressed()) {
+            setGhost(null);
+            return;
+          }
           const enriched = proposeGhost({
             ...ghostInput,
             completionHits: hits,
@@ -783,10 +811,14 @@ export function InputBox({
       setSuggestions([]);
       setSuggIndex(0);
       lastCompletionRef.current = null;
+      // Same line-scoped suppress as bare ghost Esc (suggestions path also clears ghost).
+      ghostSuppressedForLineRef.current = valueRef.current;
       setGhost(null);
       return;
     }
     if (key.escape && input === '' && ghost !== null) {
+      // Suppress re-propose for this buffer until the user edits or submits.
+      ghostSuppressedForLineRef.current = valueRef.current;
       setGhost(null);
       return;
     }
