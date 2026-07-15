@@ -15,7 +15,12 @@ export interface NativeSessionTelemetry {
   readonly sessionId: string;
   readonly resume: boolean;
   readonly usedNative: boolean;
-  readonly fallbackReason?: 'disabled' | 'no-plan' | 'provider-mismatch' | 'quarantined';
+  readonly fallbackReason?:
+    | 'disabled'
+    | 'no-plan'
+    | 'provider-mismatch'
+    | 'quarantined'
+    | 'lineage-break';
   readonly historyReplayEstimatedTokens: number;
   readonly actualInputTokens: number;
   readonly cachedInputTokens: number;
