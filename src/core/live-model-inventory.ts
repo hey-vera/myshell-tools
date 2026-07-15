@@ -137,9 +137,10 @@ export function withUpdatedAvailableModels(
  * Build a per-account model inventory map (R1.5 foundation).
  *
  * Pure merge helper for callers that already know account → model lists
- * (e.g. future per-account detect probe). Multiple entries for the same
+ * (e.g. per-account detect probe). Multiple entries for the same
  * provider+account union model ids (first-seen order, case-insensitive de-dupe).
- * Live CLI probe wiring is follow-on; this only shapes the inventory structure.
+ * This only shapes the inventory structure; live probing lives in
+ * `subscription-detect.probeAvailableModelsByAccount`.
  *
  * Shape matches `AvailableModelsByAccount` in execution-lane (kept structural
  * here to avoid a module cycle with execution-lane → unionModelIds).
@@ -174,9 +175,8 @@ export function buildAvailableModelsByAccount(
  * `selectExecutionLane` see account-keyed rows.
  *
  * Honest limitation: this does **not** isolate true per-account entitlements.
- * Detect still probes ambient/home credentials once; each managed account gets
- * the same provider list until a future per-account CLI probe (accountEnv /
- * isolated homeDir) lands. Empty/missing provider lists skip that account.
+ * Prefer `probeAvailableModelsByAccount` (env-scoped detect per homeDir) when
+ * any real rows exist. Empty/missing provider lists skip that account.
  *
  * Pure. Returns `undefined` when there are no account rows to emit (no accounts,
  * or no non-empty provider model lists matching any account).

@@ -83,8 +83,9 @@ export type EnvRoutingDepsSlice = Pick<
  * Spread-ready `availableModelsByAccount` when managed accounts exist.
  * Omits the key when provisional inventory is empty (exactOptionalPropertyTypes).
  *
- * Provisional: copies provider-global model lists onto each account key.
- * True entitlement isolation needs a per-account CLI probe (follow-on).
+ * Provisional fallback: copies provider-global model lists onto each account
+ * key when a live per-account probe has not produced rows. Prefer
+ * `probeAvailableModelsByAccount` results when any real rows exist.
  */
 export type AvailableModelsByAccountDepsSlice = Pick<
   OrchestrateDeps,
