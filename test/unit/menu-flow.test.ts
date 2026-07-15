@@ -774,7 +774,7 @@ function normalizeTestPath(p: string): string {
 }
 
 function assertLockedHomeSkeleton(buf: string): void {
-  assert.ok(buf.includes('Effort Mode:'), 'home should render the Effort Mode box');
+  assert.ok(buf.includes('Mode:'), 'home should render the Mode box');
   assert.ok(buf.includes('Session Manager'), 'home should render the Session Manager title box');
   assert.ok(buf.includes('Choice:'), 'home should render the Choice prompt');
   assert.ok(buf.includes('ESC to exit'), 'home should render the ESC footer');
@@ -7926,7 +7926,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
 
     assert.ok(
       sink.buf.includes('[1]') && sink.buf.toLowerCase().includes('mode'),
-      'settings must show [1] New conversation Effort Mode',
+      'settings must show [1] New conversation Mode',
     );
     assert.ok(
       sink.buf.includes('[2]') && sink.buf.toLowerCase().includes('oversight'),
@@ -9586,15 +9586,15 @@ describe('startMenu — first-run: hook already installed → skips set-default 
 });
 
 // ---------------------------------------------------------------------------
-// FLOW: Effort Mode settings — ALL_LEVELS key map (Budget=1 … Auto=5)
+// FLOW: Mode settings — ALL_LEVELS key map (Budget=1 … Auto=5)
 // ---------------------------------------------------------------------------
 
-describe('startMenu — Effort Mode settings keys + live box', () => {
+describe('startMenu — Mode settings keys + live box', () => {
   /**
    * Drive s → 1 → 1 → '' → q. Key [1] is Budget (cost-saver) per ALL_LEVELS.
    * Home box must reflect Budget; no Auto-detected block; no confirmation line.
    */
-  it('selecting [1] Budget in Effort Mode settings pins cost-saver and shows Budget', async () => {
+  it('selecting [1] Budget in Mode settings pins cost-saver and shows Budget', async () => {
     const clock = makeFakeClock();
     const store = makeStore(clock);
     const sink = makeSink();
@@ -9619,14 +9619,14 @@ describe('startMenu — Effort Mode settings keys + live box', () => {
 
     await assert.doesNotReject(
       () => startMenu(ctx, sink),
-      'selecting [1] Budget in Effort Mode settings should not throw',
+      'selecting [1] Budget in Mode settings should not throw',
     );
 
     assert.ok(
-      sink.buf.includes('Effort Mode:  Budget') || sink.buf.includes('Budget'),
+      sink.buf.includes('Mode:  Budget') || sink.buf.includes('Budget'),
       'output must show Budget after selecting [1]',
     );
-    // Redundant confirmation line removed — do not require "Effort Mode: Budget\n" alone.
+    // Redundant confirmation line removed — do not require "Mode: Budget\n" alone.
     assert.ok(
       !sink.buf.includes('Auto detected:'),
       'mode picker must not render the Auto detected block',
@@ -9717,8 +9717,8 @@ describe('startMenu — Effort Mode settings keys + live box', () => {
     await assert.doesNotReject(() => startMenu(ctx, sink));
 
     assertLockedHomeSkeleton(sink.buf);
-    assert.ok(sink.buf.includes('Effort Mode:  Balanced'), 'live home box reflects Balanced');
-    assert.ok(!sink.buf.includes('Effort Mode:  Auto (smart)'), 'must not hardcode Auto when balanced');
+    assert.ok(sink.buf.includes('Mode:  Balanced'), 'live home box reflects Balanced');
+    assert.ok(!sink.buf.includes('Mode:  Auto (smart)'), 'must not hardcode Auto when balanced');
   });
 
   it('when claude plan is max, home still renders the locked Slice 1 skeleton', async () => {

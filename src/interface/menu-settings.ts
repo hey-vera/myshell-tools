@@ -1,7 +1,7 @@
 /**
  * src/interface/menu-settings.ts — Extracted from menu.ts — behavior-preserving.
  *
- * The simplified Settings screen: Effort Mode, oversight, verbosity, appearance, and a
+ * The simplified Settings screen: Mode, oversight, verbosity, appearance, and a
  * Privacy & memory subpage (Memory, Learned preferences, Codebase awareness).
  * Internal implementation toggles (routing, panel, hedge, intent engine, etc.)
  * are now automated default-on and hidden from the user-facing UI. Auto-goal and
@@ -85,10 +85,12 @@ export async function runModeSelect(
   const autoActive = config.mode === undefined;
 
   // Build the display lines with the redesigned labels.
+  // R8.1: Mode dial (lane + verification). Intensity is separate concurrency.
   const lines = [
     '',
-    bold('New conversation Effort Mode — default for future conversations', out.color),
-    dim('This is the default new conversations start with. Existing conversations keep their own Effort Mode.', out.color),
+    bold('New conversation Mode — default for future conversations', out.color),
+    dim('Mode sets model lane + verification. Intensity (multi-goal concurrency) is separate and derives from Mode when unset. Existing conversations keep their own Mode.', out.color),
+    dim('Claude/Grok provider-native --effort is experimental and OFF by default (MYSHELL_PROVIDER_EFFORT=1).', out.color),
     '',
   ];
 
@@ -132,7 +134,7 @@ export async function runModeSelect(
 
   const updated: AppConfig = withOptional(config, 'mode', newMode);
   await saveConfig(updated);
-  // No redundant "Effort Mode: …" confirmation — the live home/new-conv box is truth.
+  // No redundant "Mode: …" confirmation — the live home/new-conv box is truth.
   return updated;
 }
 
@@ -211,7 +213,7 @@ export async function runStyleSelect(
     `  [1] direct${resolved === 'direct' ? ' (active)' : ''} — prefer a sensible default and proceed`,
     `  [2] balanced${resolved === 'balanced' ? ' (active)' : ''} — reflect briefly, ask at genuine forks`,
     `  [3] collaborative${resolved === 'collaborative' ? ' (active)' : ''} — align on the approach first`,
-    `  [4] auto${isAuto ? ' (active)' : ''} — follow the Effort Mode (${resolved})`,
+    `  [4] auto${isAuto ? ' (active)' : ''} — follow the Mode dial (${resolved})`,
     '',
   ];
   out.write('\n' + box('Settings', settingsLines) + '\n\n');
@@ -424,7 +426,7 @@ export async function runSettings(
   const autoMode = resolveAutoMode(mutableCtx.env, accounts);
   const settingsLines = [
     '',
-    `  [1] New conversation Effort Mode: ${cfg.mode === undefined ? 'Auto (smart)' : levelLabel(migrateMode(cfg.mode))}`,
+    `  [1] New conversation Mode: ${cfg.mode === undefined ? 'Auto (smart)' : levelLabel(migrateMode(cfg.mode))}`,
     `  [2] Oversight: ${resolveOversight(cfg)}`,
     `  [3] Output detail: ${cfg.verbosity ?? 'normal'}`,
     `  [4] Appearance: ${cfg.colorTheme ?? 'dark'}`,
