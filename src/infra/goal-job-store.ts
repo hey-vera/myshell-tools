@@ -20,6 +20,7 @@ import { atomicWrite, withLock } from './atomic.js';
 import { defaultStateLayout, type AppStateLayout } from './state-layout.js';
 import {
   applyClaim,
+  applyReleaseForHandoff,
   applyRunning,
   applyTerminal,
   canClaimGoalJob,
@@ -112,6 +113,17 @@ export interface GoalJobStore {
     patch?: { readonly note?: string; readonly owner?: GoalJobOwner; readonly claimedBy?: number },
     nowIso?: string,
   ): Promise<GoalJob | null>;
+  /**
+   * Release TUI-owned active jobs so a detached worker can claim without waiting
+   * for dead-PID reclaim (M2 exit handoff). When `pid` is set, only jobs claimed
+   * by that pid (or missing claimedBy with owner tui) are released.
+   * Returns the jobs that were released.
+   */
+  releaseTuiOwnership(options?: {
+    readonly pid?: number;
+    readonly nowIso?: string;
+    readonly note?: string;
+  }): Promise<GoalJob[]>;
 }
 
 function nowIsoDefault(nowIso?: string): string {
@@ -315,6 +327,64 @@ export function createGoalJobStore(options?: {
       } catch {
         return null;
       }
+    },
+
+    async releaseTuiOwnership(options) {
+      const ts = nowIsoDefault(options?.nowIso);
+      const note =
+        options?.note ?? 'tui exit handoff — released for worker claim';
+      const pid = options?.pid;
+      const active = await store.listActive();
+      const released: GoalJob[] = [];
+      for (const job of active) {
+        // Never strip a worker claim. Pure pending (already claimable) is a no-op.
+        if (job.owner === 'worker') continue;
+        if (job.status === 'pending' && job.claimedBy === undefined) continue;
+        // Only TUI-owned claims, or claimed/running still held by this TUI pid.
+        // (worker owner already excluded above.)
+        const isTuiOwner = job.owner === 'tui';
+        const isOurPid = pid !== undefined && job.claimedBy === pid;
+        const isTuiClaim =
+          isTuiOwner ||
+          (job.owner === undefined &&
+            (job.status === 'claimed' || job.status === 'running') &&
+            (pid === undefined || job.claimedBy === pid || job.claimedBy === undefined));
+        if (!isTuiClaim && !isOurPid) continue;
+        if (pid !== undefined && job.claimedBy !== undefined && job.claimedBy !== pid) {
+          continue;
+        }
+
+        const filePath = goalJobFilePath(root, job.conversationId, job.goalId);
+        try {
+          await ensureJobParent(filePath);
+          const updated = await withLock(
+            lockPathFor(job.conversationId, job.goalId),
+            async () => {
+              const existing = await readJobFile(filePath);
+              if (existing === null || !isActiveGoalJob(existing)) return null;
+              if (existing.owner === 'worker') return null;
+              if (existing.status === 'pending' && existing.claimedBy === undefined) {
+                return null;
+              }
+              if (
+                pid !== undefined &&
+                existing.claimedBy !== undefined &&
+                existing.claimedBy !== pid
+              ) {
+                return null;
+              }
+              if (existing.owner !== 'tui' && existing.owner !== undefined) return null;
+              const next = applyReleaseForHandoff(existing, ts, note);
+              await writeJobFile(filePath, next);
+              return next;
+            },
+          );
+          if (updated !== null) released.push(updated);
+        } catch {
+          /* fail-soft per job */
+        }
+      }
+      return released;
     },
   };
 
