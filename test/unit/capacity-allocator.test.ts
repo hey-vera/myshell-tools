@@ -264,7 +264,7 @@ describe('R8.1 dial honesty — intensity affects concurrency ceiling / crossGoa
     );
   });
 
-  it('legacy Mode still projects onto Intensity (Mode→Intensity bridge, not Speed dial)', () => {
+  it('legacy Mode still projects onto Intensity (Effort→Speed storage bridge)', () => {
     assert.equal(legacyModeToIntensity('cost-saver'), 1);
     assert.equal(
       concurrencyCeilingForRegime(regimeForIntensity(legacyModeToIntensity('cost-saver'))),

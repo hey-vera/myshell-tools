@@ -29,6 +29,9 @@ import {
   rungTupleForLevel,
   resolveRungTuple,
   resolveLevel,
+  ALL_SPEEDS,
+  speedLabel,
+  nextSpeed,
   type Level,
 } from '../../src/core/mode-levels.ts';
 import { POLICY_PRESETS } from '../../src/core/policy.ts';
@@ -70,7 +73,7 @@ describe('Level set + isLevel', () => {
 // 1b. nextLevel — Shift+Tab conversation Effort Mode cycle (P0.8)
 // ---------------------------------------------------------------------------
 
-describe('nextLevel — conversation Effort Mode cycle', () => {
+describe('nextLevel — conversation Effort dial cycle', () => {
   it('cycles Budget → Balanced → High → Max → Auto → Budget', () => {
     assert.equal(nextLevel('budget'), 'balanced');
     assert.equal(nextLevel('balanced'), 'high');
@@ -92,6 +95,26 @@ describe('nextLevel — conversation Effort Mode cycle', () => {
     }
     assert.deepEqual(seen, ['budget', 'balanced', 'high', 'max', 'auto']);
     assert.equal(nextLevel(cur), 'budget');
+  });
+});
+
+describe('Speed dial labels + nextSpeed (D1)', () => {
+  it('ALL_SPEEDS is Auto then 1–5', () => {
+    assert.deepEqual([...ALL_SPEEDS], ['auto', 1, 2, 3, 4, 5]);
+  });
+
+  it('speedLabel covers Auto and numeric regimes', () => {
+    assert.equal(speedLabel(undefined), 'Auto');
+    assert.equal(speedLabel('auto'), 'Auto');
+    assert.equal(speedLabel(1), '1 Focused');
+    assert.equal(speedLabel(5), '5 Max');
+  });
+
+  it('nextSpeed cycles Auto → 1 → … → 5 → Auto', () => {
+    assert.equal(nextSpeed(undefined), 1);
+    assert.equal(nextSpeed('auto'), 1);
+    assert.equal(nextSpeed(1), 2);
+    assert.equal(nextSpeed(5), 'auto');
   });
 });
 

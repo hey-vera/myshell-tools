@@ -1,11 +1,14 @@
 /**
  * src/interface/menu-settings.ts — Extracted from menu.ts — behavior-preserving.
  *
- * The simplified Settings screen: Mode, oversight, verbosity, appearance, and a
- * Privacy & memory subpage (Memory, Learned preferences, Codebase awareness).
+ * The simplified Settings screen: Effort, Speed, oversight, verbosity, appearance,
+ * and a Privacy & memory subpage (Memory, Learned preferences, Codebase awareness).
  * Internal implementation toggles (routing, panel, hedge, intent engine, etc.)
  * are now automated default-on and hidden from the user-facing UI. Auto-goal and
  * Partner style are removed from settings (superseded by Auto/Goal Steward).
+ *
+ * Storage keys remain `mode` (Effort) and `intensity` (Speed). D1 product labels
+ * only — Speed is multi-goal concurrency (crossGoalCap), not topology fantasy.
  *
  * Each dialog reads a single key via {@link readMenuKey}, then builds the next
  * AppConfig by spreading the FULL prior config and changing only the field it
@@ -23,7 +26,18 @@ import type { PartnerStyle } from '../core/prompt-context.js';
 import type { Oversight } from './ui/oversight.js';
 import { resolveOversight } from './ui/oversight.js';
 import type { Mode } from '../core/policy.js';
-import { levelLabel, LEVEL_DESC, migrateMode, ALL_LEVELS, levelToMode } from '../core/mode-levels.js';
+import type { Intensity } from '../core/capacity-allocator.js';
+import {
+  levelLabel,
+  LEVEL_DESC,
+  migrateMode,
+  ALL_LEVELS,
+  levelToMode,
+  ALL_SPEEDS,
+  speedLabel,
+  SPEED_DESC,
+  type SpeedLevel,
+} from '../core/mode-levels.js';
 import type { Level } from '../core/mode-levels.js';
 import type { EnvironmentStatus } from '../providers/detect.js';
 import { runInstall } from '../commands/install.js';
@@ -84,12 +98,11 @@ export async function runModeSelect(
     l === currentLevel && config.mode !== undefined ? '  ‹active›' : '';
   const autoActive = config.mode === undefined;
 
-  // Build the display lines with the redesigned labels.
-  // R8.1: Mode dial (lane + verification). Intensity is separate concurrency.
+  // D1: Effort dial (lane + verification). Storage key remains `mode`.
   const lines = [
     '',
-    bold('New conversation Mode — default for future conversations', out.color),
-    dim('Mode sets model lane + verification. Intensity (multi-goal concurrency) is separate and derives from Mode when unset. Existing conversations keep their own Mode.', out.color),
+    bold('New conversation Effort — default for future conversations', out.color),
+    dim('Effort sets model lane + verification. Speed (multi-goal concurrency / crossGoalCap) is separate and derives from Effort when unset. Existing conversations keep their own Effort.', out.color),
     dim('Claude/Grok provider-native --effort is experimental and OFF by default (MYSHELL_PROVIDER_EFFORT=1).', out.color),
     '',
   ];
@@ -134,7 +147,70 @@ export async function runModeSelect(
 
   const updated: AppConfig = withOptional(config, 'mode', newMode);
   await saveConfig(updated);
-  // No redundant "Mode: …" confirmation — the live home/new-conv box is truth.
+  // No redundant "Effort: …" confirmation — the live home/new-conv box is truth.
+  return updated;
+}
+
+/**
+ * Choose the global **Speed** dial (storage key `intensity`) and persist it.
+ *
+ * Speed = multi-goal concurrency regime (feeds `crossGoalCap` via capacity-
+ * allocator). Honest product truth: not topology, worker fan-out, or early
+ * termination. Auto (absent) lets Effort-derived / per-turn heuristics decide.
+ */
+export async function runSpeedSelect(
+  config: AppConfig,
+  out: OutputSink,
+  readLine: () => Promise<string | null>,
+  inkReadKey?: () => Promise<string>,
+): Promise<AppConfig> {
+  const current: SpeedLevel =
+    config.intensity === 1 ||
+    config.intensity === 2 ||
+    config.intensity === 3 ||
+    config.intensity === 4 ||
+    config.intensity === 5
+      ? config.intensity
+      : 'auto';
+
+  const lines = [
+    '',
+    bold('New conversation Speed — multi-goal concurrency default', out.color),
+    dim('Speed sets the multi-goal concurrency ceiling (crossGoalCap). It is NOT topology, worker count, or fan-out fantasy. Storage key: intensity.', out.color),
+    dim('When Auto/unset, Speed derives from Effort (or per-turn Auto). Existing conversations may keep their own Speed override.', out.color),
+    '',
+  ];
+
+  for (const speed of ALL_SPEEDS) {
+    const label = speedLabel(speed);
+    const desc = SPEED_DESC[String(speed)] ?? '';
+    const idx = ALL_SPEEDS.indexOf(speed) + 1;
+    const active = speed === current ? '  ‹active›' : '';
+    const line =
+      speed === 'auto'
+        ? `  [${idx}] ${bold(label, out.color)} (smart) — ${desc}${active}`
+        : `  [${idx}] ${bold(label, out.color)} — ${desc}${active}`;
+    lines.push(speed === current ? line : dim(line, out.color));
+  }
+
+  out.write('\n' + lines.filter((l) => l !== '').join('\n') + '\n\n');
+  out.write('[1-6 to change, Enter to keep] ');
+  const key = await readMenuKey(out, readLine, undefined, false, inkReadKey);
+  if (key === NAV_ESC) {
+    getMenuStack().requestExit();
+  }
+
+  let newIntensity: Intensity | undefined;
+  const keyIdx = key !== null && key.length === 1 ? key.charCodeAt(0) - '1'.charCodeAt(0) : -1;
+  if (keyIdx >= 0 && keyIdx < ALL_SPEEDS.length) {
+    const picked = ALL_SPEEDS[keyIdx] as SpeedLevel;
+    newIntensity = picked === 'auto' ? undefined : picked;
+  } else {
+    newIntensity = config.intensity;
+  }
+
+  const updated: AppConfig = withOptional(config, 'intensity', newIntensity);
+  await saveConfig(updated);
   return updated;
 }
 
@@ -426,12 +502,13 @@ export async function runSettings(
   const autoMode = resolveAutoMode(mutableCtx.env, accounts);
   const settingsLines = [
     '',
-    `  [1] New conversation Mode: ${cfg.mode === undefined ? 'Auto (smart)' : levelLabel(migrateMode(cfg.mode))}`,
-    `  [2] Oversight: ${resolveOversight(cfg)}`,
-    `  [3] Output detail: ${cfg.verbosity ?? 'normal'}`,
-    `  [4] Appearance: ${cfg.colorTheme ?? 'dark'}`,
-    `  [5] Privacy & memory`,
-    `  [6] Setup`,
+    `  [1] New conversation Effort: ${cfg.mode === undefined ? 'Auto (smart)' : levelLabel(migrateMode(cfg.mode))}`,
+    `  [2] New conversation Speed: ${speedLabel(cfg.intensity)}`,
+    `  [3] Oversight: ${resolveOversight(cfg)}`,
+    `  [4] Output detail: ${cfg.verbosity ?? 'normal'}`,
+    `  [5] Appearance: ${cfg.colorTheme ?? 'dark'}`,
+    `  [6] Privacy & memory`,
+    `  [7] Setup`,
     '',
     '  [Enter] Back · ' + navFooterText('exit-only', out.color),
     '',
@@ -448,14 +525,16 @@ export async function runSettings(
   if (key === '1') {
     mutableCtx.config = await runModeSelect(mutableCtx.config, out, readLine, autoMode, mutableCtx.env, inkReadKey);
   } else if (key === '2') {
-    mutableCtx.config = await runOversightSelect(mutableCtx.config, out, readLine, inkReadKey);
+    mutableCtx.config = await runSpeedSelect(mutableCtx.config, out, readLine, inkReadKey);
   } else if (key === '3') {
-    mutableCtx.config = await runVerbositySelect(mutableCtx.config, out, readLine, inkReadKey);
+    mutableCtx.config = await runOversightSelect(mutableCtx.config, out, readLine, inkReadKey);
   } else if (key === '4') {
-    mutableCtx.config = await toggleColorTheme(mutableCtx.config, out);
+    mutableCtx.config = await runVerbositySelect(mutableCtx.config, out, readLine, inkReadKey);
   } else if (key === '5') {
-    mutableCtx.config = await runPrivacyMemory(mutableCtx.config, out, readLine, inkReadKey);
+    mutableCtx.config = await toggleColorTheme(mutableCtx.config, out);
   } else if (key === '6') {
+    mutableCtx.config = await runPrivacyMemory(mutableCtx.config, out, readLine, inkReadKey);
+  } else if (key === '7') {
     mutableCtx.config = await runSetup(mutableCtx.config, out, readLine, inkReadKey);
   }
   // anything else → back

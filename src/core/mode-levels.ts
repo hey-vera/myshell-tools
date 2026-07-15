@@ -79,11 +79,11 @@ const LEVEL_LABEL: Record<Level, string> = {
 /**
  * One-line description per level (display only).
  *
- * R8.1 honesty: these describe the Mode dial (model lane + verification posture).
- * They must NOT claim a shipped Effort/Speed two-dial, topology fan-out, or
- * always-on Claude/Grok provider-native `--effort` (that path is experimental
- * and OFF by default — see `providerEffortEnabled`). Intensity (1–5) is the
- * separate concurrency-regime dial that feeds `crossGoalCap`.
+ * D1 product labels: this is the **Effort** dial (storage key still `mode`) —
+ * model lane + verification posture only. **Speed** (storage key `intensity`,
+ * 1–5 + Auto) is the separate multi-goal concurrency dial that feeds
+ * `crossGoalCap` — not topology/worker fan-out. Claude/Grok provider-native
+ * `--effort` is experimental and OFF by default (`providerEffortEnabled`).
  */
 export const LEVEL_DESC: Record<Level, string> = {
   budget:
@@ -94,14 +94,68 @@ export const LEVEL_DESC: Record<Level, string> = {
   auto: 'smart default — picks the effective level per task from how the turn is going',
 };
 
+// ---------------------------------------------------------------------------
+// Speed dial labels (user-facing name for storage key `intensity`).
+// ---------------------------------------------------------------------------
+
+/**
+ * User-facing **Speed** dial values. Storage remains `intensity` /
+ * `config.intensity` / `ConversationMeta.intensity`. Speed = multi-goal
+ * concurrency regime (feeds `crossGoalCap`), not topology fantasy.
+ */
+export type SpeedLevel = 'auto' | 1 | 2 | 3 | 4 | 5;
+
+/** Closed set for pickers: Auto then 1→5. */
+export const ALL_SPEEDS: readonly SpeedLevel[] = ['auto', 1, 2, 3, 4, 5] as const;
+
+const SPEED_LABEL: Record<string, string> = {
+  auto: 'Auto',
+  '1': '1 Focused',
+  '2': '2 Pair',
+  '3': '3 Fleet',
+  '4': '4 Fleet+Hedge',
+  '5': '5 Max',
+};
+
+/** One-line honesty for Speed (display only). */
+export const SPEED_DESC: Record<string, string> = {
+  auto: 'smart default — sizes multi-goal concurrency per turn',
+  '1': 'focused — single-file concurrency ceiling (crossGoalCap ≤1)',
+  '2': 'pair — still single concurrent goal ceiling (crossGoalCap ≤1)',
+  '3': 'fleet — up to 2 concurrent independent goals when demand allows',
+  '4': 'fleet+hedge regime — concurrency ceiling 2 (not worker topology)',
+  '5': 'max engagement regime — concurrency ceiling 2 (not fan-out fantasy)',
+};
+
+/** User-facing Speed label. PURE. */
+export function speedLabel(speed: SpeedLevel | Intensity | undefined): string {
+  if (speed === undefined || speed === 'auto') return 'Auto';
+  return SPEED_LABEL[String(speed)] ?? `Speed ${String(speed)}`;
+}
+
+/**
+ * Advance one step on the Speed dial (Auto → 1 → 2 → 3 → 4 → 5 → Auto…).
+ * Absent/`undefined` treated as Auto. PURE.
+ */
+export function nextSpeed(current: SpeedLevel | Intensity | undefined): SpeedLevel {
+  const cur: SpeedLevel =
+    current === 1 || current === 2 || current === 3 || current === 4 || current === 5
+      ? current
+      : 'auto';
+  const idx = ALL_SPEEDS.indexOf(cur);
+  const nextIdx = idx < 0 ? 0 : (idx + 1) % ALL_SPEEDS.length;
+  return ALL_SPEEDS[nextIdx] ?? 'auto';
+}
+
 export function levelLabel(level: Level): string {
   return LEVEL_LABEL[level];
 }
 
 /**
- * Advance one step on the conversation Mode dial
+ * Advance one step on the conversation Effort dial
  * (Budget → Balanced → High → Max → Auto → Budget…). PURE.
  * Absent/`undefined` is treated as `auto` (the smart default).
+ * Storage key remains `mode` / conversation `mode`.
  */
 export function nextLevel(current: Level | undefined): Level {
   const cur: Level = current !== undefined && isLevel(current) ? current : 'auto';
@@ -210,12 +264,11 @@ export function policyForLevel(level: Level): Policy | undefined {
 // ---------------------------------------------------------------------------
 
 /**
- * The default {@link Intensity} a level sets. Intensity (the 1–5 concurrency-regime
- * dial) is no longer a primary control — each level picks a sensible default, and a
- * power-user may still override it explicitly. `auto` keeps Intensity on `'auto'`
- * (let the per-turn heuristic decide). Mirrors `legacyModeToIntensity`'s envelope
- * (cost-saver→1, balanced→3, quality-first→5) so the two never disagree, with High
- * slotting at 4 between Balanced and Max. PURE.
+ * The default {@link Intensity} (user-facing **Speed**) a level sets when Speed
+ * is unset. Each Effort level picks a sensible concurrency default; a power-user
+ * may override Speed explicitly. `auto` keeps Intensity on `'auto'`. Mirrors
+ * `legacyModeToIntensity` (cost-saver→1, balanced→3, quality-first→5) with High
+ * at 4 between Balanced and Max. PURE.
  */
 export function defaultIntensityForLevel(level: Level): Intensity {
   switch (level) {

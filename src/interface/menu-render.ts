@@ -2,9 +2,10 @@
  * src/interface/menu-render.ts — Slice 1 home render skeleton (locked).
  *
  * Renders the locked home-menu skeleton from docs/menu-build-spec-final.md:
- *   1. Mode rounded box (sectionBox, two sections + internal divider) —
- *      LIVE from config.mode (not a hardcoded Auto mockup). R8.1: this is the
- *      Mode dial (lane + verification), not an unshipped Effort/Speed pair.
+ *   1. Effort + Speed rounded box (sectionBox, two sections + internal divider)
+ *      — LIVE from config.mode + config.intensity (storage keys unchanged).
+ *      D1: Effort = lane + verification; Speed = multi-goal concurrency
+ *      (crossGoalCap), not topology fantasy.
  *   2. One `Recent (<workspace label>):` list (no workspace location column yet —
  *      workspace-root resolution is a later slice; the label is just the current
  *      cwd basename, never fabricated).
@@ -25,8 +26,9 @@ import type { UpdateCheckResult } from '../infra/update-check.js';
 import type { ClaudeTokenStatus } from '../infra/credentials.js';
 import type { HealthIssue } from '../infra/health.js';
 import type { Mode } from '../core/policy.js';
-import { levelLabel, LEVEL_DESC, migrateMode } from '../core/mode-levels.js';
+import { levelLabel, LEVEL_DESC, migrateMode, speedLabel } from '../core/mode-levels.js';
 import type { Level } from '../core/mode-levels.js';
+import type { Intensity } from '../core/capacity-allocator.js';
 import { sectionBox, titleBox } from '../ui/tui.js';
 import { bold, cyan, dim, label } from '../ui/theme.js';
 import type { OutputSink } from './render.js';
@@ -42,15 +44,15 @@ import { workspaceLabel, normalizeWorkspacePath } from './workspace.js';
 import { navFooterText } from './ui/nav-footer.js';
 
 // ---------------------------------------------------------------------------
-// Mode box — live from config.mode (shared pure helper).
-// R8.1: user-facing name is "Mode" (lane + verification). Intensity is separate.
+// Effort + Speed box — live from config.mode + config.intensity (storage keys).
+// D1: Effort = lane + verification; Speed = multi-goal concurrency (crossGoalCap).
 // ---------------------------------------------------------------------------
 
 /** Inner content width matching the locked mockup box (48 columns of text). */
 export const EFFORT_BOX_WIDTH = 48;
 
 /**
- * User-facing short label for a persisted config.mode:
+ * User-facing short label for a persisted config.mode (Effort dial):
  *   undefined → Auto (smart); cost-saver → Budget; balanced → Balanced;
  *   quality-first → Max (via migrateMode). PURE.
  */
@@ -81,40 +83,43 @@ function wrapWords(text: string, width: number): string[] {
 }
 
 /**
- * Build the two sectionBox sections for the Mode box from a persisted
- * config.mode. Shared by home and New Conversation. PURE.
+ * Build the two sectionBox sections for the Effort + Speed box from persisted
+ * config.mode + config.intensity. Shared by home and New Conversation. PURE.
  *
- * Header: `Mode:  <label>` + LEVEL_DESC lines (wrapped to width 48).
- * Footer: `m = switch modes` left + current short label right-aligned.
+ * Header: `Effort: <label>` + `Speed: <label>` + LEVEL_DESC lines (width 48).
+ * Footer: `m = switch Effort` left + Effort short label right-aligned.
  *
- * When `color` is true: cyan/bold title + mode, dim description + switch hint.
+ * When `color` is true: cyan/bold titles + values, dim description + switch hint.
  * When false (NO_COLOR / tests): plain text for golden tests.
  */
 export function buildEffortModeSections(
   mode: Mode | string | null | undefined,
   color = false,
+  intensity?: Intensity | undefined,
 ): { header: string[]; footer: string[] } {
   const level: Level = migrateMode(mode);
   const short = effortModeShortLabel(mode);
-  // Visual hierarchy: label + mode read as primary; description is secondary.
-  // R8.1: "Mode" not "Effort Mode" — avoids implying the unshipped Effort/Speed pair.
-  const headerLine = `${bold(cyan('Mode:', color), color)}  ${bold(short, color)}`;
+  const speed = speedLabel(intensity);
+  // D1: user-facing Effort + Speed; storage remains mode / intensity.
+  const effortLine = `${bold(cyan('Effort:', color), color)}  ${bold(short, color)}`;
+  const speedLine = `${bold(cyan('Speed:', color), color)}   ${bold(speed, color)}${dim('  (multi-goal concurrency)', color)}`;
   const descLines = wrapWords(LEVEL_DESC[level], EFFORT_BOX_WIDTH).map((l) => dim(l, color));
-  const left = 'm = switch modes';
+  const left = 'm = Effort · Settings = Speed';
   const gap = Math.max(1, EFFORT_BOX_WIDTH - left.length - short.length);
   const footerLine = dim(left, color) + ' '.repeat(gap) + cyan(short, color);
   return {
-    header: [headerLine, ...descLines],
+    header: [effortLine, speedLine, ...descLines],
     footer: [footerLine],
   };
 }
 
-/** Render the 48-wide Mode sectionBox for the given mode. PURE (no I/O). */
+/** Render the 48-wide Effort + Speed sectionBox. PURE (no I/O). */
 export function renderEffortModeBox(
   mode: Mode | string | null | undefined,
   color: boolean,
+  intensity?: Intensity | undefined,
 ): string {
-  const { header, footer } = buildEffortModeSections(mode, color);
+  const { header, footer } = buildEffortModeSections(mode, color, intensity);
   return sectionBox([header, footer], { width: EFFORT_BOX_WIDTH, color });
 }
 
@@ -471,8 +476,10 @@ export async function renderMainScreen(
 
   const color = out.color;
 
-  // 1. Mode box — live from config.mode (blank line after for section rhythm).
-  out.write(renderEffortModeBox(mutableCtx.config.mode, color) + '\n\n');
+  // 1. Effort + Speed box — live from config.mode + config.intensity.
+  out.write(
+    renderEffortModeBox(mutableCtx.config.mode, color, mutableCtx.config.intensity) + '\n\n',
+  );
 
   // 2. Recent (<current workspace label>): — one list, no workspace split.
   //
