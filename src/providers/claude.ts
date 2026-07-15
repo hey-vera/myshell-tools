@@ -283,8 +283,9 @@ export function applyAccountEnvOverride(
  * claudeEnvWithStoredFallback. Stored credential fallback is also disabled
  * so a legacy CLAUDE_CODE_OAUTH_TOKEN never shadows the selected account.
  *
- * When req.accountEnv is absent, behaviour is byte-identical to the current
- * claudeEnvWithStoredFallback(process.env, req.cwd) path.
+ * When req.accountEnv is absent, uses official Claude CLI auth by default
+ * (no injection from ~/.myshell-tools/credentials.json). Set
+ * MYSHELL_LEGACY_CLAUDE_TOKEN=1 to restore legacy stored-token injection.
  *
  * PURE / fail-soft: never throws — falls back to the account-scoped base on
  * any error (exactly replicating today's catch-clause behaviour).
@@ -307,7 +308,7 @@ export async function buildClaudeEnv(
     }
   }
 
-  // Flag-off / global path: byte-identical to today
+  // Global path: default = official CLI auth; legacy injection only via env opt-in
   try {
     return await claudeEnvWithStoredFallback(parentEnv, req.cwd);
   } catch {
