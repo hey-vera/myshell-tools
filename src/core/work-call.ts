@@ -115,6 +115,7 @@ import {
 } from './native-session-telemetry.js';
 import { vendorNeutralRoute } from './vendor-neutral-route.js';
 import { selectExecutionLane } from './execution-lane.js';
+import { filterNativePlanByLineage } from './native-session.js';
 import {
   opencodePoolForModel,
   selectSubscriptionAccount,
@@ -1489,17 +1490,43 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
     // already withholds the plan entirely on a quarantined turn (planNativeSession
     // gets the policy); this is the in-orchestrate backstop so the directive remains
     // authoritative even if a plan slipped through. Fail-soft: no plan → no-op.
+    //
+    // R2.2 LINEAGE GATE (defense-in-depth): even if menu/planNativeSession emitted
+    // a resume plan, re-check consecutive compatible lineage against deps.history
+    // so A→B→A / account mismatch / model incompatibility never silently resume
+    // a native session that lacks intervening portable context.
     const quarantined =
       directive.historyPolicy.replayMode === 'quarantine_assistant_prose';
-    const nativePlan = quarantined
+    const rawNativePlan = quarantined
       ? undefined
       : deps.nativeSession?.find((p) => p.provider === decision.provider);
+    const lineageFiltered = filterNativePlanByLineage({
+      plan: rawNativePlan,
+      history: deps.history ?? [],
+      ...(laneAccount !== null ? { accountId: laneAccount.id } : {}),
+      ...(decision.model !== undefined ? { model: decision.model } : {}),
+    });
+    const nativePlan = lineageFiltered.plan;
     const useNative = nativePlan !== undefined;
+    if (
+      rawNativePlan !== undefined &&
+      nativePlan === undefined &&
+      lineageFiltered.withholdReason !== undefined
+    ) {
+      // Concise transition receipt (notice), not chat-body spam.
+      yield {
+        type: 'notice',
+        level: 'info',
+        message: `Native session withheld (${lineageFiltered.withholdReason}); replaying portable history`,
+      };
+    }
 
     // Compute fallback reason for telemetry (observed only, never alters behaviour).
     let nativeFallbackReason: import('./native-session-telemetry.js').NativeSessionTelemetry['fallbackReason'] | undefined;
     if (quarantined) {
       nativeFallbackReason = 'quarantined';
+    } else if (lineageFiltered.withholdReason !== undefined && rawNativePlan !== undefined) {
+      nativeFallbackReason = 'lineage-break';
     } else if (!useNative && deps.nativeSession !== undefined && deps.nativeSession.length > 0) {
       nativeFallbackReason = 'provider-mismatch';
     } else if (!useNative) {
