@@ -132,3 +132,35 @@ export function withUpdatedAvailableModels(
     platform: env.platform,
   };
 }
+
+/**
+ * Build a per-account model inventory map (R1.5 foundation).
+ *
+ * Pure merge helper for callers that already know account → model lists
+ * (e.g. future per-account detect probe). Multiple entries for the same
+ * provider+account union model ids (first-seen order, case-insensitive de-dupe).
+ * Live CLI probe wiring is follow-on; this only shapes the inventory structure.
+ *
+ * Shape matches `AvailableModelsByAccount` in execution-lane (kept structural
+ * here to avoid a module cycle with execution-lane → unionModelIds).
+ */
+export function buildAvailableModelsByAccount(
+  entries: readonly {
+    readonly provider: ProviderId;
+    readonly accountId: string;
+    readonly models: readonly string[];
+  }[],
+): Partial<Record<ProviderId, Readonly<Record<string, readonly string[]>>>> {
+  const acc: Partial<
+    Record<ProviderId, Record<string, readonly string[]>>
+  > = {};
+  for (const e of entries) {
+    const accountId = e.accountId.trim();
+    if (accountId.length === 0) continue;
+    const prevProvider = acc[e.provider] ?? {};
+    const prevList = prevProvider[accountId];
+    const merged = unionModelIds(prevList, e.models);
+    acc[e.provider] = { ...prevProvider, [accountId]: merged };
+  }
+  return acc;
+}

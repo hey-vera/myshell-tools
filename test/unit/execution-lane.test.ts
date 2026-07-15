@@ -12,7 +12,10 @@ import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {
+  accountEntitledToModel,
   deriveInventoryGeneration,
+  resolveModelsForAccount,
+  routingModelsFromInventories,
   selectExecutionLane,
 } from '../../src/core/execution-lane.ts';
 import { route } from '../../src/core/route.ts';
@@ -467,5 +470,211 @@ describe('inventoryGeneration (R1.3b)', () => {
     if (!result.ok) return;
     assert.equal(result.lane.inventoryGeneration, expected);
     assert.equal(result.lane.account!.id, 'claude-primary');
+  });
+
+  it('per-account model rows participate in derived generation', () => {
+    const a = deriveInventoryGeneration({
+      availableModelsByAccount: {
+        claude: { 'acc-a': ['model-a'], 'acc-b': ['model-b'] },
+      },
+    });
+    const b = deriveInventoryGeneration({
+      availableModelsByAccount: {
+        claude: { 'acc-a': ['model-a'], 'acc-b': ['model-c'] },
+      },
+    });
+    assert.notEqual(a, b);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R1.5 — per-account model inventory (no silent cross-entitlement pairing)
+// ---------------------------------------------------------------------------
+
+describe('per-account model inventory (R1.5)', () => {
+  it('resolveModelsForAccount prefers account row over global', () => {
+    const list = resolveModelsForAccount(
+      'claude',
+      'acc-a',
+      { claude: { 'acc-a': ['only-a'], 'acc-b': ['only-b'] } },
+      { claude: ['global-model'] },
+    );
+    assert.deepEqual(list, ['only-a']);
+  });
+
+  it('resolveModelsForAccount falls back to global when map/provider absent', () => {
+    const list = resolveModelsForAccount(
+      'claude',
+      'acc-a',
+      undefined,
+      { claude: ['global-model'] },
+    );
+    assert.deepEqual(list, ['global-model']);
+  });
+
+  it('accountEntitledToModel refuses cross-account models', () => {
+    const byAccount = {
+      claude: { 'acc-a': ['only-a'], 'acc-b': ['only-b'] },
+    };
+    assert.equal(
+      accountEntitledToModel('claude', 'acc-a', 'only-a', byAccount, undefined),
+      true,
+    );
+    assert.equal(
+      accountEntitledToModel('claude', 'acc-a', 'only-b', byAccount, undefined),
+      false,
+    );
+    assert.equal(
+      accountEntitledToModel('claude', 'acc-b', 'only-b', byAccount, undefined),
+      true,
+    );
+  });
+
+  it('routingModelsFromInventories unions per-account lists', () => {
+    const merged = routingModelsFromInventories({
+      availableModelsByAccount: {
+        claude: { 'acc-a': ['only-a'], 'acc-b': ['only-b'] },
+      },
+      accounts: [
+        makeClaude({ id: 'acc-a' }),
+        makeClaude({ id: 'acc-b' }),
+      ],
+    });
+    assert.ok(merged !== undefined);
+    assert.deepEqual([...(merged!.claude ?? [])].sort(), ['only-a', 'only-b']);
+  });
+
+  it('never pairs account A with a model only listed under account B', () => {
+    // Global + sticky would attach high-priority acc-a to the IC pricing model.
+    // Per-account rows must force the account that actually lists that model.
+    const sonnet = 'claude-sonnet-4-6';
+    const accA = makeClaude({
+      id: 'acc-a',
+      priority: 'high',
+      priorityWeight: 500,
+    });
+    const accB = makeClaude({
+      id: 'acc-b',
+      priority: 'low',
+      priorityWeight: 10,
+    });
+    const result = selectExecutionLane({
+      tier: 'ic',
+      available: ['claude'],
+      policy: DEFAULT_POLICY,
+      availableModels: { claude: [sonnet] },
+      availableModelsByAccount: {
+        claude: {
+          'acc-a': ['model-only-a'],
+          'acc-b': [sonnet],
+        },
+      },
+      accounts: [accA, accB],
+      nowMs,
+      cooldownUntil: emptyCooldown,
+      sessionTokensByAccount: {},
+      strategy: 'sticky',
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.lane.provider, 'claude');
+    assert.equal(result.lane.model, sonnet);
+    assert.ok(result.lane.account !== null);
+    assert.equal(result.lane.account!.id, 'acc-b');
+    assert.notEqual(result.lane.account!.id, 'acc-a');
+  });
+
+  it('selected model is never entitled only on the other account', () => {
+    const sonnet = 'claude-sonnet-4-6';
+    const accA = makeClaude({ id: 'acc-a', priorityWeight: 100 });
+    const accB = makeClaude({ id: 'acc-b', priorityWeight: 100 });
+    const byAccount = {
+      claude: {
+        'acc-a': ['model-only-a'],
+        'acc-b': [sonnet],
+      },
+    } as const;
+
+    const result = selectExecutionLane({
+      tier: 'ic',
+      available: ['claude'],
+      policy: DEFAULT_POLICY,
+      availableModels: { claude: [sonnet, 'model-only-a'] },
+      availableModelsByAccount: byAccount,
+      accounts: [accA, accB],
+      nowMs,
+      cooldownUntil: emptyCooldown,
+      sessionTokensByAccount: {},
+      strategy: 'spread',
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.lane.provider, 'claude');
+    assert.ok(result.lane.account !== null);
+    const owner = result.lane.account!.id;
+    const model = result.lane.model;
+    assert.equal(
+      accountEntitledToModel('claude', owner, model, byAccount, undefined),
+      true,
+    );
+    const other = owner === 'acc-a' ? 'acc-b' : 'acc-a';
+    assert.equal(
+      accountEntitledToModel('claude', other, model, byAccount, undefined),
+      false,
+    );
+  });
+
+  it('falls back to provider-global availableModels when per-account map absent', () => {
+    const accA = makeClaude({
+      id: 'acc-a',
+      priority: 'high',
+      priorityWeight: 500,
+    });
+    const accB = makeClaude({
+      id: 'acc-b',
+      priority: 'low',
+      priorityWeight: 10,
+    });
+    const result = selectExecutionLane({
+      tier: 'ic',
+      available: ['claude'],
+      policy: DEFAULT_POLICY,
+      availableModels: { claude: ['claude-sonnet-4-6'] },
+      accounts: [accA, accB],
+      nowMs,
+      cooldownUntil: emptyCooldown,
+      sessionTokensByAccount: {},
+      strategy: 'sticky',
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    // No per-account map → sticky high-priority account may run global model.
+    assert.equal(result.lane.account!.id, 'acc-a');
+    assert.equal(result.lane.model, 'claude-sonnet-4-6');
+  });
+
+  it('fails closed when no account is entitled to the routable model', () => {
+    const accA = makeClaude({ id: 'acc-a' });
+    const result = selectExecutionLane({
+      tier: 'ic',
+      available: ['claude'],
+      policy: DEFAULT_POLICY,
+      availableModels: { claude: ['claude-sonnet-4-6'] },
+      availableModelsByAccount: {
+        claude: {
+          'acc-a': ['model-only-a'],
+        },
+      },
+      accounts: [accA],
+      nowMs,
+      cooldownUntil: emptyCooldown,
+      sessionTokensByAccount: {},
+      strategy: 'sticky',
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.failure.code, 'no_eligible_lane');
+    assert.ok(result.failure.blockedProviders.includes('claude'));
+    assert.match(result.failure.message, /per-account inventory|entitled/i);
   });
 });

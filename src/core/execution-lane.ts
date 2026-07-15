@@ -1,11 +1,9 @@
 /**
- * src/core/execution-lane.ts — atomic execution-lane selection (R1.1 / R1.3b / R1.4).
+ * src/core/execution-lane.ts — atomic execution-lane selection (R1.1 / R1.3b / R1.4 / R1.5).
  *
  * The routing atom is an eligible **lane** = provider + account + model chosen
- * together, not model-then-account. Inventory v1 still uses provider-global
- * `availableModels` (same models for every account of a provider until full
- * per-account probe), but selection always returns one struct pairing all three
- * and tags the snapshot with a versioned **inventory generation**.
+ * together, not model-then-account. Selection always returns one struct pairing
+ * all three and tags the snapshot with a versioned **inventory generation**.
  *
  * Managed-account contract:
  *  - When managed subscription accounts exist for a provider, work-call spawn
@@ -20,10 +18,11 @@
  *  - Callers may pass an explicit `inventoryGeneration` (counter / probe token)
  *    to freeze per turn.
  *  - When absent, a stable content hash is derived from sorted provider / model /
- *    account ids — deterministic for tests; never Date.now.
+ *    account ids (and per-account model rows when present) — deterministic for
+ *    tests; never Date.now.
  *
  * Progressive admission (R1.4):
- *  - When `availableModels` is supplied, models are filtered by
+ *  - When inventory is supplied, models are filtered by
  *    {@link filterAvailableModelsForTier} using the capability registry
  *    (capabilityContext.registry or declarative floor).
  *  - Live inventory ids are spawnable (provisional inventory-listed) on worker,
@@ -33,6 +32,16 @@
  *  - Sparse registries merge declarative curated profiles for admission.
  *  - Chosen model is re-checked post-route so pricing-table fallback cannot
  *    resurrect candidate/invalidated/worker-floor ids.
+ *
+ * Per-account model inventory (R1.5):
+ *  - Optional `availableModelsByAccount[provider][accountId]` is preferred when
+ *    present for an account; provider-global `availableModels` is used only when
+ *    the per-account map is absent for that provider (or the account has no row
+ *    and global is the fallback).
+ *  - When per-account inventories exist and differ, a model listed only under
+ *    account B is never paired with account A.
+ *  - Live per-account CLI probe is follow-on; this slice is the pure selection
+ *    + deps API foundation.
  *
  * Pure: no I/O, no Date.now / Math.random / console / process.exit.
  */
@@ -44,6 +53,7 @@ import {
   type CapabilityRouteContext,
 } from './route.js';
 import {
+  isSubscriptionAccountStructurallyEligible,
   opencodePoolForModel,
   selectSubscriptionAccount,
 } from './opencode-account-routing.js';
@@ -63,6 +73,7 @@ import {
   resolveModelAdmission,
   type AdmissionOverrideMap,
 } from './model-admission.js';
+import { unionModelIds } from './live-model-inventory.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -73,6 +84,22 @@ import {
  * Explicit counters are usually numbers; content-derived tokens are `ig-…` strings.
  */
 export type InventoryGeneration = string | number;
+
+/**
+ * Models available to a single account (account id or alias → model ids).
+ * Empty array means the account has a known empty entitlement list (not
+ * "fall back to global").
+ */
+export type AccountModelList = Readonly<Record<string, readonly string[]>>;
+
+/**
+ * Per-provider map of account id → models that account may run (R1.5).
+ * When a provider key is present, lane selection prefers these lists over the
+ * provider-global `availableModels` for accounts that appear in the map.
+ */
+export type AvailableModelsByAccount = Partial<
+  Record<ProviderId, AccountModelList>
+>;
 
 /**
  * One selected execution lane: provider, model, and account are atomic.
@@ -112,6 +139,13 @@ export interface SelectExecutionLaneInput {
   readonly available: readonly ProviderId[];
   readonly policy: Policy;
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
+  /**
+   * Optional per-account model inventory (R1.5). Preferred over
+   * {@link availableModels} for accounts that have a row under their provider.
+   * When the whole map (or a provider key) is absent, provider-global
+   * `availableModels` remains the filter (backward compatible).
+   */
+  readonly availableModelsByAccount?: AvailableModelsByAccount;
   readonly authenticatedProviders?: readonly ProviderId[];
   readonly preferredOrder?: readonly ProviderId[];
   readonly capabilityContext?: CapabilityRouteContext;
@@ -147,10 +181,12 @@ export interface SelectExecutionLaneInput {
 
 /**
  * Canonical fingerprint of inventory contents for stable generation derivation.
- * Order-independent: providers, models, and account ids are sorted.
+ * Order-independent: providers, models, per-account model rows, and account ids
+ * are sorted.
  */
 export function inventoryFingerprint(input: {
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
+  readonly availableModelsByAccount?: AvailableModelsByAccount;
   readonly accounts?: readonly { readonly id: string; readonly provider: string }[];
   readonly opencodeAccounts?: readonly { readonly id: string }[];
 }): string {
@@ -162,6 +198,21 @@ export function inventoryFingerprint(input: {
     if (list === undefined) continue;
     for (const model of [...list].map((m) => m.trim()).filter((m) => m.length > 0).sort()) {
       lines.push(`model\t${provider}\t${model}`);
+    }
+  }
+
+  const byAccount = input.availableModelsByAccount ?? {};
+  for (const provider of Object.keys(byAccount).sort()) {
+    const accountMap = byAccount[provider as ProviderId];
+    if (accountMap === undefined) continue;
+    for (const accountId of Object.keys(accountMap).sort()) {
+      const list = accountMap[accountId] ?? [];
+      for (const model of [...list].map((m) => m.trim()).filter((m) => m.length > 0).sort()) {
+        lines.push(`account-model\t${provider}\t${accountId}\t${model}`);
+      }
+      if (list.length === 0) {
+        lines.push(`account-model\t${provider}\t${accountId}\t`);
+      }
     }
   }
 
@@ -200,6 +251,7 @@ function hashFingerprint(fingerprint: string): string {
  */
 export function deriveInventoryGeneration(input: {
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
+  readonly availableModelsByAccount?: AvailableModelsByAccount;
   readonly accounts?: readonly { readonly id: string; readonly provider: string }[];
   readonly opencodeAccounts?: readonly { readonly id: string }[];
 }): string {
@@ -213,12 +265,180 @@ export function resolveInventoryGeneration(
   explicit: InventoryGeneration | undefined,
   inventory: {
     readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
+    readonly availableModelsByAccount?: AvailableModelsByAccount;
     readonly accounts?: readonly { readonly id: string; readonly provider: string }[];
     readonly opencodeAccounts?: readonly { readonly id: string }[];
   },
 ): InventoryGeneration {
   if (explicit !== undefined) return explicit;
   return deriveInventoryGeneration(inventory);
+}
+
+// ---------------------------------------------------------------------------
+// Per-account model inventory (R1.5)
+// ---------------------------------------------------------------------------
+
+/** Case-insensitive model id membership (trim; empty never matches). */
+export function modelListIncludes(
+  list: readonly string[] | undefined,
+  model: string,
+): boolean {
+  if (list === undefined) return false;
+  const key = model.trim().toLowerCase();
+  if (key.length === 0) return false;
+  return list.some((m) => m.trim().toLowerCase() === key);
+}
+
+/**
+ * Resolve the model list that governs a specific account.
+ *
+ * - Per-account map absent for the provider → provider-global list (may be
+ *   undefined = unrestricted / pricing-table fallback).
+ * - Account has an explicit row under the provider map → that list (even empty).
+ * - Provider map present but account has no row → provider-global fallback.
+ */
+export function resolveModelsForAccount(
+  provider: ProviderId,
+  accountId: string,
+  availableModelsByAccount: AvailableModelsByAccount | undefined,
+  availableModels: Partial<Record<ProviderId, readonly string[]>> | undefined,
+): readonly string[] | undefined {
+  const byProvider = availableModelsByAccount?.[provider];
+  if (byProvider === undefined) {
+    return availableModels?.[provider];
+  }
+  if (Object.prototype.hasOwnProperty.call(byProvider, accountId)) {
+    return byProvider[accountId] ?? [];
+  }
+  return availableModels?.[provider];
+}
+
+/**
+ * True when the account may run `model` under R1.5 entitlement rules.
+ * Unrestricted (no list) → true; explicit list → membership only.
+ */
+export function accountEntitledToModel(
+  provider: ProviderId,
+  accountId: string,
+  model: string,
+  availableModelsByAccount: AvailableModelsByAccount | undefined,
+  availableModels: Partial<Record<ProviderId, readonly string[]>> | undefined,
+): boolean {
+  const list = resolveModelsForAccount(
+    provider,
+    accountId,
+    availableModelsByAccount,
+    availableModels,
+  );
+  if (list === undefined) return true;
+  return modelListIncludes(list, model);
+}
+
+/**
+ * Build the provider → model map used for routing when per-account inventories
+ * may expand (or replace) the provider-global list.
+ *
+ * For each provider with a per-account map: union of all account lists, plus
+ * the global list for any managed account that lacks a row (fallback). Providers
+ * without a per-account map keep provider-global entries only.
+ */
+export function routingModelsFromInventories(input: {
+  readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
+  readonly availableModelsByAccount?: AvailableModelsByAccount;
+  readonly accounts?: readonly SubscriptionAccount[];
+  readonly opencodeAccounts?: readonly OpencodeSubscriptionAccount[];
+}): Partial<Record<ProviderId, readonly string[]>> | undefined {
+  const { availableModels, availableModelsByAccount } = input;
+  if (availableModels === undefined && availableModelsByAccount === undefined) {
+    return undefined;
+  }
+
+  const providerKeys = new Set<ProviderId>();
+  if (availableModels !== undefined) {
+    for (const k of Object.keys(availableModels) as ProviderId[]) {
+      providerKeys.add(k);
+    }
+  }
+  if (availableModelsByAccount !== undefined) {
+    for (const k of Object.keys(availableModelsByAccount) as ProviderId[]) {
+      providerKeys.add(k);
+    }
+  }
+
+  const out: Partial<Record<ProviderId, readonly string[]>> = {};
+  for (const provider of providerKeys) {
+    const byAcct = availableModelsByAccount?.[provider];
+    if (byAcct === undefined) {
+      const global = availableModels?.[provider];
+      if (global !== undefined) out[provider] = global;
+      continue;
+    }
+
+    const lists: (readonly string[] | undefined)[] = Object.values(byAcct);
+    const managed = managedAccountsForProvider(
+      provider,
+      input.accounts,
+      input.opencodeAccounts,
+    );
+    for (const a of managed) {
+      if (!Object.prototype.hasOwnProperty.call(byAcct, a.id)) {
+        lists.push(availableModels?.[provider]);
+      }
+    }
+    // No managed accounts but per-account map present (e.g. pre-wired probe):
+    // still expose the union so ambient path can use the same filter surface.
+    if (managed.length === 0 && availableModels?.[provider] !== undefined) {
+      lists.push(availableModels[provider]);
+    }
+    const merged = unionModelIds(...lists);
+    out[provider] = merged;
+  }
+
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function omitModelFromInventory(
+  models: Partial<Record<ProviderId, readonly string[]>>,
+  provider: ProviderId,
+  model: string,
+): Partial<Record<ProviderId, readonly string[]>> {
+  const key = model.trim().toLowerCase();
+  const list = models[provider];
+  const next: Partial<Record<ProviderId, readonly string[]>> = { ...models };
+  if (list === undefined) {
+    next[provider] = [];
+    return next;
+  }
+  next[provider] = list.filter((m) => m.trim().toLowerCase() !== key);
+  return next;
+}
+
+/**
+ * Drop a model from the route inventory; returns true when the map shrank.
+ * When the model was not in the list (e.g. pricing-table fallback outside
+ * inventory), clears the provider list so the loop cannot spin forever.
+ */
+function dropModelOrClearProvider(
+  models: Partial<Record<ProviderId, readonly string[]>>,
+  provider: ProviderId,
+  model: string,
+): {
+  readonly next: Partial<Record<ProviderId, readonly string[]>>;
+  readonly progressed: boolean;
+} {
+  const before = models[provider];
+  const next = omitModelFromInventory(models, provider, model);
+  const after = next[provider];
+  const shrunk = (before?.length ?? 0) !== (after?.length ?? 0);
+  if (shrunk) {
+    return { next, progressed: (after?.length ?? 0) > 0 };
+  }
+  // No progress: pricing fallback / non-inventory model — clear provider list.
+  const cleared: Partial<Record<ProviderId, readonly string[]>> = {
+    ...models,
+    [provider]: [],
+  };
+  return { next: cleared, progressed: false };
 }
 
 const SUBSCRIPTION_PROVIDERS: ReadonlySet<string> = new Set([
@@ -289,6 +509,7 @@ export function selectExecutionLane(
     tier,
     policy,
     availableModels,
+    availableModelsByAccount,
     authenticatedProviders,
     preferredOrder,
     capabilityContext,
@@ -303,23 +524,37 @@ export function selectExecutionLane(
 
   const inventoryGeneration = resolveInventoryGeneration(input.inventoryGeneration, {
     ...(availableModels !== undefined ? { availableModels } : {}),
+    ...(availableModelsByAccount !== undefined
+      ? { availableModelsByAccount }
+      : {}),
+    ...(accounts !== undefined ? { accounts } : {}),
+    ...(opencodeAccounts !== undefined ? { opencodeAccounts } : {}),
+  });
+
+  // Merge provider-global + per-account inventories into the route surface.
+  // Generation fingerprint still uses the unfiltered caller inventory.
+  const baseInventory = routingModelsFromInventories({
+    ...(availableModels !== undefined ? { availableModels } : {}),
+    ...(availableModelsByAccount !== undefined
+      ? { availableModelsByAccount }
+      : {}),
     ...(accounts !== undefined ? { accounts } : {}),
     ...(opencodeAccounts !== undefined ? { opencodeAccounts } : {}),
   });
 
   // R1.4 — progressive admission filter when inventory is supplied.
   // Registry floor: capabilityContext.registry, else declarative curated table.
-  // Generation fingerprint still uses the unfiltered inventory (discovery truth).
   const admissionRegistry =
     capabilityContext?.registry ?? DECLARATIVE_MODEL_CAPABILITIES;
-  let modelsForRoute = availableModels;
+  let modelsForRoute = baseInventory;
   let remaining: ProviderId[] = [...input.available];
   const blockedProviders: ProviderId[] = [];
   const admissionBlocked: ProviderId[] = [];
+  const entitlementBlocked: ProviderId[] = [];
 
-  if (availableModels !== undefined) {
+  if (baseInventory !== undefined) {
     const filtered = filterAvailableModelsForTier(
-      availableModels,
+      baseInventory,
       tier,
       admissionRegistry,
       admissionOverrides,
@@ -328,7 +563,7 @@ export function selectExecutionLane(
     // Drop providers whose inventory was exclusively non-admitted for this tier
     // (e.g. manager with explicit candidate/worker-floor-only overrides).
     remaining = remaining.filter((p) => {
-      if (providerBlockedByAdmission(p, availableModels[p], filtered[p])) {
+      if (providerBlockedByAdmission(p, baseInventory[p], filtered[p])) {
         if (!admissionBlocked.includes(p)) admissionBlocked.push(p);
         if (!blockedProviders.includes(p)) blockedProviders.push(p);
         return false;
@@ -359,12 +594,8 @@ export function selectExecutionLane(
     // R1.4 post-check: refuse models that fail progressive admission for tier
     // (pricing fallback must not resurrect candidate/worker-floor quarantine).
     // Models present in the caller's live inventory are marked inLiveInventory.
-    const inventoryList = availableModels?.[provider];
-    const inLiveInventory =
-      inventoryList !== undefined &&
-      inventoryList.some(
-        (m) => m.trim().toLowerCase() === decision.model.trim().toLowerCase(),
-      );
+    const inventoryList = baseInventory?.[provider];
+    const inLiveInventory = modelListIncludes(inventoryList, decision.model);
     const admission = resolveModelAdmission(
       admissionRegistry,
       provider,
@@ -404,8 +635,43 @@ export function selectExecutionLane(
       };
     }
 
+    // R1.5: only accounts entitled to this model may pair (never cross-account).
+    const entitled = managed.filter((a) =>
+      accountEntitledToModel(
+        provider,
+        a.id,
+        decision.model,
+        availableModelsByAccount,
+        availableModels,
+      ),
+    );
+
+    // No account lists this model — drop the model and retry (other accounts
+    // may still own different models on the same provider).
+    if (entitled.length === 0) {
+      if (!entitlementBlocked.includes(provider)) {
+        entitlementBlocked.push(provider);
+      }
+      if (modelsForRoute !== undefined) {
+        const drop = dropModelOrClearProvider(
+          modelsForRoute,
+          provider,
+          decision.model,
+        );
+        modelsForRoute = drop.next;
+        if (drop.progressed) {
+          continue;
+        }
+      }
+      if (!blockedProviders.includes(provider)) {
+        blockedProviders.push(provider);
+      }
+      remaining = remaining.filter((p) => p !== provider);
+      continue;
+    }
+
     const account = selectSubscriptionAccount({
-      accounts: managed,
+      accounts: entitled,
       provider,
       ...(provider === 'opencode'
         ? { pool: opencodePoolForModel(decision.model) ?? 'zen' }
@@ -417,10 +683,58 @@ export function selectExecutionLane(
     });
 
     if (account !== null) {
+      // Defense in depth: never return a cross-account entitlement miss.
+      if (
+        !accountEntitledToModel(
+          provider,
+          account.id,
+          decision.model,
+          availableModelsByAccount,
+          availableModels,
+        )
+      ) {
+        if (!entitlementBlocked.includes(provider)) {
+          entitlementBlocked.push(provider);
+        }
+        if (modelsForRoute !== undefined) {
+          const drop = dropModelOrClearProvider(
+            modelsForRoute,
+            provider,
+            decision.model,
+          );
+          modelsForRoute = drop.next;
+          if (drop.progressed) {
+            continue;
+          }
+        }
+        if (!blockedProviders.includes(provider)) {
+          blockedProviders.push(provider);
+        }
+        remaining = remaining.filter((p) => p !== provider);
+        continue;
+      }
       return {
         ok: true,
         lane: decisionToLane(decision, account, inventoryGeneration),
       };
+    }
+
+    // Entitled accounts present but none selectable (status/cooldown/pool).
+    // If any managed account is still structurally eligible for *some* other
+    // model, drop only this model; otherwise block the provider.
+    const anyStructurallyEligible = managed.some((a) =>
+      isSubscriptionAccountStructurallyEligible(a, nowMs),
+    );
+    if (anyStructurallyEligible && modelsForRoute !== undefined) {
+      const drop = dropModelOrClearProvider(
+        modelsForRoute,
+        provider,
+        decision.model,
+      );
+      modelsForRoute = drop.next;
+      if (drop.progressed) {
+        continue;
+      }
     }
 
     // Managed accounts present but none eligible — block this provider; do not
@@ -440,6 +754,11 @@ export function selectExecutionLane(
       ? ` Progressive admission blocked (candidate/worker-floor/invalidated for tier ` +
         `"${tier}"): ${admissionBlocked.join(', ')}.`
       : '';
+  const entitlementNote =
+    entitlementBlocked.length > 0
+      ? ` Per-account inventory blocked cross-entitlement pairing for: ` +
+        `${entitlementBlocked.join(', ')}.`
+      : '';
   return {
     ok: false,
     failure: {
@@ -447,11 +766,12 @@ export function selectExecutionLane(
       message:
         `No eligible execution lane: managed subscription accounts exist but none ` +
         `are selectable (status auth-failed/unknown/disabled/expired, disabled, ` +
-        `cooled without alternate provider, or pool mismatch), or progressive ` +
-        `admission refused all inventory for this tier. Blocked managed ` +
-        `providers: ${blockedList}.${admissionNote} Refusing ambient global ` +
-        `credentials for those providers. Add/repair an eligible account, enable ` +
-        `another provider, or wait for model admission promotion.`,
+        `cooled without alternate provider, pool mismatch, or model not entitled ` +
+        `on any account), or progressive admission refused all inventory for this ` +
+        `tier. Blocked managed providers: ${blockedList}.${admissionNote}` +
+        `${entitlementNote} Refusing ambient global credentials for those ` +
+        `providers. Add/repair an eligible account, enable another provider, or ` +
+        `wait for model admission promotion.`,
       blockedProviders,
     },
   };

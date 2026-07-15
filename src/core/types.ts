@@ -447,6 +447,15 @@ export interface OrchestrateDeps {
    */
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
   /**
+   * Optional per-account model inventory (R1.5). Keyed by provider → account
+   * id → model ids. When present, `selectExecutionLane` prefers these lists
+   * over {@link availableModels} for accounts that have a row, so two accounts
+   * with different entitlements cannot be cross-paired. Absent → provider-global
+   * `availableModels` only (backward compatible). Live per-account CLI probe is
+   * follow-on; callers may plumb probe results here when available.
+   */
+  readonly availableModelsByAccount?: import('./execution-lane.js').AvailableModelsByAccount;
+  /**
    * Versioned inventory generation for this deps/turn snapshot (R1.3b).
    * When present, work-call / hedge / strong-meta freeze it onto selected
    * execution lanes. When absent, selectExecutionLane derives a stable

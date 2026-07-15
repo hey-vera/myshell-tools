@@ -15,6 +15,7 @@ import {
   unionModelIds,
   routingInventoryFromDetectAndRegistry,
   withUpdatedAvailableModels,
+  buildAvailableModelsByAccount,
 } from '../../src/core/live-model-inventory.ts';
 import type { CapabilityRegistry, ModelCapability } from '../../src/core/model-capabilities.ts';
 import type { EnvironmentStatus, ProviderStatus } from '../../src/providers/detect.ts';
@@ -162,5 +163,19 @@ describe('withUpdatedAvailableModels', () => {
     assert.deepEqual(next.codex.availableModels, ['gpt-5.5', 'gpt-future-x']);
     assert.equal(next.claude.plan, 'max');
     assert.deepEqual(next.claude.availableModels, ['opus']);
+  });
+});
+
+describe('buildAvailableModelsByAccount (R1.5)', () => {
+  it('shapes per-account inventory and unions duplicate account rows', () => {
+    const map = buildAvailableModelsByAccount([
+      { provider: 'claude', accountId: 'acc-a', models: ['model-a', 'MODEL-A'] },
+      { provider: 'claude', accountId: 'acc-a', models: ['model-a2'] },
+      { provider: 'claude', accountId: 'acc-b', models: ['model-b'] },
+      { provider: 'codex', accountId: 'cx-1', models: ['gpt-future'] },
+    ]);
+    assert.deepEqual(map.claude?.['acc-a'], ['model-a', 'model-a2']);
+    assert.deepEqual(map.claude?.['acc-b'], ['model-b']);
+    assert.deepEqual(map.codex?.['cx-1'], ['gpt-future']);
   });
 });

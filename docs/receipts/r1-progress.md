@@ -18,13 +18,21 @@ Main tip after merge train: `3af24a3` (`feat(core): hedge arms select atomic exe
 - **Strong-meta** uses live inventory + atomic lane selection; dated hard-coded model IDs removed from menu meta path.
 - **Hedge** primary/speculative arms (when account-parallelism is armed) use the same atomic lane path.
 
+## Later slices (post-#193)
+
+| Slice | Title | Notes |
+| --- | --- | --- |
+| R1.3b | Inventory generation on lane snapshot | `docs/receipts/r1-inventory-generation.md` |
+| R1.4 | Progressive model admission | merged on main (`#196`) |
+| R1.5 | Per-account model inventory foundation | `docs/receipts/r1-per-account-model-inventory.md` |
+
 ## What remains for R1
 
-- Per-account model inventory (true entitlement isolation).
-- Progressive admission (supported / unsupported / unknown / temporarily_unavailable + freshness / generation).
-- Inventory generation freeze for all call sites.
+- Live per-account CLI model probe (plumb detect → `availableModelsByAccount`).
 - Remaining ambient / dated bypass audit beyond work-call, strong-meta, and hedge.
+- Full multi-account OS isolation matrix (out of R1 foundation scope).
 
 ## Active next
 
-Finish **R1 remaining**, then **R2** (safe same-chat adaptation). Authority: `CLAUDEPLAN.md`. Status: `docs/ROADMAP-STATUS.md`.
+Wire **live per-account probe** into `availableModelsByAccount`, then **R2**
+(safe same-chat adaptation). Authority: `CLAUDEPLAN.md`. Status: `docs/ROADMAP-STATUS.md`.
