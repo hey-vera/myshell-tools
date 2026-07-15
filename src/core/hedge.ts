@@ -320,6 +320,9 @@ async function runAttempt(
       available: routePool,
       policy: effPolicy,
       ...(deps.availableModels !== undefined ? { availableModels: deps.availableModels } : {}),
+      ...(deps.availableModelsByAccount !== undefined
+        ? { availableModelsByAccount: deps.availableModelsByAccount }
+        : {}),
       ...(deps.authenticatedProviders !== undefined
         ? { authenticatedProviders: deps.authenticatedProviders }
         : {}),
@@ -1410,6 +1413,9 @@ export async function* runHedged(
         policy: deps.policy,
         ...(deps.availableModels !== undefined
           ? { availableModels: deps.availableModels }
+          : {}),
+        ...(deps.availableModelsByAccount !== undefined
+          ? { availableModelsByAccount: deps.availableModelsByAccount }
           : {}),
         ...(deps.authenticatedProviders !== undefined
           ? { authenticatedProviders: deps.authenticatedProviders }

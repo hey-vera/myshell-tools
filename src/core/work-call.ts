@@ -1307,6 +1307,10 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       available: routePool,
       policy: effPolicy,
       ...(deps.availableModels !== undefined ? { availableModels: deps.availableModels } : {}),
+      // R1.5: per-account model inventory when callers have entitlement rows.
+      ...(deps.availableModelsByAccount !== undefined
+        ? { availableModelsByAccount: deps.availableModelsByAccount }
+        : {}),
       ...(deps.authenticatedProviders !== undefined
         ? { authenticatedProviders: deps.authenticatedProviders }
         : {}),

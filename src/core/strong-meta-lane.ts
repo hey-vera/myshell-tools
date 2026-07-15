@@ -54,6 +54,8 @@ export interface SelectStrongMetaLaneInput {
   /** Session-available provider ids (typically keys of ctx.providers). */
   readonly available: readonly ProviderId[];
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
+  /** Optional per-account model inventory (R1.5); see SelectExecutionLaneInput. */
+  readonly availableModelsByAccount?: SelectExecutionLaneInput['availableModelsByAccount'];
   readonly authenticatedProviders?: readonly ProviderId[];
   /**
    * Base policy. maxTier is forced to `manager` so meta always requests a
@@ -113,6 +115,9 @@ export function selectStrongMetaLane(
     strategy: input.strategy ?? 'sticky',
     ...(input.availableModels !== undefined
       ? { availableModels: input.availableModels }
+      : {}),
+    ...(input.availableModelsByAccount !== undefined
+      ? { availableModelsByAccount: input.availableModelsByAccount }
       : {}),
     ...(input.authenticatedProviders !== undefined
       ? { authenticatedProviders: input.authenticatedProviders }
