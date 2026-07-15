@@ -90,31 +90,21 @@ jobs:
           retention-days: 30
 
   package-check:
-    # Branch protection requires this exact status-check context for the default cell.
-    # Keep a single-entry matrix so smoke:packed can expand to more OS/node later without
-    # renaming the required check; additional cells would need their own required contexts.
+    # Branch protection requires this exact status-check context.
+    # No strategy.matrix: GitHub appends "(os, node)" to matrix job names and that
+    # mismatches the required check name.
     name: Package check (ubuntu-latest / node 22)
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     needs: test
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
-        node: [22]
-        # Expand later, e.g.:
-        # os: [ubuntu-latest, macos-latest, windows-latest]
-        # node: [20, 22, 24]
-        # Note: multi-cell matrix with a fixed name collapses check contexts — only expand
-        # after branch protection is updated for the new naming scheme.
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js ${{ matrix.node }}
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
