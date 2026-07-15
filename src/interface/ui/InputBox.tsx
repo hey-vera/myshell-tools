@@ -742,8 +742,13 @@ export function InputBox({
   const inputHandlerRef = useRef<Parameters<typeof useInput>[0]>(() => undefined);
   inputHandlerRef.current = (input, key): void => {
     // Optional mouse reports (P1.3): never type SGR click sequences into the buffer.
-    // Legend / ControlPanel own the actual click actions; we only fail-soft here.
+    // When a menu/confirm readKey is pending, forward the report so list screens
+    // (accounts) can hit-test rows. Legend / ControlPanel still own their own
+    // useInput clicks when no menu read is pending.
     if (input.length > 0 && isMouseInput(input)) {
+      if (readPending?.() === true) {
+        onReadKey?.(input, key as KeyCaptureFlagsLike);
+      }
       return;
     }
 
