@@ -178,6 +178,37 @@ describe('purpose-bound failover and verification reservations cannot be borrowe
     const r = b.begin({ purpose: 'route', bucket: 'discretionary' });
     assert.ok(!r.allowed);
   });
+
+  it('discretionary cannot spend reserved work unit when discretionary is exhausted', () => {
+    // Live chat mint shape: reserved.work:1; totalUnits leaves room for auxiliaries.
+    // Discretionary may exhaust its own pool but must never borrow the work unit.
+    const b = createTurnCallBudget(
+      budgetSpec({ mode: 'enforce', totalUnits: 3, reservedWork: 1 }),
+    );
+    const s0 = b.snapshot();
+    assert.equal(s0.mode, 'enforce');
+    assert.equal(s0.workRemaining, 1);
+    assert.equal(s0.discretionaryRemaining, 2);
+
+    const d1 = b.begin({ purpose: 'route', bucket: 'discretionary' });
+    assert.ok(d1.allowed);
+    const d2 = b.begin({ purpose: 'intent', bucket: 'discretionary' });
+    assert.ok(d2.allowed);
+
+    const d3 = b.begin({ purpose: 'meta', bucket: 'discretionary' });
+    assert.ok(!d3.allowed, 'third discretionary must be denied');
+    assert.equal(d3.denial.reason, 'insufficient-discretionary-capacity');
+
+    const s1 = b.snapshot();
+    assert.equal(s1.workRemaining, 1, 'reserved work unit must remain intact');
+    assert.equal(s1.discretionaryRemaining, 0);
+    assert.equal(s1.denied, 1);
+
+    // Core answer still has its reserved unit.
+    const work = b.begin(workReq());
+    assert.ok(work.allowed, 'work bucket still admits after discretionary exhaustion');
+    assert.equal(b.snapshot().workRemaining, 0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -690,5 +721,29 @@ describe('invalid specs are rejected', () => {
       () => createTurnCallBudget(budgetSpec({ mode: 'enforce2' as TurnCallBudgetMode })),
       /mode/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R5.1 — live chat path mints enforce mode (source composition)
+// ---------------------------------------------------------------------------
+describe('live chat path mints enforce TurnCallBudget (R5.1)', () => {
+  it('menu.ts and repl.ts mint mode enforce with reserved.work:1', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const root = path.resolve(import.meta.dirname, '../..');
+    for (const rel of ['src/interface/menu.ts', 'src/interface/repl.ts'] as const) {
+      const src = fs.readFileSync(path.join(root, rel), 'utf8');
+      assert.match(
+        src,
+        /createTurnCallBudget\(\{[\s\S]*?mode:\s*'enforce'[\s\S]*?work:\s*1/,
+        `${rel} must mint createTurnCallBudget in enforce mode with reserved.work:1`,
+      );
+      assert.doesNotMatch(
+        src,
+        /createTurnCallBudget\(\{[\s\S]*?mode:\s*'observe'/,
+        `${rel} must not mint observe mode on the live turn budget`,
+      );
+    }
   });
 });
