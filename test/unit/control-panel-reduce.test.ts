@@ -623,6 +623,7 @@ describe('settings/sync', () => {
   it('replaces the settings snapshot', () => {
     const snapshot: UiSettingsSnapshot = {
       mode: 'balanced',
+      intensity: 'auto',
       oversight: 'checkpoint',
       verbosity: 'normal',
       colorTheme: 'dark',
@@ -642,12 +643,12 @@ describe('settings/sync', () => {
 
   it('overwrites a previous snapshot', () => {
     const s1: UiSettingsSnapshot = {
-      mode: 'auto', oversight: 'autonomous', verbosity: 'verbose',
+      mode: 'auto', intensity: '3', oversight: 'autonomous', verbosity: 'verbose',
       colorTheme: 'light', memory: false, learnedTaste: true,
       codebaseAwareness: false, setAsDefault: true, modelGhost: false,
     };
     const s2: UiSettingsSnapshot = {
-      mode: 'max', oversight: 'review-all', verbosity: 'quiet',
+      mode: 'max', intensity: 'auto', oversight: 'review-all', verbosity: 'quiet',
       colorTheme: 'dark', memory: true, learnedTaste: false,
       codebaseAwareness: true, setAsDefault: false, modelGhost: true,
     };

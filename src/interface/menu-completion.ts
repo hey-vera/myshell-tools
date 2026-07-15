@@ -26,8 +26,8 @@ import type { Clock } from '../core/types.js';
  * The slash-commands available at the chat prompt — the canonical command set
  * (Tab T1, docs/tab-completion-5.5.md). Tab-completion offers exactly these;
  * keep in sync with the dispatch in `runOneChatInput` (/retry, /edit, /style,
- * /oversight, /mode, /goal, /goals, /todo, /rule, /recap, /remember, /forget,
- * /memory, /help, /back, /exit).
+ * /oversight, /mode, /speed, /goal, /goals, /todo, /rule, /recap, /remember,
+ * /forget, /memory, /help, /back, /exit).
  * Ordered most-used first.
  */
 export const CHAT_SLASH_COMMANDS: readonly string[] = [
@@ -37,6 +37,7 @@ export const CHAT_SLASH_COMMANDS: readonly string[] = [
   '/style',
   '/oversight',
   '/mode',
+  '/speed',
   '/goal',
   '/goals',
   '/todo',
@@ -84,7 +85,8 @@ export function completeSlash(
  * subcommands).
  */
 export const CHAT_SLASH_ARG_MAP: Readonly<Record<string, readonly string[]>> = {
-  '/mode': ['Efficient', 'Balanced', 'Max'],
+  '/mode': ['Budget', 'Balanced', 'High', 'Max', 'Auto'],
+  '/speed': ['Auto', '1', '2', '3', '4', '5'],
   '/style': ['Direct', 'Balanced', 'Collaborative'],
   '/memory': ['list', 'all', 'loaded', 'export', 'edit'],
   '/goals': ['list', 'show', 'go', 'drop', 'cancel'],

@@ -194,16 +194,37 @@ function buildSettingsRows(
 
   rows.push({
     id: 'mode',
-    label: 'New conversation mode',
+    label: 'New conversation Effort',
     kind: 'segmented',
     value: snapshot.mode,
     selected: idx === selectedIndex,
+    note: 'lane + verification',
     options: [
       { value: 'auto', label: 'Auto', active: snapshot.mode === 'auto' },
       { value: 'budget', label: 'Budget', active: snapshot.mode === 'budget' },
       { value: 'balanced', label: 'Balanced', active: snapshot.mode === 'balanced' },
       { value: 'high', label: 'High', active: snapshot.mode === 'high' },
       { value: 'max', label: 'Max', active: snapshot.mode === 'max' },
+    ],
+  });
+  idx += 1;
+
+  // D1: Speed dial (storage intensity) — multi-goal concurrency, not topology.
+  const speedVal = snapshot.intensity;
+  rows.push({
+    id: 'intensity',
+    label: 'New conversation Speed',
+    kind: 'segmented',
+    value: speedVal,
+    selected: idx === selectedIndex,
+    note: 'multi-goal concurrency (not topology)',
+    options: [
+      { value: 'auto', label: 'Auto', active: speedVal === 'auto' },
+      { value: '1', label: '1', active: speedVal === '1' || speedVal === '1 Focused' },
+      { value: '2', label: '2', active: speedVal === '2' || speedVal === '2 Pair' },
+      { value: '3', label: '3', active: speedVal === '3' || speedVal === '3 Fleet' },
+      { value: '4', label: '4', active: speedVal === '4' || speedVal === '4 Fleet+Hedge' },
+      { value: '5', label: '5', active: speedVal === '5' || speedVal === '5 Max' },
     ],
   });
   idx += 1;

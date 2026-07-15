@@ -776,7 +776,7 @@ function normalizeTestPath(p: string): string {
 }
 
 function assertLockedHomeSkeleton(buf: string): void {
-  assert.ok(buf.includes('Mode:'), 'home should render the Mode box');
+  assert.ok(buf.includes('Effort:'), 'home should render the Effort box');
   assert.ok(buf.includes('Session Manager'), 'home should render the Session Manager title box');
   assert.ok(buf.includes('Choice:'), 'home should render the Choice prompt');
   assert.ok(buf.includes('ESC to exit'), 'home should render the ESC footer');
@@ -7919,7 +7919,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
 
   // ---- Settings layout verification ---------------------------------------
 
-  it('[s] settings shows the new simplified settings page (6 items)', async () => {
+  it('[s] settings shows the new simplified settings page (7 items)', async () => {
     const sink = makeSink();
     const ctx = makeCtx({
       readLine: makeScriptedReader(['s', '', 'q']),  // enter settings → Enter (back) → quit
@@ -7928,35 +7928,39 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     await startMenu(ctx, sink);
 
     assert.ok(
-      sink.buf.includes('[1]') && sink.buf.toLowerCase().includes('mode'),
-      'settings must show [1] New conversation Mode',
+      sink.buf.includes('[1]') && sink.buf.toLowerCase().includes('effort'),
+      'settings must show [1] New conversation Effort',
     );
     assert.ok(
-      sink.buf.includes('[2]') && sink.buf.toLowerCase().includes('oversight'),
-      'settings must show [2] Oversight',
+      sink.buf.includes('[2]') && sink.buf.toLowerCase().includes('speed'),
+      'settings must show [2] New conversation Speed',
     );
     assert.ok(
-      sink.buf.includes('[3]') && sink.buf.toLowerCase().includes('output detail'),
-      'settings must show [3] Output detail',
+      sink.buf.includes('[3]') && sink.buf.toLowerCase().includes('oversight'),
+      'settings must show [3] Oversight',
     );
     assert.ok(
-      sink.buf.includes('[4]') && sink.buf.toLowerCase().includes('appearance'),
-      'settings must show [4] Appearance',
+      sink.buf.includes('[4]') && sink.buf.toLowerCase().includes('output detail'),
+      'settings must show [4] Output detail',
     );
     assert.ok(
-      sink.buf.includes('[5]') && sink.buf.toLowerCase().includes('privacy'),
-      'settings must show [5] Privacy & memory',
+      sink.buf.includes('[5]') && sink.buf.toLowerCase().includes('appearance'),
+      'settings must show [5] Appearance',
     );
     assert.ok(
-      sink.buf.includes('[6]') && sink.buf.toLowerCase().includes('setup'),
-      'settings must show [6] Setup',
+      sink.buf.includes('[6]') && sink.buf.toLowerCase().includes('privacy'),
+      'settings must show [6] Privacy & memory',
+    );
+    assert.ok(
+      sink.buf.includes('[7]') && sink.buf.toLowerCase().includes('setup'),
+      'settings must show [7] Setup',
     );
   });
 
-  it('[s] → [3] opens Output detail selector (formerly autoUpdate position)', async () => {
+  it('[s] → [4] opens Output detail selector (D1: Output shifted after Effort/Speed)', async () => {
     const sink = makeSink();
     const ctx = makeCtx({
-      readLine: makeScriptedReader(['s', '3', '', 'q']),
+      readLine: makeScriptedReader(['s', '4', '', 'q']),
     });
 
     await assert.doesNotReject(
@@ -7966,7 +7970,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
 
     assert.ok(
       sink.buf.toLowerCase().includes('output detail') || sink.buf.toLowerCase().includes('quiet'),
-      'Output detail selector must appear after pressing [3]',
+      'Output detail selector must appear after pressing [4]',
     );
   });
 
@@ -7974,14 +7978,14 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
   // from the user-facing settings page (they are now automated default-on).
   // The old tests that toggled them via [7]/[8] are replaced below.
 
-  it('[s] → [4] toggles Appearance (formerly panel/learnRouting position)', async () => {
+  it('[s] → [5] toggles Appearance (D1: Appearance after Output detail)', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-appearance-toggle-${randomUUID()}`);
     const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
     const ctx = makeCtx({
       config,
       cwd: dir,
-      readLine: makeScriptedReader(['s', '4', 'q']),  // settings → [4] Appearance → quit
+      readLine: makeScriptedReader(['s', '5', 'q']),  // settings → [5] Appearance → quit
     });
 
     await withStateHome(dir, async () => {
@@ -7995,7 +7999,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
   });
 
   // ---- Settings selector for the OVERSIGHT SPECTRUM (Phase 2b) -------------
-  it('[s] → [2] sets oversight to autonomous and persists it', async () => {
+  it('[s] → [3] sets oversight to autonomous and persists it', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-oversight-${randomUUID()}`);
     const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
@@ -8004,7 +8008,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
       cwd: dir,
       readLine: makeScriptedReader([
         's',   // settings
-        '2',   // oversight select
+        '3',   // oversight select (D1: [1]=Effort [2]=Speed [3]=Oversight)
         '3',   // autonomous
         '',    // Enter → back from settings
         'q',   // quit
@@ -8017,8 +8021,8 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     });
 
     assert.ok(
-      sink.buf.includes('[2] Oversight'),
-      'settings must show the [2] Oversight row',
+      sink.buf.includes('[3] Oversight'),
+      'settings must show the [3] Oversight row',
     );
     assert.ok(
       sink.buf.includes('Oversight set to: autonomous'),
@@ -8028,7 +8032,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
   });
 
   // ---- Settings toggle for USER MEMORY (Phase 4, §9, now under Privacy & memory) -
-  it('[s] settings shows [5] Privacy & memory entry (Memory moved under subpage)', async () => {
+  it('[s] settings shows [6] Privacy & memory entry (Memory moved under subpage)', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-memory-show-${randomUUID()}`);
     const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
@@ -8043,19 +8047,19 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     });
 
     assert.ok(
-      sink.buf.includes('[5]') && sink.buf.toLowerCase().includes('privacy'),
-      'settings must show the [5] Privacy & memory entry',
+      sink.buf.includes('[6]') && sink.buf.toLowerCase().includes('privacy'),
+      'settings must show the [6] Privacy & memory entry',
     );
   });
 
-  it('[s] → [5] → [1] toggles memory OFF (kill-switch) and persists it', async () => {
+  it('[s] → [6] → [1] toggles memory OFF (kill-switch) and persists it', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-memory-off-${randomUUID()}`);
     const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
     const ctx = makeCtx({
       config,
       cwd: dir,
-      readLine: makeScriptedReader(['s', '5', '1', '', 'q']),  // settings → privacy → memory → back → quit
+      readLine: makeScriptedReader(['s', '6', '1', '', 'q']),  // settings → privacy → memory → back → quit
     });
 
     const persisted = await withStateHome(dir, async () => {
@@ -8067,14 +8071,14 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     assert.equal(persisted.memory, false, 'memory must be persisted as false (kill-switch)');
   });
 
-  it('[s] → [5] → [1] toggles memory back ON (removes the kill-switch flag)', async () => {
+  it('[s] → [6] → [1] toggles memory back ON (removes the kill-switch flag)', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-memory-on-${randomUUID()}`);
     const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false, memory: false };
     const ctx = makeCtx({
       config,
       cwd: dir,
-      readLine: makeScriptedReader(['s', '5', '1', '', 'q']),  // settings → privacy → memory → back → quit
+      readLine: makeScriptedReader(['s', '6', '1', '', 'q']),  // settings → privacy → memory → back → quit
     });
 
     const persisted = await withStateHome(dir, async () => {
@@ -8086,7 +8090,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     assert.notEqual(persisted.memory, false, 'memory:false must be cleared when re-enabling');
   });
 
-  it('[s] → [5] → [1] memory toggle PRESERVES advanced memory keys', async () => {
+  it('[s] → [6] → [1] memory toggle PRESERVES advanced memory keys', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-memory-preserve-${randomUUID()}`);
     const config: AppConfig = {
@@ -8100,7 +8104,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     const ctx = makeCtx({
       config,
       cwd: dir,
-      readLine: makeScriptedReader(['s', '5', '1', '', 'q']),
+      readLine: makeScriptedReader(['s', '6', '1', '', 'q']),
     });
 
     const persisted = await withStateHome(dir, async () => {
@@ -8119,14 +8123,14 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
   // silently dropped keys. The new settings use the full spread (withOptional),
   // but preserved config invariants are still regression-valuable.
 
-  it('[s] → [5] → [3] codebase awareness toggle PRESERVES the memory kill-switch', async () => {
+  it('[s] → [6] → [3] codebase awareness toggle PRESERVES the memory kill-switch', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-memory-survives-${randomUUID()}`);
     const config: AppConfig = { onboarded: true, setAsDefault: false, memory: false };
     const ctx = makeCtx({
       config,
       cwd: dir,
-      readLine: makeScriptedReader(['s', '5', '3', '', 'q']),  // privacy → codebase awareness toggle → back → quit
+      readLine: makeScriptedReader(['s', '6', '3', '', 'q']),  // privacy → codebase awareness toggle → back → quit
     });
 
     const persisted = await withStateHome(dir, async () => {
@@ -8140,7 +8144,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
   // The bug this guards against: rebuilding the config for ANY toggle used to
   // drop unrelated experimental flags. Start with panel + learnRouting ON, toggle
   // a DIFFERENT setting, and assert both survive.
-  it('[s] → [4] Appearance toggle PRESERVES panel and learnRouting', async () => {
+  it('[s] → [5] Appearance toggle PRESERVES panel and learnRouting', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-preserve-toggle-${randomUUID()}`);
     const config: AppConfig = {
@@ -8153,7 +8157,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     const ctx = makeCtx({
       config,
       cwd: dir,
-      readLine: makeScriptedReader(['s', '4', 'q']),  // settings → [4] Appearance → quit
+      readLine: makeScriptedReader(['s', '5', 'q']),  // settings → [5] Appearance → quit
     });
 
     const persisted = await withStateHome(dir, async () => {
@@ -8165,7 +8169,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     assert.equal(persisted.learnRouting, true, 'toggling Appearance must NOT drop learnRouting');
   });
 
-  it('[s] → [6] Setup toggle PRESERVES panel and learnRouting', async () => {
+  it('[s] → [7] Setup toggle PRESERVES panel and learnRouting', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-preserve-smartroute-${randomUUID()}`);
     const config: AppConfig = {
@@ -8178,7 +8182,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     const ctx = makeCtx({
       config,
       cwd: dir,
-      readLine: makeScriptedReader(['s', '6', 'q']),  // settings → [6] Setup → quit
+      readLine: makeScriptedReader(['s', '7', 'q']),  // settings → [7] Setup → quit
     });
 
     const persisted = await withStateHome(dir, async () => {
@@ -8203,7 +8207,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     const ctx = makeCtx({
       config,
       cwd: dir,
-      readLine: makeScriptedReader(['s', '4', 'q']),  // settings → [4] Appearance → quit
+      readLine: makeScriptedReader(['s', '5', 'q']),  // settings → [5] Appearance → quit
     });
 
     const persisted = await withStateHome(dir, async () => {
@@ -9244,12 +9248,12 @@ describe('classifyCompletion — routes Tab to the right completer', () => {
 });
 
 describe('completeSlashArg — per-command argument value sets (T2)', () => {
-  it('completes /mode tiers — prefix first then fuzzy substring fallback', () => {
-    // 'Eff' is an unambiguous prefix of only one tier.
-    assert.deepEqual(completeSlashArg('/mode', 'Eff'), ['Efficient']);
+  it('completes /mode Effort levels — prefix first then fuzzy substring fallback', () => {
+    // 'Bu' is an unambiguous prefix of only Budget.
+    assert.deepEqual(completeSlashArg('/mode', 'Bu'), ['Budget']);
     assert.deepEqual(completeSlashArg('/mode', 'ma'), ['Max']); // case-insensitive prefix
-    // 'E' prefixes 'Efficient' and substring-matches 'Balanced' (fuzzy fallback).
-    assert.deepEqual(completeSlashArg('/mode', 'E'), ['Efficient', 'Balanced']);
+    // 'B' prefixes Budget and Balanced.
+    assert.deepEqual(completeSlashArg('/mode', 'B'), ['Budget', 'Balanced']);
   });
 
   it('completes /style styles', () => {
@@ -9421,9 +9425,9 @@ describe('completeChat — async completer over an injected readdir (T2–T4)', 
     };
     const [nameHits] = await completeChat('/mo', { readdir });
     assert.deepEqual(nameHits, ['/mode']);
-    const [argHits, substr] = await completeChat('/mode Eff', { readdir });
-    assert.deepEqual(argHits, ['Efficient']);
-    assert.equal(substr, 'Eff');
+    const [argHits, substr] = await completeChat('/mode Bu', { readdir });
+    assert.deepEqual(argHits, ['Budget']);
+    assert.equal(substr, 'Bu');
     assert.equal(called, false);
   });
 
@@ -9626,10 +9630,10 @@ describe('startMenu — Mode settings keys + live box', () => {
     );
 
     assert.ok(
-      sink.buf.includes('Mode:  Budget') || sink.buf.includes('Budget'),
+      sink.buf.includes('Effort:  Budget') || sink.buf.includes('Budget'),
       'output must show Budget after selecting [1]',
     );
-    // Redundant confirmation line removed — do not require "Mode: Budget\n" alone.
+    // Redundant confirmation line removed — do not require "Effort: Budget\n" alone.
     assert.ok(
       !sink.buf.includes('Auto detected:'),
       'mode picker must not render the Auto detected block',
@@ -9720,8 +9724,8 @@ describe('startMenu — Mode settings keys + live box', () => {
     await assert.doesNotReject(() => startMenu(ctx, sink));
 
     assertLockedHomeSkeleton(sink.buf);
-    assert.ok(sink.buf.includes('Mode:  Balanced'), 'live home box reflects Balanced');
-    assert.ok(!sink.buf.includes('Mode:  Auto (smart)'), 'must not hardcode Auto when balanced');
+    assert.ok(sink.buf.includes('Effort:  Balanced'), 'live home box reflects Balanced');
+    assert.ok(!sink.buf.includes('Effort:  Auto (smart)'), 'must not hardcode Auto when balanced');
   });
 
   it('when claude plan is max, home still renders the locked Slice 1 skeleton', async () => {
