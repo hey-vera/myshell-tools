@@ -21,8 +21,11 @@ Product wave on main after **3.171.0**: home multi-chat live work status, exit h
 - **Docs board tip** — package **3.172.0** after product wave M/A/D/OS.
 - Package version **3.171.0 → 3.172.0**.
 
+### Added (post-release main)
+- **Residual detached free-loop multi-turn** — `runDetachedFreeGoal` multi-turn free path (DEFAULT_MAX_GOAL_ITERATIONS=8) with GOAL_CONTINUE checkpoints; GOAL_COMPLETE / ask_user / abort park (no silent verified-done); fail → failed.
+
 ### Honest residuals (not claimed done)
-- Free-loop detached still one turn then park; full menu-parity multi-turn free loop.
+- Full FG menu-parity free loop chrome (scheduler/manager UI) still menu-owned; detached free multi-turn control plane landed.
 - Mouse on accounts.
 - Live per-account model probe.
 - Fenced leases.

@@ -80,7 +80,9 @@ async function defaultLog(jobsRoot: string, line: string): Promise<void> {
  * Production default: shared detached goal executor.
  * - Real provider turn(s) via runTask / durable roadmap runner
  * - Evidence-gated completion for roadmap goals
- * - Free-loop goals: one real step then park for reattach (menu still owns full multi-turn free loop)
+ * - Free-loop goals: multi-turn runDetachedFreeGoal (DEFAULT_MAX_GOAL_ITERATIONS);
+ *   GOAL_COMPLETE / ask_user / abort / missing signal → park (not false verified-done);
+ *   provider fail → failed; GOAL_CONTINUE → next turn with checkpoint
  * - No authenticated providers → park (not false done)
  */
 export async function defaultGoalJobExecutor(

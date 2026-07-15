@@ -7,9 +7,17 @@
  * Composition:
  *   - Build OrchestrateDeps from live detect + config (same primitives as CLI)
  *   - Roadmap goals → `runDurableGoal` (todo-at-a-time, evidence-gated)
- *   - Free-loop goals (no roadmap) → one real `runTask` turn on job.work, then
- *     park with progress note so reattach can continue (full free multi-turn
- *     adaptive loop still lives primarily in menu runGoalLoop — residual)
+ *   - Free-loop goals (no roadmap) → multi-turn `runDetachedFreeGoal` using
+ *     core/goal pure helpers (buildGoalTask / parseGoalSignal / decideGoalNext)
+ *     + runTask, bounded by DEFAULT_MAX_GOAL_ITERATIONS
+ *
+ * Free-loop outcome policy (honest, no false verified-done):
+ *   - GOAL_COMPLETE without roadmap/acceptance evidence → parked (not done)
+ *   - ask_user / structured questions → parked for reattach
+ *   - abort → parked
+ *   - fail (provider non-zero / decideGoalNext stop-error) → failed
+ *   - GOAL_CONTINUE → next turn with checkpoint (appendCheckpointFromContinue)
+ *   - missing signal / turn ceiling → parked for reattach
  *
  * Ports are injectable for no-network unit tests.
  */
@@ -19,8 +27,20 @@ import {
   type DurableGoalOutcome,
   type DurableTodoResult,
 } from '../core/durable-goal-runner.js';
+import {
+  buildGoalTask,
+  decideGoalNext,
+  DEFAULT_MAX_GOAL_ITERATIONS,
+  parseGoalContinueText,
+  parseGoalSignal,
+  stripTrailingGoalConfidenceEnvelope,
+} from '../core/goal.js';
 import { DEFAULT_POLICY, POLICY_PRESETS } from '../core/policy.js';
 import type { OrchestrateDeps } from '../core/types.js';
+import {
+  appendCheckpointFromContinue,
+  type WorkContract,
+} from '../core/work-contract.js';
 import { systemClock } from '../infra/clock.js';
 import { loadConfig, type AppConfig } from '../infra/config.js';
 import { createFileConversationStore } from '../infra/conversations.js';
@@ -60,9 +80,14 @@ export interface DetachedGoalExecutionDeps {
   >;
   /** Override goal store (tests). */
   readonly goalStore?: ReturnType<typeof createFileGoalStore>;
-  /** Max durable-roadmap turns (tests). */
+  /** Max free-loop / durable-roadmap turns (tests). Default DEFAULT_MAX_GOAL_ITERATIONS. */
   readonly maxTurns?: number;
 }
+
+type GoalStoreLike = Pick<
+  ReturnType<typeof createFileGoalStore>,
+  'get' | 'setState' | 'setGoalVerdict' | 'setRoadmapItemStatus' | 'setRoadmapItemVerdict'
+>;
 
 async function productionDeps(
   job: GoalJob,
@@ -103,6 +128,109 @@ function verifiedReceipt(label: string): {
   };
 }
 
+function freeLoopGoalText(job: GoalJob): string {
+  if (job.work.trim().length > 0) return job.work;
+  if (job.title.trim().length > 0) return job.title;
+  return 'Continue the open goal';
+}
+
+/**
+ * Multi-turn free-loop for detached worker: same pure control plane as menu
+ * `runGoalLoop` free path (buildGoalTask / parseGoalSignal / decideGoalNext /
+ * checkpoints), composed over injected `runTask`. Never marks goal `done`
+ * without roadmap + acceptance evidence — GOAL_COMPLETE parks for reattach.
+ */
+export async function runDetachedFreeGoal(opts: {
+  readonly job: GoalJob;
+  readonly turnDeps: OrchestrateDeps;
+  readonly signal: AbortSignal;
+  readonly goalStore: GoalStoreLike;
+  readonly runTask: (
+    task: string,
+    deps: OrchestrateDeps,
+    out: OutputSink,
+    signal: AbortSignal,
+    verbosity?: 'quiet',
+  ) => Promise<RunTaskResult>;
+  readonly maxTurns?: number;
+}): Promise<DurableGoalOutcome> {
+  const maxTurns = opts.maxTurns ?? DEFAULT_MAX_GOAL_ITERATIONS;
+  const goalText = freeLoopGoalText(opts.job);
+  let contract: WorkContract = { version: 1, objective: goalText };
+
+  await opts.goalStore.setState(opts.job.goalId, 'running').catch(() => null);
+
+  for (let i = 0; i < maxTurns; i++) {
+    if (opts.signal.aborted) {
+      await opts.goalStore.setState(opts.job.goalId, 'parked').catch(() => null);
+      return 'parked';
+    }
+
+    const task = buildGoalTask(goalText, i, contract);
+    const result = await opts.runTask(task, opts.turnDeps, QUIET, opts.signal, 'quiet');
+
+    if (opts.signal.aborted) {
+      await opts.goalStore.setState(opts.job.goalId, 'parked').catch(() => null);
+      return 'parked';
+    }
+
+    // Structured ask_user / questions: park for interactive reattach.
+    if (result.final?.questions !== undefined) {
+      await opts.goalStore.setState(opts.job.goalId, 'parked').catch(() => null);
+      return 'parked';
+    }
+
+    // Timeout: keep chunking within the turn ceiling (menu free-loop parity).
+    if (
+      result.final?.success !== true &&
+      result.final?.errorCategory === 'timeout' &&
+      i + 1 < maxTurns
+    ) {
+      continue;
+    }
+
+    const turnOutput = result.final?.output ?? '';
+    const controlOutput = stripTrailingGoalConfidenceEnvelope(turnOutput);
+    const goalSignal = parseGoalSignal(controlOutput);
+    if (goalSignal === 'continue') {
+      contract = appendCheckpointFromContinue(
+        contract,
+        parseGoalContinueText(controlOutput),
+        i,
+      );
+    }
+
+    const lastSucceeded =
+      result.code === 0 &&
+      (result.final === undefined || result.final.success === true);
+
+    const step = decideGoalNext({
+      signal: goalSignal,
+      lastSucceeded,
+      completedIterations: i + 1,
+      ceilings: { maxIterations: maxTurns },
+      costSoFarUsd: 0,
+    });
+
+    if (step.action === 'continue') {
+      continue;
+    }
+
+    if (step.action === 'stop-error') {
+      await opts.goalStore.setState(opts.job.goalId, 'failed').catch(() => null);
+      return 'failed';
+    }
+
+    // complete | stop-iterations | stop-budget | stop-signal:
+    // free-loop has no roadmap/acceptance evidence path → park, never silent done.
+    await opts.goalStore.setState(opts.job.goalId, 'parked').catch(() => null);
+    return 'parked';
+  }
+
+  await opts.goalStore.setState(opts.job.goalId, 'parked').catch(() => null);
+  return 'parked';
+}
+
 /**
  * Build the production executor used as the worker default.
  * Ports are injectable for no-network tests.
@@ -131,28 +259,16 @@ export function createDetachedGoalExecutor(
 
       const goal = await goalStore.get(job.goalId).catch(() => null);
 
-      // Free-loop: no goal record or empty roadmap → one real provider turn.
+      // Free-loop: no goal record or empty roadmap → multi-turn free path.
       if (goal === null || goal.roadmap.length === 0) {
-        await goalStore.setState(job.goalId, 'running').catch(() => null);
-        const task =
-          job.work.trim().length > 0
-            ? job.work
-            : job.title.trim().length > 0
-              ? job.title
-              : 'Continue the open goal';
-        const result = await run(task, turnDeps, QUIET, signal, 'quiet');
-        if (signal.aborted) {
-          await goalStore.setState(job.goalId, 'parked').catch(() => null);
-          return 'parked';
-        }
-        if (result.code !== 0) {
-          await goalStore.setState(job.goalId, 'failed').catch(() => null);
-          return 'failed';
-        }
-        // One useful step done; do not claim verified goal complete without
-        // roadmap + acceptance evidence. Park for reattach/resume.
-        await goalStore.setState(job.goalId, 'parked').catch(() => null);
-        return 'parked';
+        return runDetachedFreeGoal({
+          job,
+          turnDeps,
+          signal,
+          goalStore,
+          runTask: run,
+          ...(deps.maxTurns !== undefined ? { maxTurns: deps.maxTurns } : {}),
+        });
       }
 
       const outcome = await runDurableGoal(
