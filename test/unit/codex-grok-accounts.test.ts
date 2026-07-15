@@ -418,8 +418,8 @@ describe('mixed accounts read/write with codex + grok', () => {
 // `buildAccountScopedBase` / `applyAccountEnvOverride`. The child env is built
 // inline at the spawn site:
 //
-//   codex.ts:192-196  — childEnv = { ...process.env, ...replitPersistentEnv(), ...req.accountEnv }
-//   grok.ts:243-247   — childEnv = { ...process.env, ...replitPersistentEnv(), ...req.accountEnv }
+//   codex.ts buildCodexEnv — allowlist parent + replitPersistentEnv + accountEnv LAST
+//   grok.ts  buildGrokEnv  — allowlist parent + replitPersistentEnv + accountEnv LAST
 //
 // Because req.accountEnv is simply spread into the child env, a test verifying
 // the env injection behaviour would need to inspect the ProviderRequest that
