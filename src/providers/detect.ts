@@ -29,6 +29,7 @@ import {
   clearClaudeToken,
   loadClaudeToken,
   claudeEnv,
+  isLegacyClaudeTokenInjectionEnabled,
   replitPersistentEnv,
 } from '../infra/credentials.js';
 import {
@@ -456,17 +457,49 @@ function credentialFileIndicatesClaudeOauth(
   return oauth !== null && (oauth.expiresAt === null || oauth.expiresAt > nowMs);
 }
 
+/** Warn once per process when legacy stored-token injection is active. */
+let legacyClaudeTokenInjectionWarned = false;
+
+function warnLegacyClaudeTokenInjection(): void {
+  if (legacyClaudeTokenInjectionWarned) return;
+  legacyClaudeTokenInjectionWarned = true;
+  process.stderr.write(
+    '[myshell-tools] MYSHELL_LEGACY_CLAUDE_TOKEN is set: injecting stored CLAUDE_CODE_OAUTH_TOKEN from ~/.myshell-tools/credentials.json. Prefer official `claude auth login`; this escape hatch is for migration only.\n',
+  );
+}
+
+/**
+ * Resolve whether to inject myshell's legacy stored Claude OAuth token.
+ *
+ * - Explicit `storedCredentialInjection` wins (tests / account-scoped false).
+ * - Otherwise default **off**; set `MYSHELL_LEGACY_CLAUDE_TOKEN=1` to restore
+ *   the pre-R4 injection path for migration.
+ */
+export function resolveStoredCredentialInjection(
+  baseEnv: NodeJS.ProcessEnv,
+  storedCredentialInjection?: boolean,
+): boolean {
+  if (storedCredentialInjection !== undefined) return storedCredentialInjection;
+  return isLegacyClaudeTokenInjectionEnabled(baseEnv);
+}
+
 /**
  * Build Claude's child environment with Claude-owned credentials taking
  * precedence over myshell's legacy stored token. A usable Claude credentials
- * file also proves the legacy token is obsolete, so clear it best-effort.
+ * file also proves the legacy token is obsolete, so clear it best-effort
+ * (dual-proof: on-disk Claude OAuth present → safe to drop legacy token).
+ *
+ * Default: **no** injection of `~/.myshell-tools/credentials.json` into
+ * `CLAUDE_CODE_OAUTH_TOKEN`. Opt in with `MYSHELL_LEGACY_CLAUDE_TOKEN=1` or
+ * an explicit `storedCredentialInjection: true` argument.
  */
 export async function claudeEnvWithStoredFallback(
   baseEnv: NodeJS.ProcessEnv,
   cwd: string,
-  storedCredentialInjection = true,
+  storedCredentialInjection?: boolean,
   stateHome?: string,
 ): Promise<NodeJS.ProcessEnv> {
+  const inject = resolveStoredCredentialInjection(baseEnv, storedCredentialInjection);
   const ownEnv = {
     ...baseEnv,
     ...replitPersistentEnv(baseEnv, cwd),
@@ -476,6 +509,7 @@ export async function claudeEnvWithStoredFallback(
     const credsPath = resolveClaudeCredsPath(ownEnv, cwd, stateHome);
     const raw = await readFile(credsPath, 'utf8');
     if (credentialFileIndicatesClaudeOauth(raw, Date.now())) {
+      // Dual-proof: Claude-owned OAuth on disk works → legacy token is obsolete.
       await clearClaudeToken(stateHome);
       return ownEnv;
     }
@@ -483,7 +517,10 @@ export async function claudeEnvWithStoredFallback(
     // No usable Claude-owned file; the CLI may use Keychain, or need fallback.
   }
 
-  const token = storedCredentialInjection ? await loadClaudeToken(stateHome) : null;
+  if (inject) {
+    warnLegacyClaudeTokenInjection();
+  }
+  const token = inject ? await loadClaudeToken(stateHome) : null;
   return claudeEnv(ownEnv, token);
 }
 
@@ -549,11 +586,17 @@ export async function detectProvider(
   const baseEnv = opts.env ?? process.env;
   const cwd = opts.cwd ?? process.cwd();
   const credentialFileFallback = opts.credentialFileFallback ?? true;
-  const storedCredentialInjection = opts.storedCredentialInjection ?? true;
+  // Default off: official CLI auth only. Opt in via MYSHELL_LEGACY_CLAUDE_TOKEN=1
+  // or an explicit opts.storedCredentialInjection.
+  const storedCredentialInjection = resolveStoredCredentialInjection(
+    baseEnv,
+    opts.storedCredentialInjection,
+  );
 
   if (id === 'claude') {
     // Probe Claude's own login first. The legacy myshell token is only added
-    // after that probe fails, so it cannot shadow a changed subscription.
+    // after that probe fails (and only when legacy injection is opted in),
+    // so it cannot shadow a changed subscription.
     const ownClaudeEnv: NodeJS.ProcessEnv = {
       ...baseEnv,
       ...replitPersistentEnv(baseEnv, cwd),
@@ -593,9 +636,11 @@ export async function detectProvider(
             authResult.exitCode ?? 1,
           );
 
-          // A successful token-free probe is authoritative (including macOS
-          // Keychain logins). Clear the legacy token so later runs cannot
-          // re-shadow it. An explicit environment token remains user-owned.
+          // Dual-proof clear: a successful token-free probe is authoritative
+          // (including macOS Keychain logins). Clear the legacy token so later
+          // runs cannot re-shadow it. An explicit environment token remains
+          // user-owned — never delete the sole working credential without this
+          // second proof of official CLI auth.
           if (parsed.authenticated && baseEnv['CLAUDE_CODE_OAUTH_TOKEN'] === undefined) {
             await clearClaudeToken();
           } else if (!parsed.authenticated && storedCredentialInjection) {
