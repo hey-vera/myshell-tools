@@ -13,6 +13,7 @@
  * from path helpers.
  */
 
+import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
@@ -21,10 +22,12 @@ import { defaultStateLayout, type AppStateLayout } from './state-layout.js';
 import {
   applyClaim,
   applyReleaseForHandoff,
+  applyRenewLease,
   applyRunning,
   applyTerminal,
   canClaimGoalJob,
   createPendingGoalJob,
+  DEFAULT_GOAL_JOB_LEASE_TTL_MS,
   goalJobConversationDir,
   goalJobFilePath,
   isActiveGoalJob,
@@ -34,6 +37,7 @@ import {
   serializeWorkerPidFile,
   workerPidFilePath,
   type GoalJob,
+  type GoalJobLeaseFence,
   type GoalJobOwner,
   type GoalJobStatus,
 } from './goal-job.js';
@@ -86,8 +90,9 @@ export interface GoalJobStore {
   /** Active (non-terminal) goal ids for a conversation — for zombie heal. */
   activeGoalIds(conversationId: string): Promise<ReadonlySet<string>>;
   /**
-   * Claim job for this process if claimable. Returns updated job or null if
-   * not claimable / missing.
+   * Claim job for this process if claimable. Writes a fresh fenced lease
+   * (leaseId / leaseGeneration / leaseExpiresAt). Returns updated job or null
+   * if not claimable / missing.
    */
   claim(
     conversationId: string,
@@ -98,6 +103,17 @@ export interface GoalJobStore {
   ): Promise<GoalJob | null>;
   /** Atomically claim the next claimable job (scan). */
   claimNext(owner: GoalJobOwner, pid?: number, nowIso?: string): Promise<GoalJob | null>;
+  /**
+   * Renew fenced lease for a running claim. Returns null when fence mismatches
+   * (stolen / wrong generation), lease already expired, or job missing.
+   */
+  renewLease(
+    conversationId: string,
+    goalId: string,
+    fence: GoalJobLeaseFence,
+    nowIso?: string,
+    leaseTtlMs?: number,
+  ): Promise<GoalJob | null>;
   markRunning(conversationId: string, goalId: string, note?: string, nowIso?: string): Promise<GoalJob | null>;
   markTerminal(
     conversationId: string,
@@ -115,9 +131,9 @@ export interface GoalJobStore {
   ): Promise<GoalJob | null>;
   /**
    * Release TUI-owned active jobs so a detached worker can claim without waiting
-   * for dead-PID reclaim (M2 exit handoff). When `pid` is set, only jobs claimed
-   * by that pid (or missing claimedBy with owner tui) are released.
-   * Returns the jobs that were released.
+   * for dead-PID reclaim (M2 exit handoff). Clears claim + lease fence.
+   * When `pid` is set, only jobs claimed by that pid (or missing claimedBy with
+   * owner tui) are released. Returns the jobs that were released.
    */
   releaseTuiOwnership(options?: {
     readonly pid?: number;
@@ -240,14 +256,19 @@ export function createGoalJobStore(options?: {
 
     async claim(conversationId, goalId, owner, pid = process.pid, nowIso) {
       const ts = nowIsoDefault(nowIso);
+      const nowMs = Date.parse(ts);
+      const clockMs = Number.isFinite(nowMs) ? nowMs : Date.now();
       const filePath = goalJobFilePath(root, conversationId, goalId);
       try {
         await ensureJobParent(filePath);
         return await withLock(lockPathFor(conversationId, goalId), async () => {
           const existing = await readJobFile(filePath);
           if (existing === null) return null;
-          if (!canClaimGoalJob(existing, isOwnerAlive)) return null;
-          const claimed = applyClaim(existing, pid, owner, ts);
+          if (!canClaimGoalJob(existing, isOwnerAlive, clockMs)) return null;
+          const claimed = applyClaim(existing, pid, owner, ts, {
+            leaseId: randomUUID(),
+            leaseTtlMs: DEFAULT_GOAL_JOB_LEASE_TTL_MS,
+          });
           await writeJobFile(filePath, claimed);
           return claimed;
         });
@@ -257,6 +278,9 @@ export function createGoalJobStore(options?: {
     },
 
     async claimNext(owner, pid = process.pid, nowIso) {
+      const ts = nowIsoDefault(nowIso);
+      const nowMs = Date.parse(ts);
+      const clockMs = Number.isFinite(nowMs) ? nowMs : Date.now();
       const active = await store.listActive();
       // Prefer pure pending, then orphaned claimed/running.
       const ordered = [
@@ -264,11 +288,30 @@ export function createGoalJobStore(options?: {
         ...active.filter((j) => j.status !== 'pending'),
       ];
       for (const job of ordered) {
-        if (!canClaimGoalJob(job, isOwnerAlive)) continue;
+        if (!canClaimGoalJob(job, isOwnerAlive, clockMs)) continue;
         const claimed = await store.claim(job.conversationId, job.goalId, owner, pid, nowIso);
         if (claimed !== null) return claimed;
       }
       return null;
+    },
+
+    async renewLease(conversationId, goalId, fence, nowIso, leaseTtlMs) {
+      const ts = nowIsoDefault(nowIso);
+      const ttl = leaseTtlMs ?? DEFAULT_GOAL_JOB_LEASE_TTL_MS;
+      const filePath = goalJobFilePath(root, conversationId, goalId);
+      try {
+        await ensureJobParent(filePath);
+        return await withLock(lockPathFor(conversationId, goalId), async () => {
+          const existing = await readJobFile(filePath);
+          if (existing === null) return null;
+          const next = applyRenewLease(existing, fence, ts, ttl);
+          if (next === null) return null;
+          await writeJobFile(filePath, next);
+          return next;
+        });
+      } catch {
+        return null;
+      }
     },
 
     async markRunning(conversationId, goalId, note, nowIso) {

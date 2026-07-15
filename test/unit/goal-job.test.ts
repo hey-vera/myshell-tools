@@ -9,17 +9,21 @@ import {
   ACTIVE_GOAL_JOB_STATUSES,
   applyClaim,
   applyReleaseForHandoff,
+  applyRenewLease,
   applyRunning,
   applyTerminal,
   beginTuiExitHandoff,
   canClaimGoalJob,
   classifyGoalJobForReopen,
   createPendingGoalJob,
+  DEFAULT_GOAL_JOB_LEASE_TTL_MS,
   formatExitHandoffReopenMessages,
   goalJobConversationDir,
   goalJobFilePath,
   isActiveGoalJob,
   isGoalJobStatus,
+  isLeaseExpired,
+  isLeaseHeld,
   isOwnedByPid,
   isSafeJobSegment,
   isTerminalGoalJob,
@@ -139,10 +143,20 @@ describe('createPendingGoalJob + transitions', () => {
 
   it('applyClaim / applyRunning / applyTerminal', () => {
     const pending = sampleJob();
-    const claimed = applyClaim(pending, 99, 'worker', '2026-07-10T12:01:00.000Z');
+    const claimed = applyClaim(pending, 99, 'worker', '2026-07-10T12:01:00.000Z', {
+      leaseId: 'lease-abc',
+    });
     assert.equal(claimed.status, 'claimed');
     assert.equal(claimed.claimedBy, 99);
     assert.equal(claimed.owner, 'worker');
+    assert.equal(claimed.leaseId, 'lease-abc');
+    assert.equal(claimed.leaseGeneration, 1);
+    assert.ok(claimed.leaseExpiresAt);
+    const claimMs = Date.parse('2026-07-10T12:01:00.000Z');
+    assert.equal(
+      Date.parse(claimed.leaseExpiresAt!),
+      claimMs + DEFAULT_GOAL_JOB_LEASE_TTL_MS,
+    );
     const running = applyRunning(claimed, '2026-07-10T12:02:00.000Z', 'heartbeat');
     assert.equal(running.status, 'running');
     assert.equal(running.note, 'heartbeat');
@@ -152,19 +166,35 @@ describe('createPendingGoalJob + transitions', () => {
     assert.equal(ACTIVE_GOAL_JOB_STATUSES.has('pending'), true);
   });
 
-  it('applyReleaseForHandoff clears ownership and returns pending', () => {
+  it('applyClaim bumps leaseGeneration on reclaim', () => {
+    const first = applyClaim(sampleJob(), 1, 'tui', NOW, { leaseId: 'L1' });
+    const second = applyClaim(first, 2, 'worker', '2026-07-10T12:01:00.000Z', {
+      leaseId: 'L2',
+    });
+    assert.equal(second.leaseGeneration, 2);
+    assert.equal(second.leaseId, 'L2');
+    assert.equal(second.claimedBy, 2);
+  });
+
+  it('applyReleaseForHandoff clears ownership and lease fence', () => {
     const running = sampleJob({
       status: 'running',
       owner: 'tui',
       claimedBy: 42,
       claimedAt: NOW,
       note: 'tui in-process',
+      leaseId: 'lease-tui',
+      leaseGeneration: 3,
+      leaseExpiresAt: '2026-07-10T12:10:00.000Z',
     });
     const released = applyReleaseForHandoff(running, '2026-07-10T12:05:00.000Z');
     assert.equal(released.status, 'pending');
     assert.equal(released.owner, undefined);
     assert.equal(released.claimedBy, undefined);
     assert.equal(released.claimedAt, undefined);
+    assert.equal(released.leaseId, undefined);
+    assert.equal(released.leaseGeneration, undefined);
+    assert.equal(released.leaseExpiresAt, undefined);
     assert.match(released.note ?? '', /handoff/);
     assert.equal(canClaimGoalJob(released, () => true), true);
     assert.equal(isOwnedByPid(running, 42, 'tui'), true);
@@ -212,24 +242,120 @@ describe('exit handoff reopen messaging', () => {
 
 describe('canClaimGoalJob', () => {
   const alive = (pid: number) => pid === 1;
+  const nowMs = Date.parse(NOW);
 
   it('allows pending always', () => {
-    assert.equal(canClaimGoalJob(sampleJob(), alive), true);
+    assert.equal(canClaimGoalJob(sampleJob(), alive, nowMs), true);
   });
 
   it('allows reclaim when owner is dead', () => {
-    const job = sampleJob({ status: 'running', claimedBy: 999, owner: 'tui' });
-    assert.equal(canClaimGoalJob(job, alive), true);
+    const job = sampleJob({
+      status: 'running',
+      claimedBy: 999,
+      owner: 'tui',
+      leaseId: 'L',
+      leaseGeneration: 1,
+      leaseExpiresAt: '2026-07-10T12:10:00.000Z',
+    });
+    assert.equal(canClaimGoalJob(job, alive, nowMs), true);
   });
 
-  it('denies when owner is alive', () => {
+  it('denies when owner is alive and lease unexpired', () => {
+    const job = sampleJob({
+      status: 'running',
+      claimedBy: 1,
+      owner: 'tui',
+      leaseId: 'L',
+      leaseGeneration: 1,
+      leaseExpiresAt: '2026-07-10T12:10:00.000Z',
+    });
+    assert.equal(canClaimGoalJob(job, alive, nowMs), false);
+  });
+
+  it('allows reclaim when lease expired even if owner alive', () => {
+    const job = sampleJob({
+      status: 'running',
+      claimedBy: 1,
+      owner: 'worker',
+      leaseId: 'L',
+      leaseGeneration: 1,
+      leaseExpiresAt: '2026-07-10T11:59:00.000Z',
+    });
+    assert.equal(canClaimGoalJob(job, alive, nowMs), true);
+  });
+
+  it('legacy job without lease: owner alive holds (PID-only)', () => {
     const job = sampleJob({ status: 'running', claimedBy: 1, owner: 'tui' });
-    assert.equal(canClaimGoalJob(job, alive), false);
+    assert.equal(canClaimGoalJob(job, alive, nowMs), false);
   });
 
   it('denies terminal', () => {
-    assert.equal(canClaimGoalJob(sampleJob({ status: 'done' }), alive), false);
-    assert.equal(canClaimGoalJob(sampleJob({ status: 'failed' }), alive), false);
+    assert.equal(canClaimGoalJob(sampleJob({ status: 'done' }), alive, nowMs), false);
+    assert.equal(canClaimGoalJob(sampleJob({ status: 'failed' }), alive, nowMs), false);
+  });
+});
+
+describe('fenced lease helpers', () => {
+  const claimIso = '2026-07-10T12:00:00.000Z';
+  const claimMs = Date.parse(claimIso);
+
+  it('isLeaseExpired / isLeaseHeld', () => {
+    const job = applyClaim(sampleJob(), 7, 'worker', claimIso, { leaseId: 'fence-1' });
+    assert.equal(isLeaseExpired(job, claimMs), false);
+    assert.equal(isLeaseExpired(job, claimMs + DEFAULT_GOAL_JOB_LEASE_TTL_MS), true);
+    assert.equal(
+      isLeaseHeld(job, { leaseId: 'fence-1', leaseGeneration: 1 }, claimMs + 1_000),
+      true,
+    );
+    assert.equal(
+      isLeaseHeld(job, { leaseId: 'wrong', leaseGeneration: 1 }, claimMs + 1_000),
+      false,
+    );
+    assert.equal(
+      isLeaseHeld(job, { leaseId: 'fence-1', leaseGeneration: 2 }, claimMs + 1_000),
+      false,
+    );
+  });
+
+  it('applyRenewLease extends expiry; wrong generation fails', () => {
+    const job = applyClaim(sampleJob(), 7, 'worker', claimIso, { leaseId: 'fence-1' });
+    const renewIso = '2026-07-10T12:00:30.000Z';
+    const renewed = applyRenewLease(
+      job,
+      { leaseId: 'fence-1', leaseGeneration: 1, pid: 7 },
+      renewIso,
+    );
+    assert.ok(renewed);
+    assert.equal(
+      Date.parse(renewed!.leaseExpiresAt!),
+      Date.parse(renewIso) + DEFAULT_GOAL_JOB_LEASE_TTL_MS,
+    );
+
+    const wrongGen = applyRenewLease(
+      job,
+      { leaseId: 'fence-1', leaseGeneration: 99, pid: 7 },
+      renewIso,
+    );
+    assert.equal(wrongGen, null);
+
+    const wrongId = applyRenewLease(
+      job,
+      { leaseId: 'other', leaseGeneration: 1, pid: 7 },
+      renewIso,
+    );
+    assert.equal(wrongId, null);
+  });
+
+  it('parseGoalJob round-trips lease fields', () => {
+    const job = sampleJob({
+      leaseId: 'lease-x',
+      leaseGeneration: 4,
+      leaseExpiresAt: '2026-07-10T12:03:00.000Z',
+      owner: 'worker',
+      claimedBy: 9,
+    });
+    const parsed = parseGoalJob(JSON.parse(serializeGoalJob(job)));
+    assert.deepEqual(parsed, job);
   });
 });
 
