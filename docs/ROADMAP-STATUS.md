@@ -2,9 +2,10 @@
 
 Compact current-state record. The user-designated implementation authority is `CLAUDEPLAN.md`.
 
-_Updated 2026-07-15. Baseline: `main@58f766c` (R9.1 packed install smoke `#207`); active next: residual R6 polish **or** user release publish._
+_Updated 2026-07-15. Baseline: `main@9c02738` / package **3.172.0** (product wave M/A/D/OS shipped: multi-chat workers, accounts UX, Effort/Speed dials, multi-OS packed smoke). Active next: residual free-loop multi-turn / fenced leases / live model probe **or** owner **npm publish**._
 
-Wave summary receipt: `docs/receipts/actualization-wave-complete.md`.
+Wave summary receipt: `docs/receipts/actualization-wave-complete.md`.  
+Release receipt: `docs/receipts/release-3.172.0.md`.
 
 ## Product truth
 
@@ -12,10 +13,10 @@ myshell-tools is a local, subscription-aware terminal partner that delegates thr
 
 ## Current evidence (main tip)
 
-- GitHub `main@58f766c` tip: R9.1 real packed tarball install smoke (`#207`).
-- R-1 through R9.1 actualization slices are **landed** on `main` (see table below). This is a **docs status sync** PR: no `src/` / `test/` / version bump.
+- GitHub `main@9c02738` tip: OS1 multi-OS packed install smoke win/mac (`#216`); package **3.172.0** release metadata on `release/3.172.0`.
+- Actualization wave R-1 through R9.1 **and** product wave **M1–M3 / A1–A2 / D1 / OS1** are **landed** on `main` (see tables below).
 
-### Slice map (DONE with PR numbers)
+### Slice map — actualization (DONE with PR numbers)
 
 | Slice | What landed | PRs | Receipt |
 | --- | --- | --- | --- |
@@ -36,30 +37,49 @@ myshell-tools is a local, subscription-aware terminal partner that delegates thr
 | **R4.3** | Grok positive auth signature + secure prompt files | `#203` | `docs/receipts/r4-grok-auth-prompt.md` |
 | **R5.1** | Enforce `TurnCallBudget` on live chat path | `#204` | `docs/receipts/r5-enforce-turn-budget.md` |
 | **R7.1** | Progress invariant stops manager auto-continue | `#205` | `docs/receipts/r7-progress-invariant.md` |
-| **R8.1** | Honest Mode + Intensity dial claims (no Effort/Speed fantasy) | `#206` | `docs/receipts/r8-dial-honesty.md` |
+| **R8.1** | Honest Mode + Intensity dial claims (pre–D1) | `#206` | `docs/receipts/r8-dial-honesty.md` |
 | **R9.1** | Real packed tarball install smoke on package-check | `#207` | `docs/receipts/r9-packed-install-smoke.md` |
+
+### Slice map — product wave M/A/D/OS (DONE; in 3.172.0)
+
+| Slice | What landed | PRs |
+| --- | --- | --- |
+| **M1** | Home multi-chat live work status on Recent | `#210` |
+| **M2** | Exit handoff honesty (release TUI jobs, ensure worker) | `#212` |
+| **M3** | Shared detached goal executor (real work after shell exit, not park-only) | `#213` |
+| **A1** | Accounts list arrow / Enter / digit nav | `#211` |
+| **A2** | Accounts rename label `[l]` | `#214` |
+| **D1** | Effort + Speed dials (mode + intensity storage; user-facing Effort/Speed) | `#215` |
+| **OS1** | Multi-OS packed smoke (win/mac) without renaming required ubuntu package-check | `#216` |
 
 Notes:
 
 - R0 docs advance to R1: `#190` (between harness and R1).
 - R1 progress docs: `#194` (partial lanes) before `#195`–`#197`.
-- **R6** was **not** a full actualization merge in this wave — see residuals (detached worker remains skeleton / park-first; shared FG/detached executor + fenced leases not fully productized). Daemon-lite / multi-conversation process registry earlier on main (`#172`–`#174`) is partial substrate, not R6-complete.
+- **M3** advances the former R6 shared-executor residual: real detached work after shell exit, not park-only. Free-loop multi-turn and fenced leases remain open (see residuals).
+- **D1** ships user-facing Effort/Speed on top of mode + intensity storage (supersedes the pre-wave “no Effort/Speed on main” claim from R8.1 docs era).
 
 ## Honest residuals (not product-complete)
 
-These are **known gaps**. Green CI + landed slices do **not** mean every CLAUDEPLAN headline is fully actualized end-to-end.
+These are **known gaps**. Green CI + landed slices do **not** mean every headline is fully actualized end-to-end.
 
-1. **R6 — detached / unified lifecycle residual**  
-   Detached worker path remains skeleton / park-first. Full foreground + detached **shared executor** and **fenced leases** are **not** fully actualized. Treat remaining R6 polish as open product work, not done-by-adjacency to `#172`–`#174`.
+1. **Free-loop detached / multi-turn free loop**  
+   Free-loop detached is still **one turn then park**. Full menu-parity multi-turn free loop is **not** done.
 
-2. **R1 — live per-account CLI model probe**  
-   Structural inventory (`availableModelsByAccount` / lane APIs) is on main. A live per-account **CLI model probe** wired end-to-end is **not**.
+2. **Fenced leases**  
+   Shared FG/detached leasing fences are **not** fully productized.
 
-3. **R9 — full multi-OS packed golden journey**  
-   R9.1 proves real `npm pack` → empty install → bins `--help`/`--version` → actionable no-provider failure on **package-check** (ubuntu / Node 22 first). Full multi-OS packed golden journey (auth handoff, interactive chat, resume, cancel, expanded pack matrix) is **beyond** package-check ubuntu smoke.
+3. **Accounts mouse**  
+   Mouse interaction on accounts list is **not** claimed.
 
-4. **Feature branch two-dial orchestration-profile**  
-   `feature/two-dial-orchestration-profile` remains preserved (historically `97ade64` era) with unmerged commits. **Not** merged wholesale. R8.1 narrowed main product claims to shipped **Mode** + **Intensity**; Effort/Speed two-dial fantasy stays off main.
+4. **R1 — live per-account CLI model probe**  
+   Structural inventory is on main. A live per-account **CLI model probe** wired end-to-end is **not**.
+
+5. **R9 — full multi-OS packed golden journey**  
+   OS1 adds win/mac packed smoke alongside required ubuntu package-check. Full multi-OS packed golden journey (auth handoff, interactive chat, resume, cancel, expanded pack matrix) remains beyond current smoke.
+
+6. **npm publish**  
+   Owner-only; agents do not publish.
 
 ### Narrow deferred items (still honest)
 
@@ -78,11 +98,12 @@ These are **known gaps**. Green CI + landed slices do **not** mean every CLAUDEP
 5. ~~R3.1: safe cooling-account selection.~~ **Done** (`#200`).
 6. ~~R4.1–R4.3: provider-owned credentials / child env / Grok auth.~~ **Done** (`#201`–`#203`).
 7. ~~R5.1: turn budget on live chat path.~~ **Done** (`#204`).
-8. **R6 residual (open):** shared FG/detached executor + fenced leases; detached worker beyond skeleton/park-first.
+8. ~~M3 / R6-class shared detached executor (real work after exit).~~ **Done** (`#213`). Residual: free-loop multi-turn; fenced leases.
 9. ~~R7.1: progress invariant / stall honesty.~~ **Done** (`#205`).
-10. ~~R8.1: prove or narrow two-dial product claims.~~ **Done** (`#206`); two-dial branch not merged wholesale.
-11. ~~R9.1: packed-artifact install smoke.~~ **Done** (`#207`). Residual: multi-OS full golden journey.
-12. **Active next:** residual **R6 polish** **or** user **release publish** (version bump is a **separate** release PR; npm publication remains manual).
+10. ~~R8.1: dial honesty (Mode + Intensity era).~~ **Done** (`#206`); **D1** Effort/Speed user-facing dials **Done** (`#215`).
+11. ~~R9.1: packed-artifact install smoke.~~ **Done** (`#207`). ~~OS1 multi-OS win/mac smoke.~~ **Done** (`#216`). Residual: full multi-OS golden journey.
+12. ~~Product wave M1/M2/A1/A2.~~ **Done** (`#210`–`#212`, `#211`, `#214`).
+13. **Active next:** residual free-loop multi-turn / fenced leases / live model probe / accounts mouse **or** owner **npm publish** of **3.172.0** (version bump is this release PR; publication remains manual).
 
 ## Non-negotiable gate
 
