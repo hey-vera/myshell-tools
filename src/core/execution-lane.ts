@@ -26,10 +26,13 @@
  *  - When `availableModels` is supplied, models are filtered by
  *    {@link filterAvailableModelsForTier} using the capability registry
  *    (capabilityContext.registry or declarative floor).
- *  - Manager / IC never select `candidate` or `worker-floor` models; worker may
- *    use worker-floor. Candidate-only inventory blocks the provider for that tier.
+ *  - Live inventory ids are spawnable (provisional inventory-listed) on worker,
+ *    IC, and manager hard-gates — inventory is CLI authority, not name-promotion
+ *    to curated eligible. Explicit candidate / worker-floor quarantine still block.
+ *  - Curated eligible models still intersect routingProfile.tierAdmission.
+ *  - Sparse registries merge declarative curated profiles for admission.
  *  - Chosen model is re-checked post-route so pricing-table fallback cannot
- *    resurrect a non-admitted id when inventory was admission-filtered.
+ *    resurrect candidate/invalidated/worker-floor ids.
  *
  * Pure: no I/O, no Date.now / Math.random / console / process.exit.
  */
@@ -51,12 +54,12 @@ import type {
 } from '../infra/subscriptions.js';
 import {
   DECLARATIVE_MODEL_CAPABILITIES,
-  findCapability,
 } from './model-capabilities.js';
 import {
   filterAvailableModelsForTier,
   isModelAdmittedForTier,
   providerBlockedByAdmission,
+  resolveCapabilityForAdmission,
   resolveModelAdmission,
   type AdmissionOverrideMap,
 } from './model-admission.js';
@@ -323,7 +326,7 @@ export function selectExecutionLane(
     );
     modelsForRoute = filtered;
     // Drop providers whose inventory was exclusively non-admitted for this tier
-    // (e.g. manager with candidate-only models).
+    // (e.g. manager with explicit candidate/worker-floor-only overrides).
     remaining = remaining.filter((p) => {
       if (providerBlockedByAdmission(p, availableModels[p], filtered[p])) {
         if (!admissionBlocked.includes(p)) admissionBlocked.push(p);
@@ -354,14 +357,26 @@ export function selectExecutionLane(
     const provider = decision.provider;
 
     // R1.4 post-check: refuse models that fail progressive admission for tier
-    // (pricing fallback must not resurrect candidate/worker-floor for manager).
+    // (pricing fallback must not resurrect candidate/worker-floor quarantine).
+    // Models present in the caller's live inventory are marked inLiveInventory.
+    const inventoryList = availableModels?.[provider];
+    const inLiveInventory =
+      inventoryList !== undefined &&
+      inventoryList.some(
+        (m) => m.trim().toLowerCase() === decision.model.trim().toLowerCase(),
+      );
     const admission = resolveModelAdmission(
       admissionRegistry,
       provider,
       decision.model,
       admissionOverrides,
+      { inLiveInventory },
     );
-    const cap = findCapability(admissionRegistry, provider, decision.model);
+    const cap = resolveCapabilityForAdmission(
+      admissionRegistry,
+      provider,
+      decision.model,
+    );
     if (!isModelAdmittedForTier(admission, tier, cap)) {
       if (!admissionBlocked.includes(provider)) admissionBlocked.push(provider);
       if (!blockedProviders.includes(provider)) blockedProviders.push(provider);

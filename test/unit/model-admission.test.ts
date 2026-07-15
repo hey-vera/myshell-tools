@@ -4,9 +4,10 @@
  * Covers:
  *  - state machine ladder + demotion
  *  - never promote from name/version alone
- *  - tier gates (manager refuses candidate/worker-floor)
- *  - resolve from registry facts
- *  - selectExecutionLane manager refuses candidate-only inventory
+ *  - tier gates (manager refuses pure candidate/worker-floor quarantine)
+ *  - resolve from registry facts + declarative floor
+ *  - live inventory models remain spawnable (worker/IC/manager hard-gate)
+ *  - selectExecutionLane manager refuses name-only / quarantine inventory
  */
 
 import { describe, it } from 'vitest';
@@ -19,6 +20,7 @@ import {
   filterAvailableModelsForTier,
   filterModelsForTier,
   hasObjectiveCapabilityFacts,
+  isInventoryListedSpawnable,
   isModelAdmittedForTier,
   isRankAdmittedForTier,
   resolveModelAdmission,
@@ -89,7 +91,7 @@ describe('isRankAdmittedForTier', () => {
     assert.equal(isRankAdmittedForTier('worker-floor', 'manager'), false);
   });
 
-  it('provisional admits worker + ic, not manager', () => {
+  it('provisional admits worker + ic, not manager (base ladder)', () => {
     assert.equal(isRankAdmittedForTier('provisional', 'worker'), true);
     assert.equal(isRankAdmittedForTier('provisional', 'ic'), true);
     assert.equal(isRankAdmittedForTier('provisional', 'manager'), false);
@@ -107,16 +109,33 @@ describe('isRankAdmittedForTier', () => {
 // ---------------------------------------------------------------------------
 
 describe('resolveModelAdmission', () => {
-  it('missing Claude/Codex/Grok registry entry → worker-floor (not name-promoted)', () => {
+  it('missing Claude/Codex/Grok registry entry without inventory → candidate (blocked)', () => {
     const r = resolveModelAdmission(
       DECLARATIVE_MODEL_CAPABILITIES,
       'claude',
       'claude-brand-new-99.9-ultra',
     );
-    assert.equal(r.rank, 'worker-floor');
+    assert.equal(r.rank, 'candidate');
     assert.ok(r.reasons.includes('discovered'));
-    // Manager must still refuse
     assert.equal(isRankAdmittedForTier(r.rank, 'manager'), false);
+    assert.equal(isRankAdmittedForTier(r.rank, 'worker'), false);
+  });
+
+  it('missing entry marked inLiveInventory → provisional inventory-listed (spawnable)', () => {
+    const r = resolveModelAdmission(
+      DECLARATIVE_MODEL_CAPABILITIES,
+      'claude',
+      'claude-brand-new-99.9-ultra',
+      undefined,
+      { inLiveInventory: true },
+    );
+    assert.equal(r.rank, 'provisional');
+    assert.ok(r.reasons.includes('inventory-listed'));
+    assert.equal(isModelAdmittedForTier(r, 'worker'), true);
+    assert.equal(isModelAdmittedForTier(r, 'ic'), true);
+    assert.equal(isModelAdmittedForTier(r, 'manager'), true);
+    // Still not curated eligible
+    assert.notEqual(r.rank, 'eligible');
   });
 
   it('missing OpenCode registry entry → eligible for inventory authority (not ranked by name)', () => {
@@ -129,11 +148,13 @@ describe('resolveModelAdmission', () => {
     assert.ok(r.reasons.includes('discovered'));
   });
 
-  it('detect-only row → worker-floor', () => {
+  it('detect-only row → provisional inventory-listed (not worker-floor quarantine)', () => {
     const reg = registryWith(detectOnly('codex', 'gpt-future-canary'));
     const r = resolveModelAdmission(reg, 'codex', 'gpt-future-canary');
-    assert.equal(r.rank, 'worker-floor');
-    assert.ok(r.reasons.includes('detect-only'));
+    assert.equal(r.rank, 'provisional');
+    assert.ok(r.reasons.includes('detect-only') || r.reasons.includes('inventory-listed'));
+    assert.equal(isModelAdmittedForTier(r, 'ic'), true);
+    assert.equal(isModelAdmittedForTier(r, 'manager'), true);
   });
 
   it('objective metadata without curated profile → provisional', () => {
@@ -151,6 +172,29 @@ describe('resolveModelAdmission', () => {
     );
     assert.equal(r.rank, 'eligible');
     assert.ok(r.reasons.includes('registry-curated'));
+  });
+
+  it('sparse registry without routingProfile still inherits declarative curated floor', () => {
+    // Partial registries used for effort/search facts must not demote curated ids.
+    const sparse: CapabilityRegistry = {
+      claude: [],
+      codex: [
+        {
+          provider: 'codex',
+          id: 'gpt-5.5',
+          aliases: [],
+          tierHint: 'manager',
+          supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+          source: ['codex-cache'],
+        },
+      ],
+      opencode: [],
+      grok: [],
+    };
+    const r = resolveModelAdmission(sparse, 'codex', 'gpt-5.5');
+    assert.equal(r.rank, 'eligible');
+    assert.ok(r.reasons.includes('registry-curated'));
+    assert.equal(isModelAdmittedForTier(r, 'manager'), true);
   });
 
   it('override wins (invalidated)', () => {
@@ -278,7 +322,7 @@ describe('applyAdmissionEvent', () => {
 // ---------------------------------------------------------------------------
 
 describe('filterModelsForTier / filterAvailableModelsForTier', () => {
-  it('manager drops candidate and worker-floor models', () => {
+  it('manager keeps inventory-listed models; drops explicit worker-floor overrides', () => {
     const reg = registryWith(
       detectOnly('claude', 'claude-unknown-new'),
       withObjective('claude', 'claude-prov-facts'),
@@ -289,14 +333,14 @@ describe('filterModelsForTier / filterAvailableModelsForTier', () => {
       'manager',
       reg,
     );
-    // opus + sonnet are curated eligible with manager admission; provisional not manager
+    // opus + sonnet curated; inventory-listed detect/objective also spawnable
     assert.ok(kept.includes('opus'));
     assert.ok(kept.includes('sonnet'));
-    assert.ok(!kept.includes('claude-unknown-new'));
-    assert.ok(!kept.includes('claude-prov-facts'));
+    assert.ok(kept.includes('claude-unknown-new'));
+    assert.ok(kept.includes('claude-prov-facts'));
   });
 
-  it('worker keeps worker-floor models', () => {
+  it('worker keeps inventory models', () => {
     const reg = registryWith(detectOnly('codex', 'gpt-unknown-w'));
     const kept = filterModelsForTier(
       'codex',
@@ -307,7 +351,7 @@ describe('filterModelsForTier / filterAvailableModelsForTier', () => {
     assert.deepEqual(kept, ['gpt-unknown-w']);
   });
 
-  it('unknown non-registry Claude models are worker-floor (worker keeps, manager drops)', () => {
+  it('unknown inventory Claude models are provisional spawnable (worker keeps, manager keeps)', () => {
     const workerKept = filterModelsForTier(
       'claude',
       ['totally-missing-id'],
@@ -321,7 +365,7 @@ describe('filterModelsForTier / filterAvailableModelsForTier', () => {
       'manager',
       DECLARATIVE_MODEL_CAPABILITIES,
     );
-    assert.deepEqual(managerKept, []);
+    assert.deepEqual(managerKept, ['totally-missing-id']);
   });
 
   it('explicit candidate rank is admitted to no tier', () => {
@@ -340,8 +384,37 @@ describe('filterModelsForTier / filterAvailableModelsForTier', () => {
     }
   });
 
-  it('filters per-provider map', () => {
+  it('explicit worker-floor override is worker-only', () => {
+    const overrides = new Map([
+      [admissionKey('claude', 'floor-id'), 'worker-floor' as const],
+    ]);
+    assert.deepEqual(
+      filterModelsForTier(
+        'claude',
+        ['floor-id'],
+        'worker',
+        DECLARATIVE_MODEL_CAPABILITIES,
+        overrides,
+      ),
+      ['floor-id'],
+    );
+    assert.deepEqual(
+      filterModelsForTier(
+        'claude',
+        ['floor-id'],
+        'manager',
+        DECLARATIVE_MODEL_CAPABILITIES,
+        overrides,
+      ),
+      [],
+    );
+  });
+
+  it('filters per-provider map — manager keeps inventory-listed, drops quarantine', () => {
     const reg = registryWith(detectOnly('grok', 'grok-future'));
+    const overrides = new Map([
+      [admissionKey('grok', 'grok-future'), 'worker-floor' as const],
+    ]);
     const out = filterAvailableModelsForTier(
       {
         grok: ['grok-future'],
@@ -349,6 +422,7 @@ describe('filterModelsForTier / filterAvailableModelsForTier', () => {
       },
       'manager',
       reg,
+      overrides,
     );
     assert.deepEqual(out.grok, []);
     assert.ok(out.claude?.includes('opus'));
@@ -368,6 +442,19 @@ describe('isModelAdmittedForTier with curated profile', () => {
     assert.equal(isModelAdmittedForTier(record, 'manager', cap), false);
     assert.equal(isModelAdmittedForTier(record, 'worker', cap), true);
   });
+
+  it('inventory-listed provisional is spawnable on manager without becoming eligible', () => {
+    const r = resolveModelAdmission(
+      DECLARATIVE_MODEL_CAPABILITIES,
+      'claude',
+      'model-a',
+      undefined,
+      { inLiveInventory: true },
+    );
+    assert.equal(r.rank, 'provisional');
+    assert.ok(isInventoryListedSpawnable(r));
+    assert.equal(isModelAdmittedForTier(r, 'manager'), true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -375,7 +462,7 @@ describe('isModelAdmittedForTier with curated profile', () => {
 // ---------------------------------------------------------------------------
 
 describe('selectExecutionLane progressive admission', () => {
-  it('manager refuses candidate-only / worker-floor-only inventory (no_eligible_lane)', () => {
+  it('manager may select inventory-listed unknown models (CLI inventory authority)', () => {
     const result = selectExecutionLane({
       tier: 'manager',
       available: ['claude'],
@@ -387,13 +474,11 @@ describe('selectExecutionLane progressive admission', () => {
       cooldownUntil: new Map(),
       sessionTokensByAccount: {},
     });
-    assert.equal(result.ok, false);
-    if (result.ok) return;
-    assert.equal(result.failure.code, 'no_eligible_lane');
-    assert.ok(
-      result.failure.message.toLowerCase().includes('admission') ||
-        result.failure.blockedProviders.includes('claude'),
-    );
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.lane.provider, 'claude');
+    // Inventory model or pricing fallback — must not no_eligible_lane
+    assert.ok(result.lane.model.length > 0);
   });
 
   it('manager refuses inventory that is only explicit candidate overrides', () => {
@@ -419,21 +504,34 @@ describe('selectExecutionLane progressive admission', () => {
     assert.equal(result.failure.code, 'no_eligible_lane');
   });
 
-  it('worker may select worker-floor (detect-only) inventory', () => {
+  it('manager refuses pure worker-floor quarantine inventory', () => {
+    const overrides = new Map([
+      [admissionKey('claude', 'only-floor'), 'worker-floor' as const],
+    ]);
+    const result = selectExecutionLane({
+      tier: 'manager',
+      available: ['claude'],
+      policy: DEFAULT_POLICY,
+      availableModels: {
+        claude: ['only-floor'],
+      },
+      admissionOverrides: overrides,
+      nowMs,
+      cooldownUntil: new Map(),
+      sessionTokensByAccount: {},
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.failure.code, 'no_eligible_lane');
+  });
+
+  it('worker may select inventory (detect-only) models', () => {
     const reg = registryWith(detectOnly('claude', 'claude-worker-floor-id'));
-    // Force worker policy preference toward claude with only the detect-only model.
-    // Pricing fallback still has worker models; post-check admits worker-floor ids
-    // only when route picks them — ensure inventory includes a pricing worker model
-    // that is also worker-floor? Simpler: use availableModels with haiku (eligible
-    // worker) to show worker path still works; plus a separate pure filter test.
-    // For worker-floor selection via lane: use codex with only detect-only and
-    // capabilityContext so admission registry knows the row.
     const result = selectExecutionLane({
       tier: 'worker',
       available: ['claude'],
       policy: DEFAULT_POLICY,
       availableModels: {
-        // haiku is curated worker-eligible; unknown alone would be candidate
         claude: ['haiku', 'claude-worker-floor-id'],
       },
       capabilityContext: { registry: reg, mode: 'auto' },
@@ -445,8 +543,24 @@ describe('selectExecutionLane progressive admission', () => {
     if (!result.ok) return;
     assert.equal(result.lane.tier, 'worker');
     assert.equal(result.lane.provider, 'claude');
-    // Must not be a candidate-only failure
     assert.ok(result.lane.model.length > 0);
+  });
+
+  it('ic may select inventory-listed models (chat/meta paths must not brick)', () => {
+    const result = selectExecutionLane({
+      tier: 'ic',
+      available: ['claude'],
+      policy: DEFAULT_POLICY,
+      availableModels: {
+        claude: ['model-a'],
+      },
+      nowMs,
+      cooldownUntil: new Map(),
+      sessionTokensByAccount: {},
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.lane.provider, 'claude');
   });
 
   it('manager can still select curated eligible models from inventory', () => {
@@ -464,8 +578,6 @@ describe('selectExecutionLane progressive admission', () => {
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.equal(result.lane.provider, 'claude');
-    // opus or alias-resolved manager model — not the mystery unknown
-    assert.notEqual(result.lane.model.toLowerCase(), 'claude-mystery-unknown');
   });
 
   it('invalidated override blocks even curated models for manager', () => {
@@ -487,5 +599,20 @@ describe('selectExecutionLane progressive admission', () => {
       sessionTokensByAccount: {},
     });
     assert.equal(result.ok, false);
+  });
+
+  it('name-only promotion never elevates candidate outside inventory', () => {
+    const r = resolveModelAdmission(
+      DECLARATIVE_MODEL_CAPABILITIES,
+      'claude',
+      'claude-opus-99-ultra-max',
+    );
+    assert.equal(r.rank, 'candidate');
+    const promoted = applyAdmissionEvent(r, {
+      type: 'promote-by-name-version',
+      nameOrVersion: 'claude-opus-99-ultra-max',
+    });
+    assert.equal(promoted.rank, 'candidate');
+    assert.ok(promoted.reasons.includes('name-version-rejected'));
   });
 });
