@@ -6573,7 +6573,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
         | 'normal-chat'
         | 'cancelled'
         | 'staged-parked' = 'normal-chat';
-      // P1-09j-b: mint ONE observing budget per turn.
+      // R5.1 / P1-09j-b: mint ONE enforcing budget per turn (reserved work unit protected).
       const authedCount = [
         mutableCtx.env.claude,
         mutableCtx.env.codex,
@@ -6585,7 +6585,7 @@ Output ONLY valid JSON (no prose, no markdown).`;
       currentTurnId = turnId;
       const budget = createTurnCallBudget({
         turnId,
-        mode: 'observe',
+        mode: 'enforce',
         totalUnits: 64,
         reserved: {
           work: 1,
