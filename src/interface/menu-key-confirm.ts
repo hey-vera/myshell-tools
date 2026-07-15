@@ -20,6 +20,7 @@ import {
   normalizeMenuKey,
 } from './menu-readline.js';
 import { parseYesNo, interpretYesNoKey } from './menu-questions.js';
+import { isMouseInput } from './ui/mouse.js';
 
 /** A yes/no confirm: resolves true for yes, false for no, honouring a default. */
 export type Confirm = (
@@ -90,6 +91,9 @@ export function classifyMenuKey(raw: string): string | null {
   if (raw === NAV_UP) return NAV_UP;
   if (raw === NAV_DOWN) return NAV_DOWN;
   if (raw === '\r' || raw === '\n') return '';
+  // Preserve SGR mouse reports so accounts (and similar) list loops can hit-test.
+  // Without this, multi-byte mouse CSI collapses to '' (Enter = activate current).
+  if (isMouseInput(raw)) return raw;
   if (raw.length === 1 && raw >= ' ') return raw.toLowerCase();
   return '';
 }
