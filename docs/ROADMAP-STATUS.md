@@ -3,7 +3,7 @@
 Compact current-state record. Product north star + long-horizon plan: `CLAUDEPLAN.md`.  
 **Active external-ship sequence:** `docs/EXTERNAL-READINESS-PLAN.md` (U0–U14).
 
-_Updated 2026-07-15. Baseline: `main@003c836` / package **3.173.0** (residual completion on tip; npm `latest` still **3.170.0** — owner publish only). Active next: **U1 detached account parity** → docs honesty → multichat smoke → owner human smoke + **npm publish**._
+_Updated 2026-07-15. Baseline: package **3.174.0** (external readiness U0–U8 code on main via `#224`–`#226`; npm may lag — owner publish). Active next: **owner human smoke (U12)** → **npm publish (U13)**._
 
 Wave summary receipt: `docs/receipts/actualization-wave-complete.md` (historical; residuals partially superseded by `#219`–`#222`).  
 Release receipt: `docs/receipts/release-3.173.0.md` (prior: `docs/receipts/release-3.172.0.md`).  
@@ -94,12 +94,9 @@ Prior waves R-1…R9 + M/A/D/OS + residual `#219`–`#222`: **Done** (tables abo
 
 **External readiness (U0–U14)** — see `docs/EXTERNAL-READINESS-PLAN.md`:
 
-1. **U0** Freeze plan + ROADMAP pointer (this edit).
-2. **U1** Detached account parity (highest code leverage).
-3. **U2–U4** README + support matrix + dial honesty.
-4. **U5–U6** Hermetic multichat / pack honesty.
-5. **U7–U9** Bounded UX polish.
-6. **U10–U14** Version/quality → **owner human smoke** → **owner npm publish**.
+1. ~~U0–U8 code slices~~ **Done** (`#224` U1+docs, `#225` U5 smoke, `#226` U7/U8).
+2. ~~U10 version **3.174.0**~~ **This release.**
+3. **Active next:** **U12 owner human smoke** → **U13 npm publish** → U14 verify registry.
 
 ## Non-negotiable gate
 

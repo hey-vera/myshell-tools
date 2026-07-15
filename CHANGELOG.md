@@ -4,6 +4,28 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.174.0] - 2026-07-15 - external readiness wave (U1 + smokes + UX honesty)
+
+External-ship wave after **3.173.0**: detached worker account-brain parity with menu, hermetic multi-chat handoff smoke, honest account list status labels, support matrix + ship plan. Acceptances remain **owner human smoke** pending; **`npm publish` is owner-only**.
+
+### Added
+- **U1 detached account enrich** — shared `enrichOrchestrateDepsWithAccounts`; worker `productionDeps` loads managed accounts + probe/provisional inventory (`#224`).
+- **U5 hermetic multi-chat smoke** — `npm run smoke:multichat` (18 checks: leave-chat isolation, fenced lease reclaim, TUI release, work chips) (`#225`).
+- **External readiness plan + support matrix** — `docs/EXTERNAL-READINESS-PLAN.md`, `docs/SUPPORT-MATRIX.md`.
+
+### Fixed
+- **U7 OpenCode account list status** — no longer treats `enabled` as always active; shared `formatAccountListStatus` across provider menus (`#226`).
+- **U8 work-chip reopen** — regression: never show `working` without live workers (`#226`).
+
+### Changed
+- README / ROADMAP: honest tip vs npm lag until owner publish.
+- Package version **3.173.0 → 3.174.0**.
+
+### Honest residuals (not claimed done)
+- Owner human smoke matrix (H1–H9) + **`npm publish`**.
+- CLI `run` path may still be thinner than menu for managed accounts (U1b optional).
+- Full multi-OS interactive golden journey; FG free-loop chrome parity.
+
 ## [3.173.0] - 2026-07-15 - residual completion (mouse, probe, freeloop, leases)
 
 Residual completion wave on main after **3.172.0**: accounts list mouse click-to-open, live per-account model probe (accountEnv isolation), detached free-loop multi-turn (up to 8), and fenced goal-job leases (3m TTL + generation). Earlier product wave (multi-chat workers, accounts UX, Effort/Speed dials, multi-OS packed smoke) remains in **3.172.0**. Acceptances remain human-smoke pending; **`npm publish` is owner-only** (agents do not publish).

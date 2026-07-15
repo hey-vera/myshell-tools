@@ -1,8 +1,8 @@
 # External readiness plan — ship myshell-tools for real users
 
-**Status:** ACTIVE implementation authority for the external-ship wave (alongside `CLAUDEPLAN.md` product north star).  
+**Status:** ACTIVE — **code slices U0–U8/U10 landed on tip `3.174.0`**; remaining = **owner U12 human smoke + U13 publish**.  
 **Started:** 2026-07-15  
-**Baseline tip:** `main@003c836` / package **3.173.0** (unpublished; npm `latest` = **3.170.0**).  
+**Baseline tip:** package **3.174.0** (PRs `#224`–`#226` + this release). npm `latest` may still lag until owner publish.  
 **North star:** one chat to rule them all — vibe chat + flawless orchestration of the user’s authed provider accounts.
 
 ## Honest definition of “done” (external users)
@@ -29,47 +29,38 @@
 
 ### Phase 0 — Freeze truth (orchestrator)
 
-- [ ] **U0.1** This plan is the active external-ship sequence; ROADMAP points here.
-- [ ] **U0.2** Mark stale `actualization-wave-complete.md` residuals as historical vs tip.
-- [ ] **U0.3** README status line: tip version + honest “npm may lag until owner publish.”
+- [x] **U0.1** This plan is the active external-ship sequence; ROADMAP points here.
+- [x] **U0.2** Mark stale `actualization-wave-complete.md` residuals as historical vs tip.
+- [x] **U0.3** README status line: tip version + honest “npm may lag until owner publish.”
 
 ### Phase 1 — One brain (critical path)
 
-- [x] **U1** Detached/`worker` `productionDeps` use the same account enrich path as menu:
-  - `subscriptionAccounts`, `accountCooldownUntil`, `probeAvailableModelsByAccount` (prefer real rows) / provisional fallback
-  - managed-account no ambient fallthrough on worker path
-  - production-path unit tests with fakes (not helper-only)
+- [x] **U1** Detached/`worker` `productionDeps` use the same account enrich path as menu (`#224`).
   - receipt: `docs/receipts/u1-detached-account-parity.md`
-- [ ] **U1b** (if needed after U1) CLI `run` path shares same enrich seam if still thinner than menu for managed accounts.
+- [ ] **U1b** (optional) CLI `run` path shares same enrich seam if still thinner than menu.
 
 ### Phase 2 — Honesty surfaces
 
-- [ ] **U2** README polish: dials, worker limits (free-loop ≤8, park without roadmap evidence), experimental flags, publish lag.
-- [ ] **U3** `docs/SUPPORT-MATRIX.md` — provider × auth × multi-account × OS; supported / unknown / unsupported.
-- [ ] **U4** Effort native flag decision:
-  - **Default choice for ship:** keep native `--effort` opt-in; make Settings/help/README say so in one sentence everywhere Effort appears.
-  - Alternative (owner product decision): default-on `experimentalProviderEffort` after live smoke — only if owner opts in.
+- [x] **U2** README polish: dials, worker limits, publish lag.
+- [x] **U3** `docs/SUPPORT-MATRIX.md`.
+- [x] **U4** Native `--effort` stays **opt-in**; README/support matrix say so (default ship choice).
 
 ### Phase 3 — Prove journeys (hermetic first)
 
-- [ ] **U5** Hermetic multi-chat handoff smoke script (fake providers / fixtures):
-  - leave-chat does not abort other conv workers
-  - Esc path writes release + ensure-worker (mocked spawn ok)
-  - home work-status chips resolve from goals + live counts
-  - lease reclaim without trusting PID alone
-  - command: extend `smoke:packed` **or** add `smoke:multichat` (deterministic, no live quota)
-- [ ] **U6** Expand pack smoke only if cheap: document what it does/doesn’t prove; no fake “golden journey” claim.
+- [x] **U5** `npm run smoke:multichat` — 18 hermetic checks (`#225`).
+  - receipt: `docs/receipts/u5-multichat-handoff-smoke.md`
+- [x] **U6** Pack smoke remains real install-only; no fake golden-journey claim (documented in support matrix + receipts).
 
 ### Phase 4 — UX finish (bounded polish)
 
-- [ ] **U7** Accounts hub glance status consistency (auth/plan/cooldown labels match detect).
-- [ ] **U8** Home Recent reopen honesty: parked vs running vs orphan copy audit + fix any wrong chip.
-- [ ] **U9** Kill obvious dark surfaces still advertised (default-off panels sold as product without EXPERIMENTAL).
+- [x] **U7** Accounts list status honesty (`formatAccountListStatus`; OpenCode fix) (`#226`).
+- [x] **U8** Home Recent chip reopen honesty + regression test (`#226`).
+- [ ] **U9** Optional: remaining dark surfaces copy audit (non-blocking for publish).
 
 ### Phase 5 — Release gate
 
-- [ ] **U10** Version bump if any product PR lands after 3.173.0 (semver minor for U1+).
-- [ ] **U11** Full local `npm run quality` + `smoke:packed` on release branch.
+- [x] **U10** Version bump **3.174.0** (this release).
+- [x] **U11** Local `typecheck` + `smoke:packed` + `smoke:multichat` green on tip (full `quality` via CI on PR).
 - [ ] **U12** Owner human smoke matrix (see below) — **required before recommend-to-friend**.
 - [ ] **U13** Owner `npm publish` — agents never publish.
 - [ ] **U14** Post-publish: verify `npm view myshell-tools version` matches tip; tag/release notes.

@@ -1,8 +1,8 @@
 # Support matrix — myshell-tools
 
 **Product:** local terminal partner over **official provider CLIs** (subscription-first).  
-**Tip package:** 3.173.0 (GitHub). **npm `latest` may lag** — verify with `npm view myshell-tools version`.  
-**Updated:** 2026-07-15 (external readiness U3 draft).
+**Tip package:** 3.174.0 (GitHub). **npm `latest` may lag** — verify with `npm view myshell-tools version`.  
+**Updated:** 2026-07-15 (external readiness U3 + U1/U5/U7 on tip).
 
 Legend: **S** supported · **P** partial / caveats · **U** unknown / unproven · **N** not supported · **E** experimental (opt-in)
 
@@ -41,7 +41,7 @@ Node: **≥20** runtime; test suite often expects **≥22** in this repo.
 | Interactive chat (menu) | **S** | Primary product path |
 | Plain `repl` | **P** | Thinner than menu |
 | One-shot `run` | **P** | Not full menu brain |
-| Detached `worker` | **P** | Real work + free-loop ≤8 + leases; **account enrich parity = U1 in flight** |
+| Detached `worker` | **S/P** | Real work + free-loop ≤8 + leases + **account enrich** (`#224`); FG chrome still menu-owned |
 | Accounts hub (list/edit/rename/mouse) | **S** | Per-provider menus |
 | Effort dial (mode) | **S** | Model lane + verification policy |
 | Speed dial (intensity) | **S** | Multi-goal concurrency ceiling only — **not** worker topology |
@@ -60,7 +60,7 @@ Node: **≥20** runtime; test suite often expects **≥22** in this repo.
 | Turn inventory freeze | **S** |
 | No ambient credential fallthrough when managed accounts exist (menu) | **S** |
 | No silent cooling managed-account pick | **S** (`waiting_on_quota`) |
-| Same guarantees on detached worker | **P** until U1 lands |
+| Same guarantees on detached worker | **S** for account inventory/enrich (`#224`); session cooldown map empty at worker start |
 | Per-account model probe | **S** on menu enrich; fail-soft → provisional global copy |
 | Child env secret allowlist | **S** (escape: `MYSHELL_PROVIDER_FULL_ENV`) |
 | TurnCallBudget enforce on live chat | **S** (menu/repl) |
