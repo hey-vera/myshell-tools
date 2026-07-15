@@ -90,18 +90,27 @@ jobs:
           retention-days: 30
 
   package-check:
-    name: Package check (ubuntu-latest / node 22)
-    runs-on: ubuntu-latest
+    # Primary lane: ubuntu. Matrix is expandable (os/node) without changing the smoke script.
+    name: Package check (os=${{ matrix.os }}, node=${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
     needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        node: [22]
+        # Expand later, e.g.:
+        # os: [ubuntu-latest, macos-latest, windows-latest]
+        # node: [20, 22, 24]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js ${{ matrix.node }}
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
           cache: npm
 
       - name: Install dependencies
@@ -133,3 +142,9 @@ jobs:
           done
 
           echo "Package contents look clean — no src/, test/, docs/, or .github/ files included."
+
+      - name: Real packed-artifact install smoke (R9.1)
+        # Real `npm pack` tarball → install into empty temp project → both bins
+        # --help/--version → actionable no-provider refusal → project integrity.
+        # See scripts/packed-install-smoke.mjs and test/fixtures/support-matrix.json.
+        run: npm run smoke:packed

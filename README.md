@@ -302,7 +302,7 @@ Three properties are always derived from typed, deterministic evidence — never
 This is a ground‑up rebuild whose first principle is: **the tool never shows fabricated, mocked, or randomized data as if it were real.** It's enforced, not promised:
 
 - **Architecture guard tests** fail the build if the UI/command layers contain hardcoded "AI responses", fake metrics, or a digit‑then‑`%` literal; if the orchestration core touches the filesystem, clock, or RNG directly; or if any module other than the entry point can terminate the process.
-- **An extensive unit + architecture-guard suite** (plus contract tests with parsers pinned to *recorded real transcripts*), with `tsc --strict`, ESLint, and a clean `npm pack` checked in CI across Windows / macOS / Linux.
+- **An extensive unit + architecture-guard suite** (plus contract tests with parsers pinned to *recorded real transcripts*), with `tsc --strict`, ESLint, and a clean `npm pack` checked in CI across Windows / macOS / Linux. Machine-readable support matrix: [`test/fixtures/support-matrix.json`](test/fixtures/support-matrix.json) (packed-artifact install smoke in CI `package-check`).
 
 ---
 
