@@ -1,10 +1,11 @@
 /**
- * src/core/execution-lane.ts — atomic execution-lane selection (R1.1).
+ * src/core/execution-lane.ts — atomic execution-lane selection (R1.1 / R1.3b).
  *
  * The routing atom is an eligible **lane** = provider + account + model chosen
  * together, not model-then-account. Inventory v1 still uses provider-global
- * `availableModels` (same models for every account of a provider until R1.3),
- * but selection always returns one struct pairing all three.
+ * `availableModels` (same models for every account of a provider until full
+ * per-account probe), but selection always returns one struct pairing all three
+ * and tags the snapshot with a versioned **inventory generation**.
  *
  * Managed-account contract:
  *  - When managed subscription accounts exist for a provider, work-call spawn
@@ -14,6 +15,12 @@
  *    never selected (see isSubscriptionAccountStructurallyEligible).
  *  - Zero managed accounts: identical to today's provider-global `route()`
  *    behaviour with `account: null`.
+ *
+ * Inventory generation (R1.3b):
+ *  - Callers may pass an explicit `inventoryGeneration` (counter / probe token)
+ *    to freeze per turn.
+ *  - When absent, a stable content hash is derived from sorted provider / model /
+ *    account ids — deterministic for tests; never Date.now.
  *
  * Pure: no I/O, no Date.now / Math.random / console / process.exit.
  */
@@ -39,15 +46,25 @@ import type {
 // ---------------------------------------------------------------------------
 
 /**
+ * Versioned inventory generation for a lane snapshot.
+ * Explicit counters are usually numbers; content-derived tokens are `ig-…` strings.
+ */
+export type InventoryGeneration = string | number;
+
+/**
  * One selected execution lane: provider, model, and account are atomic.
  * `account` is null only when the provider has zero managed accounts (ambient
  * provider-global credentials remain valid).
+ * `inventoryGeneration` tags the inventory snapshot used for this selection
+ * (R1.3b — freeze per turn for R2 mid-chat refresh).
  */
 export interface ExecutionLane {
   readonly tier: Tier;
   readonly provider: ProviderId;
   readonly model: string;
   readonly account: SubscriptionAccount | null;
+  /** Versioned inventory generation for this lane snapshot. */
+  readonly inventoryGeneration: InventoryGeneration;
   readonly capabilityReasons?: readonly string[];
 }
 
@@ -85,10 +102,95 @@ export interface SelectExecutionLaneInput {
    * managed accounts for `opencode` only.
    */
   readonly opencodeAccounts?: readonly OpencodeSubscriptionAccount[];
+  /**
+   * Explicit inventory generation to freeze on the lane (counter or probe token).
+   * When absent, derived from sorted provider/model/account inventory contents.
+   */
+  readonly inventoryGeneration?: InventoryGeneration;
   readonly nowMs: number;
   readonly cooldownUntil?: ReadonlyMap<string, number>;
   readonly sessionTokensByAccount?: Readonly<Record<string, number>>;
   readonly strategy?: 'sticky' | 'spread';
+}
+
+// ---------------------------------------------------------------------------
+// Inventory generation (R1.3b)
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical fingerprint of inventory contents for stable generation derivation.
+ * Order-independent: providers, models, and account ids are sorted.
+ */
+export function inventoryFingerprint(input: {
+  readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
+  readonly accounts?: readonly { readonly id: string; readonly provider: string }[];
+  readonly opencodeAccounts?: readonly { readonly id: string }[];
+}): string {
+  const lines: string[] = [];
+
+  const models = input.availableModels ?? {};
+  for (const provider of Object.keys(models).sort()) {
+    const list = models[provider as ProviderId];
+    if (list === undefined) continue;
+    for (const model of [...list].map((m) => m.trim()).filter((m) => m.length > 0).sort()) {
+      lines.push(`model\t${provider}\t${model}`);
+    }
+  }
+
+  const accountKeys: string[] = [];
+  if (input.accounts !== undefined) {
+    for (const a of input.accounts) {
+      accountKeys.push(`${a.provider}\t${a.id}`);
+    }
+  }
+  if (input.opencodeAccounts !== undefined) {
+    for (const a of input.opencodeAccounts) {
+      // Prefer generic accounts when both present; still include legacy list so
+      // a caller that only passes opencodeAccounts gets a distinct generation.
+      accountKeys.push(`opencode\t${a.id}`);
+    }
+  }
+  for (const key of accountKeys.sort()) {
+    lines.push(`account\t${key}`);
+  }
+
+  return lines.join('\n');
+}
+
+/** djb2-ish 32-bit hex; pure; no deps. Prefix marks content-derived generations. */
+function hashFingerprint(fingerprint: string): string {
+  let h = 5381;
+  for (let i = 0; i < fingerprint.length; i++) {
+    h = ((h << 5) + h + fingerprint.charCodeAt(i)) | 0;
+  }
+  return 'ig-' + (h >>> 0).toString(16).padStart(8, '0');
+}
+
+/**
+ * Derive a stable inventory generation from inventory contents.
+ * Same inventory (order-independent) → same generation; not wall-clock based.
+ */
+export function deriveInventoryGeneration(input: {
+  readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
+  readonly accounts?: readonly { readonly id: string; readonly provider: string }[];
+  readonly opencodeAccounts?: readonly { readonly id: string }[];
+}): string {
+  return hashFingerprint(inventoryFingerprint(input));
+}
+
+/**
+ * Resolve generation: explicit caller value wins; else content-derived token.
+ */
+export function resolveInventoryGeneration(
+  explicit: InventoryGeneration | undefined,
+  inventory: {
+    readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
+    readonly accounts?: readonly { readonly id: string; readonly provider: string }[];
+    readonly opencodeAccounts?: readonly { readonly id: string }[];
+  },
+): InventoryGeneration {
+  if (explicit !== undefined) return explicit;
+  return deriveInventoryGeneration(inventory);
 }
 
 const SUBSCRIPTION_PROVIDERS: ReadonlySet<string> = new Set([
@@ -127,12 +229,14 @@ function managedAccountsForProvider(
 function decisionToLane(
   decision: RouteDecision,
   account: SubscriptionAccount | null,
+  inventoryGeneration: InventoryGeneration,
 ): ExecutionLane {
   return {
     tier: decision.tier,
     provider: decision.provider,
     model: decision.model,
     account,
+    inventoryGeneration,
     ...(decision.capabilityReasons !== undefined
       ? { capabilityReasons: decision.capabilityReasons }
       : {}),
@@ -146,6 +250,9 @@ function decisionToLane(
  * provider has managed accounts and none are eligible for the resolved model
  * (pool-aware for opencode), that provider is removed from the candidate set
  * and routing retries — never ambient fallthrough for a managed provider.
+ *
+ * Ok lanes always carry {@link ExecutionLane.inventoryGeneration} (explicit or
+ * content-derived) so callers can freeze the inventory snapshot per turn.
  */
 export function selectExecutionLane(
   input: SelectExecutionLaneInput,
@@ -164,6 +271,12 @@ export function selectExecutionLane(
     sessionTokensByAccount = {},
     strategy = 'spread',
   } = input;
+
+  const inventoryGeneration = resolveInventoryGeneration(input.inventoryGeneration, {
+    ...(availableModels !== undefined ? { availableModels } : {}),
+    ...(accounts !== undefined ? { accounts } : {}),
+    ...(opencodeAccounts !== undefined ? { opencodeAccounts } : {}),
+  });
 
   let remaining: ProviderId[] = [...input.available];
   const blockedProviders: ProviderId[] = [];
@@ -190,14 +303,20 @@ export function selectExecutionLane(
 
     // Zero managed accounts for this provider → ambient / provider-global path.
     if (managed.length === 0) {
-      return { ok: true, lane: decisionToLane(decision, null) };
+      return {
+        ok: true,
+        lane: decisionToLane(decision, null, inventoryGeneration),
+      };
     }
 
     // Managed accounts exist: must pair an eligible account with this model.
     if (!isSubscriptionProvider(provider)) {
       // Defensive: managed inventory should only exist for known subscription
       // providers. Treat as ambient if somehow present.
-      return { ok: true, lane: decisionToLane(decision, null) };
+      return {
+        ok: true,
+        lane: decisionToLane(decision, null, inventoryGeneration),
+      };
     }
 
     const account = selectSubscriptionAccount({
@@ -213,7 +332,10 @@ export function selectExecutionLane(
     });
 
     if (account !== null) {
-      return { ok: true, lane: decisionToLane(decision, account) };
+      return {
+        ok: true,
+        lane: decisionToLane(decision, account, inventoryGeneration),
+      };
     }
 
     // Managed accounts present but none eligible — block this provider; do not

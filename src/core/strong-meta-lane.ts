@@ -19,6 +19,7 @@ import { POLICY_PRESETS } from './policy.js';
 import {
   selectExecutionLane,
   type ExecutionLaneSelectFailure,
+  type InventoryGeneration,
   type SelectExecutionLaneInput,
 } from './execution-lane.js';
 import type {
@@ -36,6 +37,8 @@ export interface StrongMetaLane {
   readonly provider: ProviderId;
   readonly model: string;
   readonly account: SubscriptionAccount | null;
+  /** Inventory generation frozen on the underlying execution-lane snapshot. */
+  readonly inventoryGeneration: InventoryGeneration;
   /**
    * High/max-style effort reconciled against the selected model's supported
    * set via existing effort plumbing. Undefined when no capability metadata.
@@ -60,6 +63,8 @@ export interface SelectStrongMetaLaneInput {
   readonly capabilityRegistry?: CapabilityRegistry;
   readonly accounts?: readonly SubscriptionAccount[];
   readonly opencodeAccounts?: readonly OpencodeSubscriptionAccount[];
+  /** Explicit inventory generation; when absent, derived from inventory. */
+  readonly inventoryGeneration?: InventoryGeneration;
   readonly nowMs: number;
   readonly cooldownUntil?: ReadonlyMap<string, number>;
   readonly sessionTokensByAccount?: Readonly<Record<string, number>>;
@@ -119,6 +124,9 @@ export function selectStrongMetaLane(
     ...(input.opencodeAccounts !== undefined
       ? { opencodeAccounts: input.opencodeAccounts }
       : {}),
+    ...(input.inventoryGeneration !== undefined
+      ? { inventoryGeneration: input.inventoryGeneration }
+      : {}),
     ...(input.cooldownUntil !== undefined
       ? { cooldownUntil: input.cooldownUntil }
       : {}),
@@ -156,6 +164,7 @@ export function selectStrongMetaLane(
       provider: laneResult.lane.provider,
       model: laneResult.lane.model,
       account: laneResult.lane.account,
+      inventoryGeneration: laneResult.lane.inventoryGeneration,
       effort,
     },
   };
