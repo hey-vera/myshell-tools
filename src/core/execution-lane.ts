@@ -1,5 +1,5 @@
 /**
- * src/core/execution-lane.ts — atomic execution-lane selection (R1.1 / R1.3b).
+ * src/core/execution-lane.ts — atomic execution-lane selection (R1.1 / R1.3b / R1.4).
  *
  * The routing atom is an eligible **lane** = provider + account + model chosen
  * together, not model-then-account. Inventory v1 still uses provider-global
@@ -22,6 +22,18 @@
  *  - When absent, a stable content hash is derived from sorted provider / model /
  *    account ids — deterministic for tests; never Date.now.
  *
+ * Progressive admission (R1.4):
+ *  - When `availableModels` is supplied, models are filtered by
+ *    {@link filterAvailableModelsForTier} using the capability registry
+ *    (capabilityContext.registry or declarative floor).
+ *  - Live inventory ids are spawnable (provisional inventory-listed) on worker,
+ *    IC, and manager hard-gates — inventory is CLI authority, not name-promotion
+ *    to curated eligible. Explicit candidate / worker-floor quarantine still block.
+ *  - Curated eligible models still intersect routingProfile.tierAdmission.
+ *  - Sparse registries merge declarative curated profiles for admission.
+ *  - Chosen model is re-checked post-route so pricing-table fallback cannot
+ *    resurrect candidate/invalidated/worker-floor ids.
+ *
  * Pure: no I/O, no Date.now / Math.random / console / process.exit.
  */
 
@@ -40,6 +52,17 @@ import type {
   SubscriptionAccount,
   SubscriptionProvider,
 } from '../infra/subscriptions.js';
+import {
+  DECLARATIVE_MODEL_CAPABILITIES,
+} from './model-capabilities.js';
+import {
+  filterAvailableModelsForTier,
+  isModelAdmittedForTier,
+  providerBlockedByAdmission,
+  resolveCapabilityForAdmission,
+  resolveModelAdmission,
+  type AdmissionOverrideMap,
+} from './model-admission.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -107,6 +130,11 @@ export interface SelectExecutionLaneInput {
    * When absent, derived from sorted provider/model/account inventory contents.
    */
   readonly inventoryGeneration?: InventoryGeneration;
+  /**
+   * Optional progressive-admission overrides (e.g. model-not-found → invalidated).
+   * Keys via {@link admissionKey}. Absent → ranks derived only from registry facts.
+   */
+  readonly admissionOverrides?: AdmissionOverrideMap;
   readonly nowMs: number;
   readonly cooldownUntil?: ReadonlyMap<string, number>;
   readonly sessionTokensByAccount?: Readonly<Record<string, number>>;
@@ -266,6 +294,7 @@ export function selectExecutionLane(
     capabilityContext,
     accounts,
     opencodeAccounts,
+    admissionOverrides,
     nowMs,
     cooldownUntil = new Map(),
     sessionTokensByAccount = {},
@@ -278,8 +307,35 @@ export function selectExecutionLane(
     ...(opencodeAccounts !== undefined ? { opencodeAccounts } : {}),
   });
 
+  // R1.4 — progressive admission filter when inventory is supplied.
+  // Registry floor: capabilityContext.registry, else declarative curated table.
+  // Generation fingerprint still uses the unfiltered inventory (discovery truth).
+  const admissionRegistry =
+    capabilityContext?.registry ?? DECLARATIVE_MODEL_CAPABILITIES;
+  let modelsForRoute = availableModels;
   let remaining: ProviderId[] = [...input.available];
   const blockedProviders: ProviderId[] = [];
+  const admissionBlocked: ProviderId[] = [];
+
+  if (availableModels !== undefined) {
+    const filtered = filterAvailableModelsForTier(
+      availableModels,
+      tier,
+      admissionRegistry,
+      admissionOverrides,
+    );
+    modelsForRoute = filtered;
+    // Drop providers whose inventory was exclusively non-admitted for this tier
+    // (e.g. manager with explicit candidate/worker-floor-only overrides).
+    remaining = remaining.filter((p) => {
+      if (providerBlockedByAdmission(p, availableModels[p], filtered[p])) {
+        if (!admissionBlocked.includes(p)) admissionBlocked.push(p);
+        if (!blockedProviders.includes(p)) blockedProviders.push(p);
+        return false;
+      }
+      return true;
+    });
+  }
 
   while (remaining.length > 0) {
     let decision: RouteDecision;
@@ -288,7 +344,7 @@ export function selectExecutionLane(
         tier,
         remaining,
         policy,
-        availableModels,
+        modelsForRoute,
         authenticatedProviders,
         preferredOrder,
         capabilityContext,
@@ -299,6 +355,35 @@ export function selectExecutionLane(
     }
 
     const provider = decision.provider;
+
+    // R1.4 post-check: refuse models that fail progressive admission for tier
+    // (pricing fallback must not resurrect candidate/worker-floor quarantine).
+    // Models present in the caller's live inventory are marked inLiveInventory.
+    const inventoryList = availableModels?.[provider];
+    const inLiveInventory =
+      inventoryList !== undefined &&
+      inventoryList.some(
+        (m) => m.trim().toLowerCase() === decision.model.trim().toLowerCase(),
+      );
+    const admission = resolveModelAdmission(
+      admissionRegistry,
+      provider,
+      decision.model,
+      admissionOverrides,
+      { inLiveInventory },
+    );
+    const cap = resolveCapabilityForAdmission(
+      admissionRegistry,
+      provider,
+      decision.model,
+    );
+    if (!isModelAdmittedForTier(admission, tier, cap)) {
+      if (!admissionBlocked.includes(provider)) admissionBlocked.push(provider);
+      if (!blockedProviders.includes(provider)) blockedProviders.push(provider);
+      remaining = remaining.filter((p) => p !== provider);
+      continue;
+    }
+
     const managed = managedAccountsForProvider(provider, accounts, opencodeAccounts);
 
     // Zero managed accounts for this provider → ambient / provider-global path.
@@ -350,6 +435,11 @@ export function selectExecutionLane(
     blockedProviders.length > 0
       ? blockedProviders.join(', ')
       : '(none)';
+  const admissionNote =
+    admissionBlocked.length > 0
+      ? ` Progressive admission blocked (candidate/worker-floor/invalidated for tier ` +
+        `"${tier}"): ${admissionBlocked.join(', ')}.`
+      : '';
   return {
     ok: false,
     failure: {
@@ -357,9 +447,11 @@ export function selectExecutionLane(
       message:
         `No eligible execution lane: managed subscription accounts exist but none ` +
         `are selectable (status auth-failed/unknown/disabled/expired, disabled, ` +
-        `cooled without alternate provider, or pool mismatch). Blocked managed ` +
-        `providers: ${blockedList}. Refusing ambient global credentials for those ` +
-        `providers. Add/repair an eligible account or enable another provider.`,
+        `cooled without alternate provider, or pool mismatch), or progressive ` +
+        `admission refused all inventory for this tier. Blocked managed ` +
+        `providers: ${blockedList}.${admissionNote} Refusing ambient global ` +
+        `credentials for those providers. Add/repair an eligible account, enable ` +
+        `another provider, or wait for model admission promotion.`,
       blockedProviders,
     },
   };
