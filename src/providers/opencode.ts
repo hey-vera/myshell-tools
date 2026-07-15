@@ -42,6 +42,7 @@ import { createOpencodeParser } from './opencode-parse.js';
 import { replitPersistentEnv } from '../infra/credentials.js';
 import type { ReasoningEffort } from '../core/model-capabilities.js';
 import { spawnGuarded, withHangCap, providerHangCapMs } from './hang-cap.js';
+import { resolveProviderParentEnv } from './child-env.js';
 
 // ---------------------------------------------------------------------------
 // Argv builder (pure)
@@ -111,17 +112,20 @@ export function buildOpencodeArgs(req: ProviderRequest): string[] {
 }
 
 /**
- * Build the child env for an opencode spawn. PURE — merges process.env,
- * replitPersistentEnv, and optional account env overrides (XDG_DATA_HOME).
- * Extracted so tests can assert env composition without spawning a real process.
+ * Build the child env for an opencode spawn (R4.2).
+ *
+ * Allowlisted parent env + replitPersistentEnv + optional accountEnv
+ * (XDG_DATA_HOME) LAST. Extracted so tests can assert composition without spawn.
  */
 export function buildOpencodeEnv(
   req: ProviderRequest,
   parentEnv: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
+  // Allowlist (or FULL_ENV escape), then replit XDG, accountEnv LAST.
+  const base = resolveProviderParentEnv(parentEnv, 'opencode');
   return {
-    ...parentEnv,
-    ...replitPersistentEnv(parentEnv, req.cwd),
+    ...base,
+    ...replitPersistentEnv(base, req.cwd),
     ...(req.accountEnv ?? {}),
   };
 }
