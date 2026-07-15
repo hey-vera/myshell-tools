@@ -318,6 +318,86 @@ describe('selectExecutionLane', () => {
     assert.equal(picked!.id, 'good');
   });
 
+  it('R3.1: all cooling accounts → waiting_on_quota with retryAfterMs', () => {
+    const a = makeClaude({ id: 'c-cool-1' });
+    const b = makeClaude({ id: 'c-cool-2' });
+    const cd = new Map<string, number>([
+      ['c-cool-1', nowMs + 90_000],
+      ['c-cool-2', nowMs + 180_000],
+    ]);
+    const result = selectExecutionLane({
+      tier: 'ic',
+      available: ['claude'],
+      policy: DEFAULT_POLICY,
+      accounts: [a, b],
+      nowMs,
+      cooldownUntil: cd,
+      sessionTokensByAccount: {},
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.failure.code, 'waiting_on_quota');
+    assert.deepEqual(result.failure.blockedProviders, ['claude']);
+    assert.equal(result.failure.retryAfterMs, 90_000);
+    assert.match(result.failure.message, /cooldown/i);
+    assert.match(result.failure.message, /Not spawning on a cooling account/i);
+  });
+
+  it('R3.1: mixed healthy + cooling → healthy sibling lane', () => {
+    const cool = makeClaude({ id: 'c-cool' });
+    const healthy = makeClaude({ id: 'c-ok', priorityWeight: 50 });
+    const cd = new Map<string, number>([['c-cool', nowMs + 60_000]]);
+    const result = selectExecutionLane({
+      tier: 'ic',
+      available: ['claude'],
+      policy: DEFAULT_POLICY,
+      accounts: [cool, healthy],
+      nowMs,
+      cooldownUntil: cd,
+      sessionTokensByAccount: {},
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.lane.provider, 'claude');
+    assert.equal(result.lane.account!.id, 'c-ok');
+  });
+
+  it('R3.1: cooling provider fails over to healthy alternate provider', () => {
+    const coolClaude = makeClaude({ id: 'c-cool' });
+    const goodCodex = makeCodex({ id: 'cx-ok' });
+    const cd = new Map<string, number>([['c-cool', nowMs + 60_000]]);
+    const result = selectExecutionLane({
+      tier: 'ic',
+      available: ['claude', 'codex'],
+      policy: DEFAULT_POLICY,
+      accounts: [coolClaude, goodCodex],
+      nowMs,
+      cooldownUntil: cd,
+      sessionTokensByAccount: {},
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.lane.provider, 'codex');
+    assert.equal(result.lane.account!.id, 'cx-ok');
+  });
+
+  it('R3.1: auth-failed still excluded (not treated as cooldown wait)', () => {
+    const failed = makeClaude({ id: 'c-auth', status: 'auth-failed' });
+    const result = selectExecutionLane({
+      tier: 'ic',
+      available: ['claude'],
+      policy: DEFAULT_POLICY,
+      accounts: [failed],
+      nowMs,
+      cooldownUntil: emptyCooldown,
+      sessionTokensByAccount: {},
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.failure.code, 'no_eligible_lane');
+    assert.equal(result.failure.retryAfterMs, undefined);
+  });
+
   it('legacy opencodeAccounts still pair without ambient when ineligible', () => {
     const bad = makeOpencode({ id: 'oc-bad', status: 'auth-failed' });
     const result = selectExecutionLane({

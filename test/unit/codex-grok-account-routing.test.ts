@@ -273,7 +273,7 @@ describe('per-account cooldown — codex', () => {
     assert.equal(result!.id, 'c2');
   });
 
-  it('cooling both codex accounts still returns one (never-strand)', () => {
+  it('cooling both codex accounts → null (R3.1: no silent cooling pick)', () => {
     const cd = new Map<string, number>([
       ['c1', nowMs + 300_000],
       ['c2', nowMs + 300_000],
@@ -285,8 +285,7 @@ describe('per-account cooldown — codex', () => {
       cooldownUntil: cd,
       sessionTokensByAccount: {},
     });
-    assert.ok(result !== null);
-    assert.ok(result!.id === 'c1' || result!.id === 'c2');
+    assert.equal(result, null);
   });
 
   it('ignores expired cooldown on a codex account', () => {
@@ -326,7 +325,7 @@ describe('per-account cooldown — grok', () => {
     assert.equal(result!.id, 'g2');
   });
 
-  it('cooling both grok accounts still returns one (never-strand)', () => {
+  it('cooling both grok accounts → null (R3.1: no silent cooling pick)', () => {
     const cd = new Map<string, number>([
       ['g1', nowMs + 300_000],
       ['g2', nowMs + 300_000],
@@ -338,8 +337,7 @@ describe('per-account cooldown — grok', () => {
       cooldownUntil: cd,
       sessionTokensByAccount: {},
     });
-    assert.ok(result !== null);
-    assert.ok(result!.id === 'g1' || result!.id === 'g2');
+    assert.equal(result, null);
   });
 
   it('ignores expired cooldown on a grok account', () => {

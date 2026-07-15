@@ -1285,10 +1285,14 @@ describe('account parallelism — ineligible cases', () => {
       runHedged('hard task', deps, { ...PLAN, delayMs: 0 }, new AbortController().signal),
     );
     assert.ok(events.some((e) => e.type === 'final' && 'success' in e && e.success));
-    // Primary gets claude-1 (not cooling); speculative gets claude-2 (cooling,
-    // but returned by never-strand since it's the only sibling candidate)
+    // Primary gets claude-1 (healthy). Speculative sibling is cooling → R3.1
+    // selectSibling returns null (no silent cooling pick). Hedge may still run
+    // a same-provider speculative arm on the primary lane account — never the
+    // cooling sibling.
     assert.equal(primaryReq.last?.accountId, 'claude-1');
-    assert.equal(specReq.last?.accountId, 'claude-2');
+    if (specReq.last !== undefined) {
+      assert.notEqual(specReq.last.accountId, 'claude-2');
+    }
   });
 });
 
