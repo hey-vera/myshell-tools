@@ -1,10 +1,9 @@
 /**
- * src/commands/worker.ts — detached goal worker main loop (multi-chat PR-D).
+ * src/commands/worker.ts — detached goal worker main loop (multi-chat PR-D / M3).
  *
  * Claims pending/orphaned goal jobs under state home, runs each via a pluggable
- * executor (default: thin skeleton that advances job status and fail-soft logs;
- * full adaptive `runGoalLoop` still lives in menu — extraction is residual),
- * then idle-exits after TTL with an empty queue.
+ * executor. Production default: `createDetachedGoalExecutor` — real provider
+ * work + verification (shared module), not park-only skeleton.
  *
  * Not an always-on OS service. Invoked as `myshell-tools worker`.
  */
@@ -25,8 +24,7 @@ import {
   type GoalJobStore,
 } from '../infra/goal-job-store.js';
 import { defaultStateLayout } from '../infra/state-layout.js';
-import { createFileGoalStore } from '../infra/goal-store.js';
-import { systemClock } from '../infra/clock.js';
+import { createDetachedGoalExecutor } from './detached-goal-execution.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -35,8 +33,8 @@ import { systemClock } from '../infra/clock.js';
 export type GoalJobRunOutcome = 'done' | 'failed' | 'parked';
 
 /**
- * Pluggable job executor. Production default is the thin skeleton; tests inject
- * a fake. When full `runGoalLoop` is extracted from menu, wire it here.
+ * Pluggable job executor. Production default runs real detached goal execution.
+ * Tests inject a fake.
  */
 export type GoalJobExecutor = (
   job: GoalJob,
@@ -75,36 +73,22 @@ async function defaultLog(jobsRoot: string, line: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Default executor (skeleton)
+// Default executor (real detached path — M3)
 // ---------------------------------------------------------------------------
 
 /**
- * Thin first-slice executor:
- * - Marks goal store progress fail-soft
- * - Does NOT yet import menu's `runGoalLoop` (closure over chat state)
- * - Leaves an honest note so reattach can show status
- * - Returns `parked` so the durable goal stays recoverable (not false "done")
- *
- * Residual gap: full adaptive goal loop in the worker process.
+ * Production default: shared detached goal executor.
+ * - Real provider turn(s) via runTask / durable roadmap runner
+ * - Evidence-gated completion for roadmap goals
+ * - Free-loop goals: one real step then park for reattach (menu still owns full multi-turn free loop)
+ * - No authenticated providers → park (not false done)
  */
 export async function defaultGoalJobExecutor(
   job: GoalJob,
-  _signal: AbortSignal,
+  signal: AbortSignal,
 ): Promise<GoalJobRunOutcome> {
   try {
-    const goalStore = createFileGoalStore({ clock: systemClock });
-    const goal = await goalStore.get(job.goalId).catch(() => null);
-    if (goal !== null && goal.state !== 'running') {
-      await goalStore.setState(job.goalId, 'running').catch(() => null);
-    }
-    // Skeleton: no multi-turn model loop yet. Park so TUI reattach can resume
-    // via existing in-process path rather than claiming false completion.
-    await goalStore.setState(job.goalId, 'parked').catch(() => null);
-    await defaultLog(
-      goalJobsRoot(defaultStateLayout()),
-      'goalId=' + job.goalId + ' paused for TUI resume; full adaptive loop is not worker-extracted yet',
-    );
-    return 'parked';
+    return await createDetachedGoalExecutor()(job, signal);
   } catch {
     return 'failed';
   }
@@ -172,7 +156,7 @@ export async function runWorkerLoop(options: WorkerLoopOptions = {}): Promise<nu
     await store.markRunning(
       claimed.conversationId,
       claimed.goalId,
-      'detached-worker claimed; pausing for TUI resume',
+      'detached-worker claimed; running shared goal executor',
     );
 
     const ac = new AbortController();
@@ -189,7 +173,7 @@ export async function runWorkerLoop(options: WorkerLoopOptions = {}): Promise<nu
       outcome === 'done'
         ? 'detached-worker completed'
         : outcome === 'parked'
-          ? 'paused for resume after exit'
+          ? 'detached-worker parked (resume/reattach)'
           : 'detached-worker failed';
     await store.markTerminal(claimed.conversationId, claimed.goalId, outcome, note);
     await log(`finished goalId=${claimed.goalId} outcome=${outcome}`);
