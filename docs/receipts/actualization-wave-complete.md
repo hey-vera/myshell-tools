@@ -28,21 +28,24 @@ R0/R1 roll-up receipts: `docs/receipts/r0-complete.md`, `docs/receipts/r1-comple
 
 ## What this wave does **not** claim
 
-Honest residuals (also mirrored in ROADMAP-STATUS):
+**Historical at write time** (2026-07-15 pre-residual). **Superseded on tip after `#219`–`#223`:**
 
-1. **R6 residual** — Detached worker still skeleton / park-first. Full FG + detached **shared executor** and **fenced leases** are not fully actualized. Earlier daemon-lite / process-registry work (`#172`–`#174`) is substrate, not R6-complete.
-2. **R1 live probe** — Per-account model inventory structure is on main; **live per-account CLI model probe** is not wired end-to-end.
-3. **R9 multi-OS golden journey** — R9.1 is package-check ubuntu real pack/install/smoke. Full multi-OS packed golden journey (interactive auth/chat/resume/cancel matrix) remains open.
-4. **Two-dial feature branch** — `feature/two-dial-orchestration-profile` is **not** merged wholesale; R8.1 narrowed main to Mode + Intensity honesty.
+| Then residual | Later tip |
+| --- | --- |
+| R6 park-first / no shared executor | M3 shared executor `#213` + free-loop `#221` + leases `#222` |
+| R1 live probe not E2E | Live probe `#220` on **menu** enrich path |
+| R9 multi-OS golden journey | OS1 win/mac pack smoke `#216`; full golden journey still open |
+| Two-dial wholesale merge | Still not merged; D1 Effort/Speed UX `#215` on main |
+
+**Still open for external ship** (see `docs/EXTERNAL-READINESS-PLAN.md`):
+
+1. **U1** — Detached worker `productionDeps` still thinner than menu (no account enrich/probe).
+2. **npm publish** — tip **3.173.0**; registry may still be **3.170.0** (owner-only).
+3. Full multi-OS interactive golden journey + FG free-loop chrome parity (post-critical-path).
 
 ## Active next
 
-Either:
-
-- **Residual R6 polish** (shared executor / fenced leases / detached beyond park-first), **or**
-- **User release publish** — separate version-bump PR + manual npm publication when the user chooses.
-
-Do not conflate docs green with release published. Version and publish stay off this PR by design.
+**Superseded:** use `docs/EXTERNAL-READINESS-PLAN.md` (U0–U14). Do not treat this receipt’s “Active next” as current.
 
 ## Files in this PR
 

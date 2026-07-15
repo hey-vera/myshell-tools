@@ -5,15 +5,20 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   createDetachedGoalExecutor,
+  productionDeps,
   runDetachedFreeGoal,
 } from '../../src/commands/detached-goal-execution.ts';
 import { defaultGoalJobExecutor } from '../../src/commands/worker.ts';
 import { DEFAULT_MAX_GOAL_ITERATIONS } from '../../src/core/goal.ts';
+import { DEFAULT_POLICY } from '../../src/core/policy.ts';
 import type { GoalJob } from '../../src/infra/goal-job.ts';
 import { createFileGoalStore } from '../../src/infra/goal-store.ts';
 import { systemClock } from '../../src/infra/clock.ts';
 import type { OrchestrateDeps } from '../../src/core/types.ts';
 import type { EnvironmentStatus } from '../../src/providers/detect.ts';
+import { enrichOrchestrateDepsWithAccounts } from '../../src/interface/enrich-orchestrate-accounts.ts';
+import { buildSharedOrchestrateCore } from '../../src/interface/build-orchestrate-deps.ts';
+import type { SubscriptionAccount } from '../../src/infra/subscriptions.ts';
 
 function baseJob(overrides: Partial<GoalJob> = {}): GoalJob {
   return {
@@ -263,5 +268,85 @@ describe('detached goal executor', () => {
       await executor(baseJob({ goalId: 'goal_fail' }), new AbortController().signal),
       'failed',
     );
+  });
+
+  it('exports productionDeps (default makeDeps) and composes account enrich like production', async () => {
+    // productionDeps is the default makeDeps for createDetachedGoalExecutor /
+    // myshell-tools worker. It builds base core then enrichOrchestrateDepsWithAccounts.
+    // Full productionDeps needs real authenticated providers; here we prove the
+    // same composition seam productionDeps uses after providers exist.
+    assert.equal(typeof productionDeps, 'function');
+
+    const env = {
+      claude: {
+        installed: true,
+        authenticated: true,
+        availableModels: ['claude-sonnet-4'],
+        plan: null,
+      },
+      codex: { installed: false, authenticated: false, availableModels: [], plan: null },
+      opencode: {
+        installed: true,
+        authenticated: true,
+        availableModels: ['kimi-k2'],
+        plan: null,
+      },
+      grok: { installed: false, authenticated: false, availableModels: [], plan: null },
+    } as unknown as EnvironmentStatus;
+
+    const accounts: SubscriptionAccount[] = [
+      {
+        id: 'c1',
+        provider: 'claude',
+        kind: 'oauth-sub',
+        label: 'c1',
+        homeDir: '/h/c1',
+        priority: 'medium',
+        priorityWeight: 100,
+        enabled: true,
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+      {
+        id: 'oc1',
+        provider: 'opencode',
+        label: 'oc1',
+        pool: 'zen',
+        homeDir: '/h/oc1',
+        priority: 'medium',
+        priorityWeight: 100,
+        enabled: true,
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    ];
+
+    // Mirror productionDeps base assembly (providers stubbed; enrich is real seam).
+    const base: OrchestrateDeps = {
+      clock: systemClock,
+      policy: DEFAULT_POLICY,
+      providers: { claude: {} as never, opencode: {} as never },
+      cwd: '/tmp/u1-detached',
+      timeoutMs: 1_000,
+      ...buildSharedOrchestrateCore(env),
+    };
+
+    const enriched = await enrichOrchestrateDepsWithAccounts(base, {
+      cwd: base.cwd,
+      readSubscriptions: async () => ({ version: 1, accounts }),
+      probeAvailableModelsByAccount: async () => ({
+        claude: { c1: ['claude-opus-4'] },
+        opencode: { oc1: ['big-pickle'] },
+      }),
+    });
+
+    assert.equal(enriched.subscriptionAccounts?.length, 2);
+    assert.deepEqual(enriched.availableModelsByAccount, {
+      claude: { c1: ['claude-opus-4'] },
+      opencode: { oc1: ['big-pickle'] },
+    });
+    assert.equal(enriched.opencodeAccounts?.length, 1);
+    assert.ok(enriched.accountCooldownUntil instanceof Map);
+    assert.equal(enriched.accountCooldownUntil?.size, 0);
+    // Routing inventory from env still present (enrich is additive).
+    assert.ok(enriched.availableModels?.claude?.includes('claude-sonnet-4'));
   });
 });

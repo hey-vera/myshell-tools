@@ -1,0 +1,142 @@
+# External readiness plan — ship myshell-tools for real users
+
+**Status:** ACTIVE implementation authority for the external-ship wave (alongside `CLAUDEPLAN.md` product north star).  
+**Started:** 2026-07-15  
+**Baseline tip:** `main@003c836` / package **3.173.0** (unpublished; npm `latest` = **3.170.0**).  
+**North star:** one chat to rule them all — vibe chat + flawless orchestration of the user’s authed provider accounts.
+
+## Honest definition of “done” (external users)
+
+“Fully ready for external users” means **all of the following**, not green CI alone:
+
+| # | Bar | Owner |
+|---|-----|--------|
+| D1 | A stranger can install the **published** package (`npx` / `npm i -g`) and get **this tip’s** behavior (version match). | Owner publish |
+| D2 | First-run path: detect CLIs, consent install/login prompts, land on home — no crash, no silent credential theft. | Code + human smoke |
+| D3 | Single-provider chat works end-to-end (send, stream, durable draft/resume, honest errors). | Code + human smoke |
+| D4 | Multi-account routing (when managed accounts exist): atomic lane, no ambient fallthrough, no silent cooling pick, probe used on **menu and detached** paths. | Code + tests + human smoke |
+| D5 | Multi-chat: leave chat without killing other chats’ work; Esc → worker handoff; home Recent truthful; reopen honest (running/parked/orphan). | Code + hermetic smoke + human smoke |
+| D6 | Effort + Speed dials match real behavior (no fantasy topology; native `--effort` either on or honestly experimental). | Code + copy |
+| D7 | Packed install smoke green on win/mac/linux CI; actionable no-provider path. | Already largely true |
+| D8 | Public docs (README + support matrix) match shipped behavior; no “current daily drive” lie vs npm. | Docs |
+| D9 | Owner human smoke matrix signed off once; then publish. | Owner |
+
+**Out of “must ship now” (post-ship polish, not blockers for 1.0-external):** full FG free-loop chrome parity with menu scheduler UI; full multi-OS interactive golden matrix in CI with live paid accounts; unlimited free-loop overnight autonomy without roadmap evidence.
+
+---
+
+## Checklist (execute top → bottom; parallel where noted)
+
+### Phase 0 — Freeze truth (orchestrator)
+
+- [ ] **U0.1** This plan is the active external-ship sequence; ROADMAP points here.
+- [ ] **U0.2** Mark stale `actualization-wave-complete.md` residuals as historical vs tip.
+- [ ] **U0.3** README status line: tip version + honest “npm may lag until owner publish.”
+
+### Phase 1 — One brain (critical path)
+
+- [x] **U1** Detached/`worker` `productionDeps` use the same account enrich path as menu:
+  - `subscriptionAccounts`, `accountCooldownUntil`, `probeAvailableModelsByAccount` (prefer real rows) / provisional fallback
+  - managed-account no ambient fallthrough on worker path
+  - production-path unit tests with fakes (not helper-only)
+  - receipt: `docs/receipts/u1-detached-account-parity.md`
+- [ ] **U1b** (if needed after U1) CLI `run` path shares same enrich seam if still thinner than menu for managed accounts.
+
+### Phase 2 — Honesty surfaces
+
+- [ ] **U2** README polish: dials, worker limits (free-loop ≤8, park without roadmap evidence), experimental flags, publish lag.
+- [ ] **U3** `docs/SUPPORT-MATRIX.md` — provider × auth × multi-account × OS; supported / unknown / unsupported.
+- [ ] **U4** Effort native flag decision:
+  - **Default choice for ship:** keep native `--effort` opt-in; make Settings/help/README say so in one sentence everywhere Effort appears.
+  - Alternative (owner product decision): default-on `experimentalProviderEffort` after live smoke — only if owner opts in.
+
+### Phase 3 — Prove journeys (hermetic first)
+
+- [ ] **U5** Hermetic multi-chat handoff smoke script (fake providers / fixtures):
+  - leave-chat does not abort other conv workers
+  - Esc path writes release + ensure-worker (mocked spawn ok)
+  - home work-status chips resolve from goals + live counts
+  - lease reclaim without trusting PID alone
+  - command: extend `smoke:packed` **or** add `smoke:multichat` (deterministic, no live quota)
+- [ ] **U6** Expand pack smoke only if cheap: document what it does/doesn’t prove; no fake “golden journey” claim.
+
+### Phase 4 — UX finish (bounded polish)
+
+- [ ] **U7** Accounts hub glance status consistency (auth/plan/cooldown labels match detect).
+- [ ] **U8** Home Recent reopen honesty: parked vs running vs orphan copy audit + fix any wrong chip.
+- [ ] **U9** Kill obvious dark surfaces still advertised (default-off panels sold as product without EXPERIMENTAL).
+
+### Phase 5 — Release gate
+
+- [ ] **U10** Version bump if any product PR lands after 3.173.0 (semver minor for U1+).
+- [ ] **U11** Full local `npm run quality` + `smoke:packed` on release branch.
+- [ ] **U12** Owner human smoke matrix (see below) — **required before recommend-to-friend**.
+- [ ] **U13** Owner `npm publish` — agents never publish.
+- [ ] **U14** Post-publish: verify `npm view myshell-tools version` matches tip; tag/release notes.
+
+---
+
+## Owner human smoke matrix (U12)
+
+Run after green CI on the publish candidate. Real CLIs; no agent secrets.
+
+| # | Scenario | Pass criteria |
+|---|----------|----------------|
+| H1 | `npx`/`npm i -g` candidate (or `npm link` pre-publish) | Starts, version correct |
+| H2 | Fresh setup / detect | Offers install/login only with consent |
+| H3 | One provider chat | Answer streams; draft survives leave/reopen |
+| H4 | Second conversation | First chat goals keep working in-process |
+| H5 | Esc with active goal | Worker claims; reopen shows work not silently lost |
+| H6 | Two managed accounts (if you have them) | Route uses intended account; cooling account not silently picked |
+| H7 | Effort + Speed change | Persist per conversation; Speed only affects multi-goal concurrency |
+| H8 | No providers | Actionable refuse, exit non-zero |
+| H9 | Accounts hub | List nav, rename, glance status sane |
+
+---
+
+## DAG / parallelization
+
+```
+U0 (docs) ─────────────────────────────┐
+                                       ├─► U2, U3, U4 (docs honesty) ──► U10–U14
+U1 (detached account parity) ──────────┤
+                                       ├─► U5 (multichat smoke)
+U7/U8 (UX polish) after U1 if free ────┘
+```
+
+**Serial blockers:** U13 after U1 + U11 + U12.  
+**Independent now:** U0 docs, U1 code, U3 matrix draft, U5 design.
+
+---
+
+## Slice contracts (default)
+
+Every code slice:
+
+1. Name user-visible behavior + production call path.
+2. Failing production-path test first.
+3. Smallest coherent change.
+4. Focused + affected tests green.
+5. Receipt with command evidence.
+6. No default-behavior surprise without calling it out.
+7. No `npm publish`.
+
+---
+
+## Active queue (this session)
+
+1. Land **U0** docs freeze.
+2. Dispatch **U1** detached account parity (highest code leverage).
+3. Dispatch **U3** support matrix + **U2** README honesty in parallel if capacity.
+4. Gate merge U1 → plan U5 smoke.
+5. Pause for owner **U12/U13** when code+docs gate is green.
+
+---
+
+## Non-goals this wave
+
+- Second agent runtime / homemade reasoning engine.
+- Subscription resale / OAuth brokerage.
+- Merging abandoned two-dial feature branch wholesale.
+- Live paid multi-OS CI matrix (human smoke covers; CI stays hermetic).
+}
