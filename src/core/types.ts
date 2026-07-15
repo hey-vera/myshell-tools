@@ -447,6 +447,13 @@ export interface OrchestrateDeps {
    */
   readonly availableModels?: Partial<Record<ProviderId, readonly string[]>>;
   /**
+   * Versioned inventory generation for this deps/turn snapshot (R1.3b).
+   * When present, work-call / hedge / strong-meta freeze it onto selected
+   * execution lanes. When absent, selectExecutionLane derives a stable
+   * content hash from availableModels + account ids (not wall-clock).
+   */
+  readonly inventoryGeneration?: string | number;
+  /**
    * Image attachments for THIS turn (provider-capability audit opportunity #4,
    * image scope). Populated by the interface layer (menu.ts / cli.ts) from the
    * user's message: the PURE extractor (core/attachments.ts) finds candidate image

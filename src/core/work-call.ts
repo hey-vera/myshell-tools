@@ -1320,6 +1320,10 @@ export async function* runWorkCall(input: WorkCallInput): AsyncGenerator<CoreEve
       ...(deps.opencodeAccounts !== undefined
         ? { opencodeAccounts: deps.opencodeAccounts }
         : {}),
+      // R1.3b: freeze caller inventory generation on the lane when present.
+      ...(deps.inventoryGeneration !== undefined
+        ? { inventoryGeneration: deps.inventoryGeneration }
+        : {}),
       nowMs: deps.clock.now(),
       ...((deps.accountCooldownUntil ?? deps.opencodeAccountCooldownUntil) !== undefined
         ? { cooldownUntil: deps.accountCooldownUntil ?? deps.opencodeAccountCooldownUntil }

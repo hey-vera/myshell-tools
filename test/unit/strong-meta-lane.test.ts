@@ -247,6 +247,21 @@ describe('selectStrongMetaLane', () => {
     if (result.ok) return;
     assert.equal(result.failure.code, 'no_eligible_lane');
   });
+
+  it('plumbs inventoryGeneration onto the strong-meta lane (R1.3b)', () => {
+    const result = selectStrongMetaLane({
+      available: ['codex'],
+      availableModels: { codex: ['gpt-5.5'] },
+      authenticatedProviders: ['codex'],
+      inventoryGeneration: 99,
+      nowMs,
+      cooldownUntil: emptyCooldown,
+      sessionTokensByAccount: {},
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.lane.inventoryGeneration, 99);
+  });
 });
 
 describe('strong-meta source hygiene (no dated bypass table)', () => {

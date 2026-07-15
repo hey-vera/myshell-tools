@@ -329,6 +329,10 @@ async function runAttempt(
       ...(capabilityContext !== undefined ? { capabilityContext } : {}),
       ...(accountsForLane !== undefined ? { accounts: accountsForLane } : {}),
       ...(opencodeForLane !== undefined ? { opencodeAccounts: opencodeForLane } : {}),
+      // R1.3b: freeze caller inventory generation on the lane when present.
+      ...(deps.inventoryGeneration !== undefined
+        ? { inventoryGeneration: deps.inventoryGeneration }
+        : {}),
       nowMs,
       ...(deps.accountCooldownUntil !== undefined
         ? { cooldownUntil: deps.accountCooldownUntil }
@@ -1417,6 +1421,10 @@ export async function* runHedged(
         ...(accountsForLane !== undefined ? { accounts: accountsForLane } : {}),
         ...(opencodeForLane !== undefined
           ? { opencodeAccounts: opencodeForLane }
+          : {}),
+        // R1.3b: freeze caller inventory generation on the lane when present.
+        ...(deps.inventoryGeneration !== undefined
+          ? { inventoryGeneration: deps.inventoryGeneration }
           : {}),
         nowMs: deps.clock.now(),
         ...(deps.accountCooldownUntil !== undefined

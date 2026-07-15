@@ -11,7 +11,10 @@
 import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
-import { selectExecutionLane } from '../../src/core/execution-lane.ts';
+import {
+  deriveInventoryGeneration,
+  selectExecutionLane,
+} from '../../src/core/execution-lane.ts';
 import { route } from '../../src/core/route.ts';
 import { DEFAULT_POLICY } from '../../src/core/policy.ts';
 import {
@@ -344,5 +347,125 @@ describe('selectExecutionLane', () => {
     assert.equal(result.lane.provider, expected.provider);
     assert.equal(result.lane.model, expected.model);
     assert.equal(result.lane.account, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R1.3b — inventory generation on lane snapshot
+// ---------------------------------------------------------------------------
+
+describe('inventoryGeneration (R1.3b)', () => {
+  const available: ProviderId[] = ['claude', 'codex'];
+
+  it('same inventory → same generation (order-independent)', () => {
+    const modelsA = {
+      claude: ['claude-sonnet-4-6', 'claude-opus-4-8'],
+      codex: ['gpt-5.3-codex'],
+    };
+    const modelsB = {
+      codex: ['gpt-5.3-codex'],
+      claude: ['claude-opus-4-8', 'claude-sonnet-4-6'],
+    };
+    const a = deriveInventoryGeneration({ availableModels: modelsA });
+    const b = deriveInventoryGeneration({ availableModels: modelsB });
+    assert.equal(a, b);
+    assert.match(String(a), /^ig-[0-9a-f]{8}$/);
+  });
+
+  it('different models → different generation', () => {
+    const a = deriveInventoryGeneration({
+      availableModels: { claude: ['model-a'] },
+    });
+    const b = deriveInventoryGeneration({
+      availableModels: { claude: ['model-b'] },
+    });
+    assert.notEqual(a, b);
+  });
+
+  it('different accounts → different generation', () => {
+    const a = deriveInventoryGeneration({
+      availableModels: { claude: ['m1'] },
+      accounts: [{ id: 'acc-1', provider: 'claude' }],
+    });
+    const b = deriveInventoryGeneration({
+      availableModels: { claude: ['m1'] },
+      accounts: [{ id: 'acc-2', provider: 'claude' }],
+    });
+    assert.notEqual(a, b);
+  });
+
+  it('ok lane carries content-derived inventoryGeneration', () => {
+    const availableModels = {
+      claude: ['claude-sonnet-4-6'],
+      codex: ['gpt-5.3-codex'],
+    };
+    const expected = deriveInventoryGeneration({ availableModels });
+    const result = selectExecutionLane({
+      tier: 'ic',
+      available,
+      policy: DEFAULT_POLICY,
+      availableModels,
+      nowMs,
+      cooldownUntil: emptyCooldown,
+      sessionTokensByAccount: {},
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.lane.inventoryGeneration, expected);
+  });
+
+  it('explicit inventoryGeneration is frozen on the lane', () => {
+    const result = selectExecutionLane({
+      tier: 'ic',
+      available,
+      policy: DEFAULT_POLICY,
+      availableModels: { claude: ['claude-sonnet-4-6'] },
+      inventoryGeneration: 42,
+      nowMs,
+      cooldownUntil: emptyCooldown,
+      sessionTokensByAccount: {},
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.lane.inventoryGeneration, 42);
+  });
+
+  it('string inventoryGeneration token is preserved', () => {
+    const result = selectExecutionLane({
+      tier: 'ic',
+      available,
+      policy: DEFAULT_POLICY,
+      inventoryGeneration: 'probe-gen-7',
+      nowMs,
+      cooldownUntil: emptyCooldown,
+      sessionTokensByAccount: {},
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.lane.inventoryGeneration, 'probe-gen-7');
+  });
+
+  it('accounts participate in derived generation on lane', () => {
+    const c1 = makeClaude({ id: 'claude-primary' });
+    const availableModels = { claude: ['claude-sonnet-4-6'] };
+    const expected = deriveInventoryGeneration({
+      availableModels,
+      accounts: [c1],
+    });
+    const result = selectExecutionLane({
+      tier: 'ic',
+      available: ['claude'],
+      policy: DEFAULT_POLICY,
+      availableModels,
+      accounts: [c1],
+      nowMs,
+      cooldownUntil: emptyCooldown,
+      sessionTokensByAccount: {},
+      strategy: 'sticky',
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.lane.inventoryGeneration, expected);
+    assert.equal(result.lane.account!.id, 'claude-primary');
   });
 });
