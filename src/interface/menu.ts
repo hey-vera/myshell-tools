@@ -215,6 +215,7 @@ import { buildPreflightDeps } from './preflight-deps.js';
 import {
   collectEnvRoutingFacts,
   buildSharedOrchestrateCore,
+  buildAvailableModelsByAccountDepsSlice,
 } from './build-orchestrate-deps.js';
 import { makeModelGhostSuggester } from '../core/model-ghost.js';
 import type { IntentFrame } from '../core/intent.js';
@@ -3209,11 +3210,23 @@ export async function runChatLoop(
               /* best-effort */
             }
           };
+          // P1: populate availableModelsByAccount so turn freeze / selectExecutionLane
+          // see account-keyed inventory when managed accounts exist. Prefer any
+          // already-probed map on base; otherwise provisional copy of provider-global
+          // lists (true per-account CLI entitlement probe is follow-on).
+          const byAccountSlice =
+            base.availableModelsByAccount !== undefined
+              ? { availableModelsByAccount: base.availableModelsByAccount }
+              : buildAvailableModelsByAccountDepsSlice(
+                  base.availableModels,
+                  allAccounts,
+                );
           return {
             ...base,
             subscriptionAccounts: allAccounts,
             accountCooldownUntil,
             opencodeAccounts,
+            ...byAccountSlice,
             ...(Object.keys(sessionTokensByAccount).length > 0
               ? { sessionTokensByAccount }
               : {}),

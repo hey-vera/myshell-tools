@@ -23,7 +23,10 @@
 import type { EnvironmentStatus } from '../providers/detect.js';
 import type { ProviderId } from '../providers/port.js';
 import type { CapabilityRegistry } from '../core/model-capabilities.js';
-import { routingInventoryFromDetectAndRegistry } from '../core/live-model-inventory.js';
+import {
+  provisionalAvailableModelsByAccount,
+  routingInventoryFromDetectAndRegistry,
+} from '../core/live-model-inventory.js';
 import { classifyPlan, type PlanInfo } from '../core/policy.js';
 import type { OrchestrateDeps } from '../core/types.js';
 
@@ -75,6 +78,32 @@ export type EnvRoutingDepsSlice = Pick<
   OrchestrateDeps,
   'availableModels' | 'authenticatedProviders' | 'planInfos'
 >;
+
+/**
+ * Spread-ready `availableModelsByAccount` when managed accounts exist.
+ * Omits the key when provisional inventory is empty (exactOptionalPropertyTypes).
+ *
+ * Provisional: copies provider-global model lists onto each account key.
+ * True entitlement isolation needs a per-account CLI probe (follow-on).
+ */
+export type AvailableModelsByAccountDepsSlice = Pick<
+  OrchestrateDeps,
+  'availableModelsByAccount'
+>;
+
+export function buildAvailableModelsByAccountDepsSlice(
+  availableModels: Partial<Record<ProviderId, readonly string[]>> | undefined,
+  accounts: readonly {
+    readonly provider: ProviderId;
+    readonly id: string;
+  }[],
+): AvailableModelsByAccountDepsSlice {
+  const map = provisionalAvailableModelsByAccount(availableModels, accounts);
+  if (map === undefined || Object.keys(map).length === 0) {
+    return {};
+  }
+  return { availableModelsByAccount: map };
+}
 
 export function buildEnvRoutingDepsSlice(
   env: EnvironmentStatus,

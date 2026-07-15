@@ -8,6 +8,7 @@ import type { EnvironmentStatus, ProviderStatus } from '../../src/providers/dete
 import {
   collectEnvRoutingFacts,
   buildEnvRoutingDepsSlice,
+  buildAvailableModelsByAccountDepsSlice,
   buildShippedCoreOrchestrateFlags,
   buildOptionalSharedContextDeps,
   buildSharedOrchestrateCore,
@@ -245,6 +246,31 @@ describe('buildSharedOrchestrateCore', () => {
     );
     assert.deepEqual(core.availableModels, {
       codex: ['gpt-5.5', 'gpt-brand-new-ship'],
+    });
+  });
+});
+
+describe('buildAvailableModelsByAccountDepsSlice (P1 wire)', () => {
+  it('omits key when no accounts or no models', () => {
+    assert.deepEqual(buildAvailableModelsByAccountDepsSlice({ claude: ['m'] }, []), {});
+    assert.deepEqual(
+      buildAvailableModelsByAccountDepsSlice(undefined, [{ provider: 'claude', id: 'a' }]),
+      {},
+    );
+  });
+
+  it('spreads provisional per-account inventory for managed accounts', () => {
+    const slice = buildAvailableModelsByAccountDepsSlice(
+      { claude: ['sonnet'], opencode: ['kimi'] },
+      [
+        { provider: 'claude', id: 'c1' },
+        { provider: 'claude', id: 'c2' },
+        { provider: 'opencode', id: 'oc1' },
+      ],
+    );
+    assert.deepEqual(slice.availableModelsByAccount, {
+      claude: { c1: ['sonnet'], c2: ['sonnet'] },
+      opencode: { oc1: ['kimi'] },
     });
   });
 });
