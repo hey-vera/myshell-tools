@@ -76,13 +76,21 @@ const LEVEL_LABEL: Record<Level, string> = {
   auto: 'Auto',
 };
 
-/** One-line description per level (display only). */
+/**
+ * One-line description per level (display only).
+ *
+ * R8.1 honesty: these describe the Mode dial (model lane + verification posture).
+ * They must NOT claim a shipped Effort/Speed two-dial, topology fan-out, or
+ * always-on Claude/Grok provider-native `--effort` (that path is experimental
+ * and OFF by default — see `providerEffortEnabled`). Intensity (1–5) is the
+ * separate concurrency-regime dial that feeds `crossGoalCap`.
+ */
 export const LEVEL_DESC: Record<Level, string> = {
   budget:
-    'cheapest models, low/no reasoning effort, local-first — no cross-provider deliberation',
-  balanced: 'mid models, medium effort, standard verification — the sensible middle',
-  high: 'strong models, high effort, review on critical turns — deep but restrained (lighter than Max)',
-  max: 'strongest models, deepest effort, thorough review + full cross-provider deliberation (panel + hedge)',
+    'cheapest models, light verification, local-first — no cross-provider deliberation',
+  balanced: 'mid models, standard verification — the sensible middle',
+  high: 'strong models, review on critical turns — deep but restrained (lighter than Max)',
+  max: 'strongest models, thorough review + cross-provider deliberation when panel/hedge are on',
   auto: 'smart default — picks the effective level per task from how the turn is going',
 };
 
@@ -91,7 +99,7 @@ export function levelLabel(level: Level): string {
 }
 
 /**
- * Advance one step on the conversation Effort Mode dial
+ * Advance one step on the conversation Mode dial
  * (Budget → Balanced → High → Max → Auto → Budget…). PURE.
  * Absent/`undefined` is treated as `auto` (the smart default).
  */

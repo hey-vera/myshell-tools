@@ -2182,7 +2182,7 @@ export async function runChatLoop(
         '  /goals        — list goals by state; show/go/drop/cancel a parked one\n' +
         '  /goals cancel <n> — cancel goal #n + its live work (done/verified work preserved; not a filesystem undo)\n' +
         '  /rule <text>  — set a standing rule I remember + enforce (/rule list, /rule rm <n>)\n' +
-        '  /mode         — quality vs speed (Efficient / Balanced / Max)\n' +
+        '  /mode         — Mode dial (Budget / Balanced / High / Max / Auto): model lane + verification\n' +
         '  /memory       — see, edit, export, or delete what I remember (/forget to remove)\n' +
         '  /recap        — short recap of where this conversation left off\n' +
         '  /taste, /prefs — view what the system has learned about *your* style (free observed prefs for plans/asks/etc.)\n' +
@@ -2192,6 +2192,13 @@ export async function runChatLoop(
         '  /oversight    — how much you review: review-all / checkpoint / autonomous\n' +
         '  /back, /exit  — return to the main menu\n' +
         '  /help         — show this help\n' +
+        '\n' +
+        dim('  Dials (honest product truth — Mode + Intensity, not Effort/Speed):\n', out.color) +
+        dim('    Mode       — Budget…Auto (m / Shift+Tab / /mode): model lane + verification\n', out.color) +
+        dim('    Intensity  — 1–5 multi-goal concurrency ceiling (crossGoalCap via capacity-allocator);\n', out.color) +
+        dim('                 config/conversation intensity, or derived from Mode when unset\n', out.color) +
+        dim('    Claude/Grok provider-native --effort is EXPERIMENTAL and OFF by default\n', out.color) +
+        dim('                 (MYSHELL_PROVIDER_EFFORT=1 or experimentalProviderEffort in config)\n', out.color) +
         '\n' +
         dim('  Feature posture (stable, default-on in interactive chat):\n', out.color) +
         dim('    verify/judgment/trust on · myshell-tools rollback to disable · MYSHELL_BASIC=1 for all-off\n', out.color) +
