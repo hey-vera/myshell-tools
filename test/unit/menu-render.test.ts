@@ -14,11 +14,14 @@ import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {
+  buildConversationWorkStatusById,
   buildEffortModeSections,
   formatControlLine,
+  formatConversationWorkStatus,
   formatHomeSectionHeader,
   formatRecentRow,
   renderMainScreen,
+  resolveConversationWorkStatus,
 } from '../../src/interface/menu-render.ts';
 import type { MenuContext } from '../../src/interface/menu.ts';
 import type { EnvironmentStatus, ProviderStatus } from '../../src/providers/detect.ts';
@@ -26,6 +29,7 @@ import type { AppConfig } from '../../src/infra/config.ts';
 import type { SpendSummary } from '../../src/infra/insights.ts';
 import type { OutputSink } from '../../src/interface/render.ts';
 import type { ConversationMeta } from '../../src/infra/conversation-store.ts';
+import type { Goal } from '../../src/core/goal-todo.ts';
 import { stripAnsi } from '../../src/ui/tui.ts';
 
 // ---------------------------------------------------------------------------
@@ -105,6 +109,8 @@ async function render(
   metas: ConversationMeta[] = [],
   currentWorkspaceRoot?: string,
   config: AppConfig = {} as AppConfig,
+  allGoals: readonly Goal[] = [],
+  activeJobs: readonly { conversationId: string }[] = [],
 ): Promise<string> {
   const { sink, text } = makeSink();
   await renderMainScreen(
@@ -117,13 +123,28 @@ async function render(
     undefined,
     false,
     [],
-    [],
+    allGoals,
     undefined,
     false,
     false,
     currentWorkspaceRoot,
+    activeJobs,
   );
   return text();
+}
+
+function makeGoal(overrides: Partial<Goal> & Pick<Goal, 'id' | 'state' | 'conversationId'>): Goal {
+  return {
+    version: 1,
+    title: 'g',
+    source: 'user-explicit',
+    roadmap: [],
+    scope: 'global',
+    projectKey: null,
+    createdAt: '2023-11-14T20:13:20.000Z',
+    lastTouched: '2023-11-14T21:13:20.000Z',
+    ...overrides,
+  };
 }
 
 function makeMeta(overrides: Partial<ConversationMeta> = {}): ConversationMeta {
@@ -562,6 +583,14 @@ describe('S.1 visual polish format helpers', () => {
     assert.ok(colored.includes('\x1b[2m'), 'expected dim SGR for secondary fields');
   });
 
+  it('formatRecentRow appends optional work status (dim when color on)', () => {
+    const plain = formatRecentRow(1, '12m', 'Menu design', 'codex · auto', false, '2 working · 1 parked');
+    assert.equal(plain, '[1] 12m  Menu design  codex · auto  2 working · 1 parked');
+    const colored = formatRecentRow(1, '12m', 'Menu design', 'codex · auto', true, 'job alive');
+    assert.equal(stripAnsi(colored), '[1] 12m  Menu design  codex · auto  job alive');
+    assert.ok(colored.includes('\x1b[2m'), 'work status dimmed');
+  });
+
   it('formatControlLine bolds [key] and dims secondary sub-lines when color is on', () => {
     assert.equal(formatControlLine('[n] New conversation', false), '[n] New conversation');
     assert.equal(formatControlLine('    └─ title · 1h', false), '    └─ title · 1h');
@@ -593,5 +622,95 @@ describe('S.1 visual polish format helpers', () => {
     assert.ok((footer[0] ?? '').includes('\x1b['), 'footer has ANSI');
     assert.equal(stripAnsi(footer[0] ?? '').includes('m = switch modes'), true);
     assert.equal(stripAnsi(footer[0] ?? '').includes('Balanced'), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M1 — home multi-conversation live work status chips
+// ---------------------------------------------------------------------------
+
+describe('M1 conversation work status chips', () => {
+  it('formatConversationWorkStatus composes glanceable chips', () => {
+    assert.equal(formatConversationWorkStatus({
+      liveWorkers: 2, runningGoals: 2, parkedGoals: 0, activeJobs: 0,
+    }), '2 working');
+    assert.equal(formatConversationWorkStatus({
+      liveWorkers: 0, runningGoals: 0, parkedGoals: 1, activeJobs: 0,
+    }), '1 parked');
+    assert.equal(formatConversationWorkStatus({
+      liveWorkers: 0, runningGoals: 0, parkedGoals: 0, activeJobs: 1,
+    }), 'job alive');
+    assert.equal(formatConversationWorkStatus({
+      liveWorkers: 2, runningGoals: 0, parkedGoals: 1, activeJobs: 1,
+    }), '2 working · 1 parked · job alive');
+    assert.equal(formatConversationWorkStatus({
+      liveWorkers: 0, runningGoals: 1, parkedGoals: 0, activeJobs: 1,
+    }), '1 running · job alive');
+    assert.equal(formatConversationWorkStatus({
+      liveWorkers: 0, runningGoals: 0, parkedGoals: 0, activeJobs: 3,
+    }), '3 jobs');
+    assert.equal(formatConversationWorkStatus({
+      liveWorkers: 0, runningGoals: 0, parkedGoals: 0, activeJobs: 0,
+    }), '');
+  });
+
+  it('buildConversationWorkStatusById aggregates goals + jobs + live workers', () => {
+    const goals: Goal[] = [
+      makeGoal({ id: 'g1', state: 'running', conversationId: 'conv-a' }),
+      makeGoal({ id: 'g2', state: 'parked', conversationId: 'conv-a' }),
+      makeGoal({ id: 'g3', state: 'parked', conversationId: 'conv-b' }),
+      makeGoal({ id: 'g4', state: 'done', conversationId: 'conv-a' }),
+      makeGoal({ id: 'g5', state: 'running', conversationId: null }),
+    ];
+    const live = (id: string): number => (id === 'conv-a' ? 2 : 0);
+    const map = buildConversationWorkStatusById(
+      goals,
+      [{ conversationId: 'conv-a' }, { conversationId: 'conv-c' }],
+      live,
+    );
+    assert.equal(map.get('conv-a'), '2 working · 1 parked · job alive');
+    assert.equal(map.get('conv-b'), '1 parked');
+    assert.equal(map.get('conv-c'), 'job alive');
+    assert.equal(map.has('missing'), false);
+  });
+
+  it('resolveConversationWorkStatus falls back to live workers only', () => {
+    const empty = new Map<string, string>();
+    assert.equal(
+      resolveConversationWorkStatus('x', empty, () => 3),
+      '3 working',
+    );
+    assert.equal(
+      resolveConversationWorkStatus('x', empty, () => 0),
+      '',
+    );
+    assert.equal(
+      resolveConversationWorkStatus('x', new Map([['x', '1 parked']]), () => 9),
+      '1 parked',
+    );
+  });
+
+  it('renderMainScreen Recent rows show work status from goals + jobs', async () => {
+    const out = await render(
+      ENV_CLAUDE_AUTHED,
+      [makeMeta({ id: 'conv-1', title: 'Busy chat' })],
+      undefined,
+      {} as AppConfig,
+      [
+        makeGoal({ id: 'g1', state: 'parked', conversationId: 'conv-1', title: 'Parked goal' }),
+        makeGoal({ id: 'g2', state: 'running', conversationId: 'conv-1', title: 'Running goal' }),
+      ],
+      [{ conversationId: 'conv-1' }],
+    );
+    assert.ok(
+      out.includes('1 running · 1 parked · job alive'),
+      `expected work status chips in:\n${out}`,
+    );
+    assert.ok(out.includes('Busy chat'), 'title still present');
+  });
+
+  it('renderMainScreen omits work status when stores are empty (locked golden)', async () => {
+    const out = await render(ENV_CLAUDE_AUTHED, [makeMeta()]);
+    assert.equal(out, EXPECTED_HOME_POPULATED);
   });
 });

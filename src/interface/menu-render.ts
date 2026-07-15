@@ -37,6 +37,7 @@ import {
   conversationModeLabel,
   type ProviderAccountSummary,
 } from './menu-display.js';
+import { conversationWorkerCount } from './goal-worker-registry.js';
 import { workspaceLabel, normalizeWorkspacePath } from './workspace.js';
 import { navFooterText } from './ui/nav-footer.js';
 
@@ -133,7 +134,8 @@ export function formatHomeSectionHeader(text: string, color: boolean): string {
  * One Recent-list row with dim secondary fields (age + provider/effort) when
  * color is on. Key index and title stay normal weight for scannability. PURE.
  *
- * Shape: `[n] <age>  <titleColumn>  <providerEffort>`
+ * Shape: `[n] <age>  <titleColumn>  <providerEffort>[  <workStatus>]`
+ * Optional `workStatus` is multi-chat live work chrome (`2 working · 1 parked`).
  */
 export function formatRecentRow(
   index: number,
@@ -141,8 +143,135 @@ export function formatRecentRow(
   titleColumn: string,
   providerEffort: string,
   color: boolean,
+  workStatus?: string | null,
 ): string {
-  return `[${index}] ${dim(age, color)}  ${titleColumn}  ${dim(providerEffort, color)}`;
+  const base = `[${index}] ${dim(age, color)}  ${titleColumn}  ${dim(providerEffort, color)}`;
+  if (typeof workStatus !== 'string' || workStatus.length === 0) return base;
+  return `${base}  ${dim(workStatus, color)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Multi-chat home work status (M1) — pure chips from real counts
+// ---------------------------------------------------------------------------
+
+/** Per-conversation work counts feeding Recent-row status chips. PURE inputs. */
+export interface ConversationWorkStatusInput {
+  /** In-process live workers (`conversationWorkerCount`). */
+  readonly liveWorkers: number;
+  /** Durable goal store `state === 'running'` for this conversation. */
+  readonly runningGoals: number;
+  /** Durable goal store `state === 'parked'` for this conversation. */
+  readonly parkedGoals: number;
+  /** Active detached jobs (`goalJobStore.listActive`) for this conversation. */
+  readonly activeJobs: number;
+}
+
+/**
+ * Glanceable work chips for a Recent row. Fail-soft callers pass zeros when
+ * stores are unavailable. Empty string when nothing is live/parked/jobbed.
+ *
+ * Examples: `2 working` · `1 parked` · `job alive` · `1 running · job alive`
+ * (store-only running when no in-process worker is registered).
+ */
+export function formatConversationWorkStatus(input: ConversationWorkStatusInput): string {
+  const live = Math.max(0, Math.floor(input.liveWorkers) || 0);
+  const running = Math.max(0, Math.floor(input.runningGoals) || 0);
+  const parked = Math.max(0, Math.floor(input.parkedGoals) || 0);
+  const jobs = Math.max(0, Math.floor(input.activeJobs) || 0);
+  const parts: string[] = [];
+  if (live > 0) {
+    parts.push(`${live} working`);
+  } else if (running > 0) {
+    parts.push(`${running} running`);
+  }
+  if (parked > 0) {
+    parts.push(`${parked} parked`);
+  }
+  if (jobs > 0) {
+    parts.push(jobs === 1 ? 'job alive' : `${jobs} jobs`);
+  }
+  return parts.join(' · ');
+}
+
+/** Minimal job shape needed for home status aggregation (conversation scope). */
+export interface HomeActiveJobRef {
+  readonly conversationId: string;
+}
+
+/**
+ * Build conversationId → formatted work-status string for Recent rows.
+ * Uses live registry counts (injectable for tests) + durable goals + active jobs.
+ * Goals with null/empty conversationId are ignored. PURE given `liveWorkerCount`.
+ */
+export function buildConversationWorkStatusById(
+  goals: readonly Goal[],
+  activeJobs: readonly HomeActiveJobRef[],
+  liveWorkerCount: (conversationId: string) => number = conversationWorkerCount,
+): ReadonlyMap<string, string> {
+  const runningBy = new Map<string, number>();
+  const parkedBy = new Map<string, number>();
+  for (const g of goals) {
+    const cid = g.conversationId;
+    if (typeof cid !== 'string' || cid.length === 0) continue;
+    if (g.state === 'running') {
+      runningBy.set(cid, (runningBy.get(cid) ?? 0) + 1);
+    } else if (g.state === 'parked') {
+      parkedBy.set(cid, (parkedBy.get(cid) ?? 0) + 1);
+    }
+  }
+  const jobsBy = new Map<string, number>();
+  for (const j of activeJobs) {
+    const cid = j.conversationId;
+    if (typeof cid !== 'string' || cid.length === 0) continue;
+    jobsBy.set(cid, (jobsBy.get(cid) ?? 0) + 1);
+  }
+  const ids = new Set<string>([...runningBy.keys(), ...parkedBy.keys(), ...jobsBy.keys()]);
+  // Also include conversations that only have live workers (no durable row yet).
+  // Caller may not know those ids from stores alone — paintMenu only has metas;
+  // live workers are looked up per meta id in renderRecentRows instead when map miss.
+  const out = new Map<string, string>();
+  for (const id of ids) {
+    let live = 0;
+    try {
+      live = liveWorkerCount(id);
+    } catch {
+      live = 0;
+    }
+    const text = formatConversationWorkStatus({
+      liveWorkers: live,
+      runningGoals: runningBy.get(id) ?? 0,
+      parkedGoals: parkedBy.get(id) ?? 0,
+      activeJobs: jobsBy.get(id) ?? 0,
+    });
+    if (text.length > 0) out.set(id, text);
+  }
+  return out;
+}
+
+/**
+ * Resolve work-status text for one conversation id (map hit, else live-only
+ * registry lookup so in-process workers still show when stores are empty).
+ */
+export function resolveConversationWorkStatus(
+  conversationId: string,
+  byId: ReadonlyMap<string, string>,
+  liveWorkerCount: (conversationId: string) => number = conversationWorkerCount,
+): string {
+  const hit = byId.get(conversationId);
+  if (typeof hit === 'string' && hit.length > 0) return hit;
+  let live = 0;
+  try {
+    live = liveWorkerCount(conversationId);
+  } catch {
+    live = 0;
+  }
+  if (live <= 0) return '';
+  return formatConversationWorkStatus({
+    liveWorkers: live,
+    runningGoals: 0,
+    parkedGoals: 0,
+    activeJobs: 0,
+  });
 }
 
 /**
@@ -238,6 +367,7 @@ function renderRecentRows(
   nowMs: number,
   currentWorkspaceRoot: string | null | undefined,
   color = false,
+  workStatusById: ReadonlyMap<string, string> = new Map(),
 ): string[] {
   const ordered = orderRecentForRender(metas, currentWorkspaceRoot);
   const normCurrent =
@@ -263,7 +393,8 @@ function renderRecentRows(
     const titleColumn = !isCurrent && hasLocation
       ? `${workspaceLabel(m.workspaceRoot as string)} · ${m.title}`
       : m.title;
-    return formatRecentRow(idx, age, titleColumn, providerEffort, color);
+    const workStatus = resolveConversationWorkStatus(m.id, workStatusById);
+    return formatRecentRow(idx, age, titleColumn, providerEffort, color, workStatus);
   });
 }
 
@@ -328,11 +459,13 @@ export async function renderMainScreen(
   _claudeTokenInfo?: ClaudeTokenStatus | null,
   _runningUnderNpx = false,
   _healthIssues: readonly HealthIssue[] = [],
-  _allGoals: readonly Goal[] = [],
+  allGoals: readonly Goal[] = [],
   _accountStates?: Record<string, ProviderAccountSummary>,
   _spendLoading = false,
   listsLoading = false,
   currentWorkspaceRoot?: string,
+  /** Active detached goal jobs (fail-soft empty when store unavailable). */
+  activeJobs: readonly HomeActiveJobRef[] = [],
 ): Promise<void> {
   out.write('\n');
 
@@ -349,6 +482,9 @@ export async function renderMainScreen(
   // When omitted (e.g. unit tests driving `renderMainScreen` directly), it
   // falls back to `ctx.cwd` — the cwd basename, matching the pre-Slice-10
   // behavior so locked-Slice-1 render assertions stay byte-identical.
+  //
+  // M1 — each Recent row may append live work chips from durable goals +
+  // active jobs + in-process goal-worker-registry (never fabricated).
   const authed = hasAnyAuthenticatedProvider(mutableCtx.env);
   const currentRoot = currentWorkspaceRoot ?? ctx.cwd;
   const wsLabel = workspaceLabel(currentRoot);
@@ -362,7 +498,13 @@ export async function renderMainScreen(
     const empty = authed ? 'No conversations yet.' : 'Sign in to start conversations.';
     out.write(dim(empty, color) + '\n');
   } else {
-    const rows = renderRecentRows(metas, nowMs, currentRoot, color);
+    let workStatusById: ReadonlyMap<string, string> = new Map();
+    try {
+      workStatusById = buildConversationWorkStatusById(allGoals, activeJobs);
+    } catch {
+      workStatusById = new Map();
+    }
+    const rows = renderRecentRows(metas, nowMs, currentRoot, color, workStatusById);
     for (const row of rows) out.write(`  ${row}\n`);
   }
   out.write('\n');

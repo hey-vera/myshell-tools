@@ -7965,12 +7965,15 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     // Goal/to-do store for the menu's Parked-goals section + [g] manage flow.
     // Same persistent home + injected clock as the chat-loop store; fail-soft.
     const menuGoalStore = createFileGoalStore({ clock: ctx.clock });
+    // Detached goal jobs for home Recent multi-chat status chips (M1) — fail-soft.
+    const menuGoalJobStore = createGoalJobStore();
 
     const emptySpend = summarizeSpend([], ctx.clock.isoNow());
     let claudeTokenInfo: ClaudeTokenStatus | null | undefined;
     let spend = emptySpend;
     let metas: Awaited<ReturnType<typeof ctx.store.list>> = [];
     let allGoals: Awaited<ReturnType<typeof menuGoalStore.list>> = [];
+    let activeJobs: Awaited<ReturnType<typeof menuGoalJobStore.listActive>> = [];
     let spendDirty = false;
     let listDirty = false;
     let acctsDirty = false;
@@ -8010,6 +8013,8 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
     const fillLists = async (): Promise<void> => {
       metas = await ctx.store.list().catch(() => []);
       allGoals = await menuGoalStore.list().catch(() => []);
+      // M1: active detached jobs for Recent work-status chips (never block home).
+      activeJobs = await menuGoalJobStore.listActive().catch(() => []);
       listsLoading = false;
     };
 
@@ -8046,7 +8051,7 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
       await renderMainScreen(
         ctx, mutableCtx, metas, spend, out, updateInfo, claudeTokenInfo,
         runningUnderNpx, ctx.healthIssues ?? [], allGoals, accountStates,
-        spendLoading, listsLoading, currentWorkspaceRoot,
+        spendLoading, listsLoading, currentWorkspaceRoot, activeJobs,
       );
       out.endFrame?.();
     };
@@ -8105,12 +8110,14 @@ export async function startMenu(ctx: MenuContext, out: OutputSink): Promise<void
           void (async () => {
             metas = await ctx.store.list().catch(() => []);
             allGoals = await menuGoalStore.list().catch(() => []);
+            activeJobs = await menuGoalJobStore.listActive().catch(() => []);
             listsLoading = false;
             scheduleRepaint();
           })();
         } else {
           metas = await ctx.store.list().catch(() => []);
           allGoals = await menuGoalStore.list().catch(() => []);
+          activeJobs = await menuGoalJobStore.listActive().catch(() => []);
           listsLoading = false;
         }
       }
