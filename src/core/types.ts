@@ -460,9 +460,10 @@ export interface OrchestrateDeps {
    * accounts with different entitlements cannot be cross-paired. Absent →
    * provider-global `availableModels` only (backward compatible).
    *
-   * Menu `enrichDepsWithAccounts` populates this provisionally when managed
-   * accounts exist (copies provider-global detect lists onto each account key).
-   * True per-account CLI entitlement isolation remains follow-on.
+   * Menu `enrichDepsWithAccounts` populates this via env-scoped per-account
+   * detect when possible (`probeAvailableModelsByAccount`); falls back to a
+   * provisional copy of provider-global lists when the probe yields no rows.
+   * Auth-fail/empty accounts omit a row (global fallback) — never invent models.
    */
   readonly availableModelsByAccount?: import('./execution-lane.js').AvailableModelsByAccount;
   /**
