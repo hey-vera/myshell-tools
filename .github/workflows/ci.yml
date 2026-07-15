@@ -90,8 +90,10 @@ jobs:
           retention-days: 30
 
   package-check:
-    # Primary lane: ubuntu. Matrix is expandable (os/node) without changing the smoke script.
-    name: Package check (os=${{ matrix.os }}, node=${{ matrix.node }})
+    # Branch protection requires this exact status-check context for the default cell.
+    # Keep a single-entry matrix so smoke:packed can expand to more OS/node later without
+    # renaming the required check; additional cells would need their own required contexts.
+    name: Package check (ubuntu-latest / node 22)
     runs-on: ${{ matrix.os }}
     needs: test
     strategy:
@@ -102,6 +104,8 @@ jobs:
         # Expand later, e.g.:
         # os: [ubuntu-latest, macos-latest, windows-latest]
         # node: [20, 22, 24]
+        # Note: multi-cell matrix with a fixed name collapses check contexts — only expand
+        # after branch protection is updated for the new naming scheme.
 
     steps:
       - name: Checkout
