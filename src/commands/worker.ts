@@ -11,10 +11,13 @@
 import { appendFile, mkdir } from 'node:fs/promises';
 
 import {
+  DEFAULT_GOAL_JOB_LEASE_RENEW_MS,
   DEFAULT_WORKER_IDLE_TTL_MS,
   DEFAULT_WORKER_POLL_MS,
+  isLeaseHeld,
   workerLogFilePath,
   type GoalJob,
+  type GoalJobLeaseFence,
 } from '../infra/goal-job.js';
 import {
   createGoalJobStore,
@@ -57,6 +60,11 @@ export interface WorkerLoopOptions {
   readonly skipPidFile?: boolean;
   /** Log sink (tests). Default: append worker.log. */
   readonly log?: (line: string) => void | Promise<void>;
+  /**
+   * How often to renew the fenced lease while a job runs (default ~45s).
+   * Set 0 in tests to disable background renew.
+   */
+  readonly leaseRenewMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +102,71 @@ export async function defaultGoalJobExecutor(
   } catch {
     return 'failed';
   }
+}
+
+// ---------------------------------------------------------------------------
+// Lease renewal (while a job runs)
+// ---------------------------------------------------------------------------
+
+function leaseFenceFromJob(job: GoalJob): GoalJobLeaseFence | null {
+  if (
+    typeof job.leaseId !== 'string' ||
+    job.leaseId.length === 0 ||
+    typeof job.leaseGeneration !== 'number' ||
+    !Number.isFinite(job.leaseGeneration)
+  ) {
+    return null;
+  }
+  return {
+    leaseId: job.leaseId,
+    leaseGeneration: job.leaseGeneration,
+    ...(job.claimedBy !== undefined ? { pid: job.claimedBy } : {}),
+  };
+}
+
+/**
+ * Periodically renew the fenced lease until stopped. On renew failure (stolen
+ * generation / expired), invoke onLost once so the worker can abort.
+ */
+function startLeaseRenewal(input: {
+  readonly store: GoalJobStore;
+  readonly job: GoalJob;
+  readonly fence: GoalJobLeaseFence;
+  readonly sleep: (ms: number) => Promise<void>;
+  readonly renewMs: number;
+  readonly onLost: () => void;
+  readonly log: (line: string) => void | Promise<void>;
+}): () => void {
+  let stopped = false;
+  let lost = false;
+
+  const loop = async (): Promise<void> => {
+    if (input.renewMs <= 0) return;
+    while (!stopped) {
+      await input.sleep(input.renewMs);
+      if (stopped) return;
+      const renewed = await input.store.renewLease(
+        input.job.conversationId,
+        input.job.goalId,
+        input.fence,
+      );
+      if (renewed === null) {
+        if (!lost) {
+          lost = true;
+          await input.log(
+            `lease renew failed goalId=${input.job.goalId} — fence lost, aborting attempt`,
+          );
+          input.onLost();
+        }
+        return;
+      }
+    }
+  };
+
+  void loop();
+  return () => {
+    stopped = true;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +235,22 @@ export async function runWorkerLoop(options: WorkerLoopOptions = {}): Promise<nu
     );
 
     const ac = new AbortController();
+    const fence = leaseFenceFromJob(claimed);
+    const stopRenew =
+      fence !== null
+        ? startLeaseRenewal({
+            store,
+            job: claimed,
+            fence,
+            sleep,
+            renewMs: options.leaseRenewMs ?? DEFAULT_GOAL_JOB_LEASE_RENEW_MS,
+            onLost: () => {
+              if (!ac.signal.aborted) ac.abort();
+            },
+            log,
+          })
+        : () => {};
+
     let outcome: GoalJobRunOutcome = 'failed';
     try {
       outcome = await executor(claimed, ac.signal);
@@ -169,6 +258,22 @@ export async function runWorkerLoop(options: WorkerLoopOptions = {}): Promise<nu
       const msg = err instanceof Error ? err.message : String(err);
       await log(`executor error goalId=${claimed.goalId}: ${msg.slice(0, 200)}`);
       outcome = 'failed';
+    } finally {
+      stopRenew();
+    }
+
+    // Stolen / expired lease mid-run: abort without settling — leave claimable.
+    // Wall-clock for lease checks (not the idle-TTL injected `now`).
+    if (fence !== null) {
+      const latest = await store.get(claimed.conversationId, claimed.goalId);
+      const held = latest !== null && isLeaseHeld(latest, fence, Date.now());
+      if (!held) {
+        await log(
+          `lease lost goalId=${claimed.goalId} — abort without terminal (job remains claimable)`,
+        );
+        lastWorkAt = now();
+        continue;
+      }
     }
 
     const note =

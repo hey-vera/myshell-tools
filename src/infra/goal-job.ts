@@ -24,6 +24,9 @@ export type GoalJobOwner = 'tui' | 'worker';
 /**
  * Durable job record. Intentionally free of secrets — only ids, work text,
  * title, cwd, status, and ownership metadata for reclaim after process exit.
+ *
+ * Optional fenced lease fields (v1 additive): reclaim when lease expires or
+ * owner PID is dead — do not trust PID alone.
  */
 export interface GoalJob {
   readonly version: 1;
@@ -43,6 +46,15 @@ export interface GoalJob {
   readonly claimedAt?: string;
   /** Short fail-soft error or progress note (never secrets). */
   readonly note?: string;
+  /**
+   * Opaque fence id minted on each successful claim. Mid-run workers renew
+   * against this id; a stealer mints a new id so the loser aborts.
+   */
+  readonly leaseId?: string;
+  /** Monotonic generation bumped on every claim/reclaim (starts at 1). */
+  readonly leaseGeneration?: number;
+  /** ISO expiry; reclaim allowed when now >= this (or owner PID dead). */
+  readonly leaseExpiresAt?: string;
 }
 
 export const GOAL_JOB_VERSION = 1 as const;
@@ -52,6 +64,20 @@ export const DEFAULT_WORKER_IDLE_TTL_MS = 2 * 60 * 1000;
 
 /** How often the worker polls for reclaimable jobs. */
 export const DEFAULT_WORKER_POLL_MS = 2_000;
+
+/** Default fenced lease TTL (~3 minutes). Worker renews well before expiry. */
+export const DEFAULT_GOAL_JOB_LEASE_TTL_MS = 3 * 60 * 1000;
+
+/** How often a running worker renews its lease (~45s, mid of 30–60s band). */
+export const DEFAULT_GOAL_JOB_LEASE_RENEW_MS = 45 * 1000;
+
+/** Fence identity for renew / isLeaseHeld checks. */
+export interface GoalJobLeaseFence {
+  readonly leaseId: string;
+  readonly leaseGeneration: number;
+  /** When set, must match job.claimedBy. */
+  readonly pid?: number;
+}
 
 /** Statuses that mean work is finished (terminal). */
 export const TERMINAL_GOAL_JOB_STATUSES: ReadonlySet<GoalJobStatus> = new Set([
@@ -165,7 +191,23 @@ export function parseGoalJob(raw: unknown): GoalJob | null {
       ? { ...withClaimedAt, note: o['note'].slice(0, 500) }
       : withClaimedAt;
 
-  return withNote;
+  const withLeaseId =
+    typeof o['leaseId'] === 'string' && o['leaseId'].length > 0 && o['leaseId'].length <= 200
+      ? { ...withNote, leaseId: o['leaseId'] }
+      : withNote;
+  const withLeaseGen =
+    typeof o['leaseGeneration'] === 'number' &&
+    Number.isFinite(o['leaseGeneration']) &&
+    o['leaseGeneration'] > 0 &&
+    Number.isInteger(o['leaseGeneration'])
+      ? { ...withLeaseId, leaseGeneration: o['leaseGeneration'] }
+      : withLeaseId;
+  const withLeaseExp =
+    typeof o['leaseExpiresAt'] === 'string' && o['leaseExpiresAt'].length > 0
+      ? { ...withLeaseGen, leaseExpiresAt: o['leaseExpiresAt'] }
+      : withLeaseGen;
+
+  return withLeaseExp;
 }
 
 export function isGoalJobStatus(value: unknown): value is GoalJobStatus {
@@ -231,41 +273,138 @@ export function isActiveGoalJob(job: GoalJob): boolean {
 }
 
 /**
+ * Whether the job's fenced lease has expired at `nowMs`.
+ * Missing/unparseable `leaseExpiresAt` → treated as expired (reclaimable).
+ * Pure.
+ */
+export function isLeaseExpired(job: GoalJob, nowMs: number): boolean {
+  if (job.leaseExpiresAt === undefined || job.leaseExpiresAt.length === 0) return true;
+  const exp = Date.parse(job.leaseExpiresAt);
+  if (!Number.isFinite(exp)) return true;
+  return nowMs >= exp;
+}
+
+/**
+ * True when this process still holds the active fenced lease:
+ * matching leaseId + generation, optional pid, not expired, claimed/running.
+ * Pure.
+ */
+export function isLeaseHeld(
+  job: GoalJob,
+  fence: GoalJobLeaseFence,
+  nowMs: number,
+): boolean {
+  if (job.status !== 'claimed' && job.status !== 'running') return false;
+  if (job.leaseId === undefined || job.leaseId !== fence.leaseId) return false;
+  if (job.leaseGeneration === undefined || job.leaseGeneration !== fence.leaseGeneration) {
+    return false;
+  }
+  if (fence.pid !== undefined && job.claimedBy !== undefined && job.claimedBy !== fence.pid) {
+    return false;
+  }
+  return !isLeaseExpired(job, nowMs);
+}
+
+/**
  * Pure claim decision: can this process take ownership?
  *
  * - `pending` → always claimable
- * - `claimed` / `running` → claimable only when `claimedBy` is missing or
- *   `isOwnerAlive(claimedBy)` is false (orphan reclaim after TUI/worker exit)
+ * - `claimed` / `running` → claimable when owner PID is dead **or** lease
+ *   expired (fenced reclaim). Missing claimedBy → claimable.
  * - terminal → never
+ *
+ * `nowMs` defaults to Date.now() for call-site convenience; tests inject clock.
  */
 export function canClaimGoalJob(
   job: GoalJob,
   isOwnerAlive: (pid: number) => boolean,
+  nowMs: number = Date.now(),
 ): boolean {
   if (isTerminalGoalJob(job)) return false;
   if (job.status === 'pending') return true;
   if (job.status === 'claimed' || job.status === 'running') {
     if (job.claimedBy === undefined) return true;
-    return !isOwnerAlive(job.claimedBy);
+    if (!isOwnerAlive(job.claimedBy)) return true;
+    // Owner still alive: reclaim only when a lease was written and has expired.
+    // Legacy jobs without leaseExpiresAt keep pre-fence PID-only hold.
+    if (
+      job.leaseExpiresAt !== undefined &&
+      job.leaseExpiresAt.length > 0 &&
+      isLeaseExpired(job, nowMs)
+    ) {
+      return true;
+    }
+    return false;
   }
   return false;
 }
 
 /**
- * Produce a claimed/running job owned by `pid`. Pure.
+ * Produce a claimed job owned by `pid` with a fresh fenced lease. Pure.
+ *
+ * - Bumps `leaseGeneration` (0/missing → 1)
+ * - Sets `leaseId` (injected or derived for purity)
+ * - Sets `leaseExpiresAt` = now + TTL
  */
 export function applyClaim(
   job: GoalJob,
   pid: number,
   owner: GoalJobOwner,
   nowIso: string,
+  options?: {
+    readonly leaseId?: string;
+    readonly leaseTtlMs?: number;
+  },
 ): GoalJob {
+  const leaseTtlMs = options?.leaseTtlMs ?? DEFAULT_GOAL_JOB_LEASE_TTL_MS;
+  const nowMs = Date.parse(nowIso);
+  const baseMs = Number.isFinite(nowMs) ? nowMs : 0;
+  const prevGen =
+    typeof job.leaseGeneration === 'number' &&
+    Number.isFinite(job.leaseGeneration) &&
+    job.leaseGeneration > 0
+      ? job.leaseGeneration
+      : 0;
+  const leaseId =
+    options?.leaseId !== undefined && options.leaseId.length > 0
+      ? options.leaseId
+      : `lease_${pid}_${nowIso}`;
   return {
     ...job,
     status: 'claimed',
     owner,
     claimedBy: pid,
     claimedAt: nowIso,
+    updatedAt: nowIso,
+    leaseId,
+    leaseGeneration: prevGen + 1,
+    leaseExpiresAt: new Date(baseMs + leaseTtlMs).toISOString(),
+  };
+}
+
+/**
+ * Renew lease expiry if fence still matches. Returns null on fence mismatch,
+ * terminal/pending status, or already-expired lease. Pure.
+ */
+export function applyRenewLease(
+  job: GoalJob,
+  fence: GoalJobLeaseFence,
+  nowIso: string,
+  leaseTtlMs: number = DEFAULT_GOAL_JOB_LEASE_TTL_MS,
+): GoalJob | null {
+  if (job.status !== 'claimed' && job.status !== 'running') return null;
+  if (job.leaseId !== fence.leaseId) return null;
+  if (job.leaseGeneration !== fence.leaseGeneration) return null;
+  if (fence.pid !== undefined && job.claimedBy !== undefined && job.claimedBy !== fence.pid) {
+    return null;
+  }
+  const nowMs = Date.parse(nowIso);
+  const baseMs = Number.isFinite(nowMs) ? nowMs : 0;
+  // Expired lease cannot be renewed — stealer/reclaim must claim fresh.
+  if (isLeaseExpired(job, baseMs)) return null;
+  return {
+    ...job,
+    leaseExpiresAt: new Date(baseMs + leaseTtlMs).toISOString(),
     updatedAt: nowIso,
   };
 }
@@ -309,6 +448,8 @@ export function applyReleaseForHandoff(
   nowIso: string,
   note: string = 'tui exit handoff — released for worker claim',
 ): GoalJob {
+  // Explicitly omit owner/claimedBy/claimedAt and all lease fence fields so a
+  // detached worker can claim without waiting on PID or lease expiry.
   return {
     version: job.version,
     conversationId: job.conversationId,

@@ -90,6 +90,9 @@ describe('createGoalJobStore', () => {
     const c1 = await store.claim('conv1', 'goal_2', 'tui', 111);
     assert.equal(c1?.status, 'claimed');
     assert.equal(c1?.claimedBy, 111);
+    assert.ok(c1?.leaseId);
+    assert.equal(c1?.leaseGeneration, 1);
+    assert.ok(c1?.leaseExpiresAt);
     const c2 = await store.claim('conv1', 'goal_2', 'worker', 222);
     assert.equal(c2, null);
   });
@@ -103,12 +106,97 @@ describe('createGoalJobStore', () => {
       cwd: '/c',
     });
     // Do not add 50 to alive → dead
-    await store.claim('conv1', 'goal_3', 'tui', 50);
+    const first = await store.claim('conv1', 'goal_3', 'tui', 50);
+    assert.equal(first?.leaseGeneration, 1);
     await store.markRunning('conv1', 'goal_3', 'mid-flight');
     alive.add(99);
     const reclaimed = await store.claim('conv1', 'goal_3', 'worker', 99);
     assert.equal(reclaimed?.owner, 'worker');
     assert.equal(reclaimed?.claimedBy, 99);
+    assert.equal(reclaimed?.leaseGeneration, 2);
+    assert.notEqual(reclaimed?.leaseId, first?.leaseId);
+  });
+
+  it('reclaims when lease expired even if owner pid still alive', async () => {
+    await store.enqueue({
+      conversationId: 'conv1',
+      goalId: 'goal_lease_exp',
+      work: 'w',
+      title: 't',
+      cwd: '/c',
+    });
+    alive.add(50);
+    alive.add(99);
+    const first = await store.claim(
+      'conv1',
+      'goal_lease_exp',
+      'tui',
+      50,
+      '2026-07-10T12:00:00.000Z',
+    );
+    assert.ok(first?.leaseExpiresAt);
+    // 4 minutes later (> 3 min TTL) with owner still "alive"
+    const reclaimed = await store.claim(
+      'conv1',
+      'goal_lease_exp',
+      'worker',
+      99,
+      '2026-07-10T12:04:00.000Z',
+    );
+    assert.equal(reclaimed?.owner, 'worker');
+    assert.equal(reclaimed?.claimedBy, 99);
+    assert.equal(reclaimed?.leaseGeneration, 2);
+  });
+
+  it('renewLease succeeds for matching fence; wrong generation fails', async () => {
+    await store.enqueue({
+      conversationId: 'conv1',
+      goalId: 'goal_renew',
+      work: 'w',
+      title: 't',
+      cwd: '/c',
+    });
+    alive.add(7);
+    const claimed = await store.claim(
+      'conv1',
+      'goal_renew',
+      'worker',
+      7,
+      '2026-07-10T12:00:00.000Z',
+    );
+    assert.ok(claimed?.leaseId);
+    const fence = {
+      leaseId: claimed!.leaseId!,
+      leaseGeneration: claimed!.leaseGeneration!,
+      pid: 7,
+    };
+    const renewed = await store.renewLease(
+      'conv1',
+      'goal_renew',
+      fence,
+      '2026-07-10T12:00:30.000Z',
+    );
+    assert.ok(renewed);
+    assert.ok(
+      Date.parse(renewed!.leaseExpiresAt!) > Date.parse(claimed!.leaseExpiresAt!),
+    );
+
+    const wrong = await store.renewLease(
+      'conv1',
+      'goal_renew',
+      { ...fence, leaseGeneration: claimed!.leaseGeneration! + 1 },
+      '2026-07-10T12:00:45.000Z',
+    );
+    assert.equal(wrong, null);
+
+    // Matching fence still works after failed wrong-gen attempt
+    const again = await store.renewLease(
+      'conv1',
+      'goal_renew',
+      fence,
+      '2026-07-10T12:00:50.000Z',
+    );
+    assert.ok(again);
   });
 
   it('claimNext prefers pending', async () => {
@@ -179,6 +267,9 @@ describe('createGoalJobStore', () => {
     assert.equal(released[0]?.status, 'pending');
     assert.equal(released[0]?.owner, undefined);
     assert.equal(released[0]?.claimedBy, undefined);
+    assert.equal(released[0]?.leaseId, undefined);
+    assert.equal(released[0]?.leaseGeneration, undefined);
+    assert.equal(released[0]?.leaseExpiresAt, undefined);
 
     const claimed = await store.claim('conv1', 'goal_hand', 'worker', 200);
     assert.equal(claimed?.owner, 'worker');
@@ -244,6 +335,7 @@ describe('runWorkerLoop', () => {
       pollMs: 5,
       skipPidFile: true,
       maxJobs: 1,
+      leaseRenewMs: 0,
       sleep: async () => {},
       now: (() => {
         let t = 0;
@@ -274,6 +366,7 @@ describe('runWorkerLoop', () => {
       idleTtlMs: 30,
       pollMs: 5,
       skipPidFile: true,
+      leaseRenewMs: 0,
       sleep: async () => {
         ticks += 1;
       },
