@@ -21,6 +21,7 @@ import {
   saveClaudeToken,
   clearClaudeToken,
   applyStoredCredentials,
+  isLegacyClaudeTokenInjectionEnabled,
   extractClaudeToken,
   stripPastedSecretWrapper,
   sanitizePastedToken,
@@ -639,9 +640,51 @@ describe('clearClaudeToken', () => {
   });
 });
 
+// Guard with process.platform so this suite is a no-op on Windows (where
+// POSIX mode bits are not enforced by the OS).
+if (process.platform !== 'win32') {
+  describe('clearClaudeToken — credentials file mode', () => {
+    let homeDir: string;
+
+    beforeAll(async () => {
+      homeDir = await mkdtemp(join(tmpdir(), `creds-clearmode-${randomUUID()}-`));
+    });
+
+    afterAll(async () => {
+      await rm(homeDir, { recursive: true, force: true });
+    });
+
+    it('credentials.json has mode 0o600 after clearClaudeToken', async () => {
+      await saveClaudeToken('sk-ant-oat01-clearmode-TOKEN', homeDir);
+      await clearClaudeToken(homeDir);
+      const credPath = join(homeDir, '.myshell-tools', 'credentials.json');
+      const st = await stat(credPath);
+      const actualMode = st.mode & 0o777;
+      assert.equal(
+        actualMode,
+        0o600,
+        `expected credentials file mode 0o600 after clear, got 0o${actualMode.toString(8)}`,
+      );
+    });
+  });
+}
+
 // ---------------------------------------------------------------------------
-// applyStoredCredentials
+// isLegacyClaudeTokenInjectionEnabled / applyStoredCredentials
 // ---------------------------------------------------------------------------
+
+describe('isLegacyClaudeTokenInjectionEnabled', () => {
+  it('is false by default (clean install / official CLI auth)', () => {
+    assert.equal(isLegacyClaudeTokenInjectionEnabled({}), false);
+    assert.equal(isLegacyClaudeTokenInjectionEnabled({ MYSHELL_LEGACY_CLAUDE_TOKEN: '0' }), false);
+    assert.equal(isLegacyClaudeTokenInjectionEnabled({ MYSHELL_LEGACY_CLAUDE_TOKEN: '' }), false);
+  });
+
+  it('is true only for explicit opt-in values 1 or true', () => {
+    assert.equal(isLegacyClaudeTokenInjectionEnabled({ MYSHELL_LEGACY_CLAUDE_TOKEN: '1' }), true);
+    assert.equal(isLegacyClaudeTokenInjectionEnabled({ MYSHELL_LEGACY_CLAUDE_TOKEN: 'true' }), true);
+  });
+});
 
 describe('applyStoredCredentials — injects token when not already in env', () => {
   let homeDir: string;
@@ -654,16 +697,26 @@ describe('applyStoredCredentials — injects token when not already in env', () 
     await rm(homeDir, { recursive: true, force: true });
   });
 
-  it('sets CLAUDE_CODE_OAUTH_TOKEN when a token is stored and env is empty', async () => {
-    await saveClaudeToken('sk-ant-oat01-inject-TOKEN', homeDir);
+  it('does NOT inject by default even when a token is stored (R4.1 off)', async () => {
+    await saveClaudeToken('sk-ant-oat01-default-off-TOKEN', homeDir);
     const env: NodeJS.ProcessEnv = {};
+    await applyStoredCredentials(env, homeDir);
+    assert.equal(env['CLAUDE_CODE_OAUTH_TOKEN'], undefined);
+  });
+
+  it('sets CLAUDE_CODE_OAUTH_TOKEN when legacy opt-in is set and env is empty', async () => {
+    await saveClaudeToken('sk-ant-oat01-inject-TOKEN', homeDir);
+    const env: NodeJS.ProcessEnv = { MYSHELL_LEGACY_CLAUDE_TOKEN: '1' };
     await applyStoredCredentials(env, homeDir);
     assert.equal(env['CLAUDE_CODE_OAUTH_TOKEN'], 'sk-ant-oat01-inject-TOKEN');
   });
 
   it('does NOT overwrite when CLAUDE_CODE_OAUTH_TOKEN is already set', async () => {
     await saveClaudeToken('sk-ant-oat01-stored-TOKEN', homeDir);
-    const env: NodeJS.ProcessEnv = { CLAUDE_CODE_OAUTH_TOKEN: 'existing-value' };
+    const env: NodeJS.ProcessEnv = {
+      MYSHELL_LEGACY_CLAUDE_TOKEN: '1',
+      CLAUDE_CODE_OAUTH_TOKEN: 'existing-value',
+    };
     await applyStoredCredentials(env, homeDir);
     // Must keep the original value — user's explicit env wins
     assert.equal(env['CLAUDE_CODE_OAUTH_TOKEN'], 'existing-value');
@@ -672,7 +725,7 @@ describe('applyStoredCredentials — injects token when not already in env', () 
   it('is a no-op when no token is stored and env is empty', async () => {
     const freshHome = await mkdtemp(join(tmpdir(), `creds-applynoop-${randomUUID()}-`));
     try {
-      const env: NodeJS.ProcessEnv = {};
+      const env: NodeJS.ProcessEnv = { MYSHELL_LEGACY_CLAUDE_TOKEN: '1' };
       await applyStoredCredentials(env, freshHome);
       assert.equal(env['CLAUDE_CODE_OAUTH_TOKEN'], undefined);
     } finally {
@@ -683,7 +736,7 @@ describe('applyStoredCredentials — injects token when not already in env', () 
   it('does not throw when credentials file is missing', async () => {
     const freshHome = await mkdtemp(join(tmpdir(), `creds-applythrow-${randomUUID()}-`));
     try {
-      const env: NodeJS.ProcessEnv = {};
+      const env: NodeJS.ProcessEnv = { MYSHELL_LEGACY_CLAUDE_TOKEN: '1' };
       await assert.doesNotReject(() => applyStoredCredentials(env, freshHome));
     } finally {
       await rm(freshHome, { recursive: true, force: true });
@@ -696,7 +749,7 @@ describe('applyStoredCredentials — injects token when not already in env', () 
       const dir = join(corruptHome, '.myshell-tools');
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, 'credentials.json'), '<<<CORRUPT>>>', 'utf8');
-      const env: NodeJS.ProcessEnv = {};
+      const env: NodeJS.ProcessEnv = { MYSHELL_LEGACY_CLAUDE_TOKEN: '1' };
       await assert.doesNotReject(() => applyStoredCredentials(env, corruptHome));
       // Corrupt → no token set
       assert.equal(env['CLAUDE_CODE_OAUTH_TOKEN'], undefined);

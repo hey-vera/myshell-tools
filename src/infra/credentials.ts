@@ -388,6 +388,8 @@ export async function loadClaudeTokenCapturedAt(homeDir?: string, layout?: AppSt
 /**
  * Remove the stored Claude OAuth token. Writes the file back without the
  * token key so any future credential fields are preserved.
+ * Uses mode 0o600 so credentials.json stays owner-read-only after clear
+ * (same guarantee as saveClaudeToken).
  * Never throws.
  */
 export async function clearClaudeToken(homeDir?: string, layout?: AppStateLayout): Promise<void> {
@@ -395,7 +397,7 @@ export async function clearClaudeToken(homeDir?: string, layout?: AppStateLayout
     const l = resolveLayout(homeDir, layout);
     const path = getCredentialsPath(l);
 
-    await mkdir(dirname(path), { recursive: true });
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
 
     // Load the raw file to preserve unknown future keys.
     let rawObj: Record<string, unknown> = {};
@@ -410,20 +412,37 @@ export async function clearClaudeToken(homeDir?: string, layout?: AppStateLayout
     }
 
     delete rawObj['claudeOauthToken'];
-    await atomicWrite(path, JSON.stringify(rawObj, null, 2));
+    // atomicWrite with mode 0o600 matches saveClaudeToken — clear must not
+    // relax permissions on credentials.json.
+    await atomicWrite(path, JSON.stringify(rawObj, null, 2), 0o600);
   } catch {
     // Never throws — clear is best-effort
   }
 }
 
 /**
- * Inject a previously-saved Claude OAuth token into `env` if:
- *   1. A token is stored in `~/.myshell-tools/credentials.json`, AND
- *   2. `env.CLAUDE_CODE_OAUTH_TOKEN` is not already set (user's explicit env wins).
+ * Env opt-in for injecting the legacy myshell-stored Claude OAuth token
+ * (`~/.myshell-tools/credentials.json` → `CLAUDE_CODE_OAUTH_TOKEN`).
  *
- * Called once at the very top of `main()` so every code path — detection,
- * spawned `claude -p …`, and the menu — sees the token without the user
- * needing to export it manually.
+ * Default path uses official Claude CLI auth only. Set
+ * `MYSHELL_LEGACY_CLAUDE_TOKEN=1` (or `true`) to restore the old injection
+ * for migration. Pure — no I/O.
+ */
+export function isLegacyClaudeTokenInjectionEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const v = env['MYSHELL_LEGACY_CLAUDE_TOKEN'];
+  return v === '1' || v === 'true';
+}
+
+/**
+ * Inject a previously-saved Claude OAuth token into `env` if:
+ *   1. Legacy injection is explicitly opted in (`MYSHELL_LEGACY_CLAUDE_TOKEN=1`), AND
+ *   2. A token is stored in `~/.myshell-tools/credentials.json`, AND
+ *   3. `env.CLAUDE_CODE_OAUTH_TOKEN` is not already set (user's explicit env wins).
+ *
+ * Production detect/spawn does **not** call this by default. Prefer
+ * `claudeEnvWithStoredFallback` with the same opt-in gate.
  *
  * Never throws.
  */
@@ -433,6 +452,9 @@ export async function applyStoredCredentials(
   layout?: AppStateLayout,
 ): Promise<void> {
   try {
+    if (!isLegacyClaudeTokenInjectionEnabled(env)) {
+      return;
+    }
     // Never overwrite an explicitly-set env var — user's env wins.
     if (env['CLAUDE_CODE_OAUTH_TOKEN'] !== undefined) {
       return;

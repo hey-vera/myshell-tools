@@ -6,7 +6,34 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { loadClaudeToken, saveClaudeToken } from '../../src/infra/credentials.ts';
-import { claudeEnvWithStoredFallback } from '../../src/providers/detect.ts';
+import {
+  claudeEnvWithStoredFallback,
+  resolveStoredCredentialInjection,
+} from '../../src/providers/detect.ts';
+
+describe('resolveStoredCredentialInjection', () => {
+  it('defaults off without env opt-in', () => {
+    assert.equal(resolveStoredCredentialInjection({}), false);
+  });
+
+  it('opts in via MYSHELL_LEGACY_CLAUDE_TOKEN=1', () => {
+    assert.equal(
+      resolveStoredCredentialInjection({ MYSHELL_LEGACY_CLAUDE_TOKEN: '1' }),
+      true,
+    );
+  });
+
+  it('explicit false wins over env opt-in (account-scoped runs)', () => {
+    assert.equal(
+      resolveStoredCredentialInjection({ MYSHELL_LEGACY_CLAUDE_TOKEN: '1' }, false),
+      false,
+    );
+  });
+
+  it('explicit true enables injection without env', () => {
+    assert.equal(resolveStoredCredentialInjection({}, true), true);
+  });
+});
 
 describe('claudeEnvWithStoredFallback', () => {
   let dir = '';
@@ -45,13 +72,37 @@ describe('claudeEnvWithStoredFallback', () => {
     assert.equal(await loadClaudeToken(dir), null);
   });
 
-  it('falls back to the legacy token when Claude has no usable credentials', async () => {
+  it('does NOT inject legacy token by default when Claude has no credentials (R4.1 off)', async () => {
+    await saveClaudeToken('only-available-token', dir);
+
+    const env = await claudeEnvWithStoredFallback({}, dir, undefined, dir);
+
+    assert.equal(env['CLAUDE_CODE_OAUTH_TOKEN'], undefined);
+    // Sole working credential is preserved on disk (no clear without dual-proof)
+    assert.equal(await loadClaudeToken(dir), 'only-available-token');
+  });
+
+  it('falls back to the legacy token when injection is explicitly on', async () => {
     await saveClaudeToken('only-available-token', dir);
 
     const env = await claudeEnvWithStoredFallback({}, dir, true, dir);
 
     assert.equal(env['CLAUDE_CODE_OAUTH_TOKEN'], 'only-available-token');
     assert.equal(await loadClaudeToken(dir), 'only-available-token');
+  });
+
+  it('falls back to the legacy token when MYSHELL_LEGACY_CLAUDE_TOKEN=1', async () => {
+    await saveClaudeToken('env-opt-in-token', dir);
+
+    const env = await claudeEnvWithStoredFallback(
+      { MYSHELL_LEGACY_CLAUDE_TOKEN: '1' },
+      dir,
+      undefined,
+      dir,
+    );
+
+    assert.equal(env['CLAUDE_CODE_OAUTH_TOKEN'], 'env-opt-in-token');
+    assert.equal(await loadClaudeToken(dir), 'env-opt-in-token');
   });
 
   it('does not prefer a metered API-key credential over subscription OAuth', async () => {
