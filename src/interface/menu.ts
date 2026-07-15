@@ -217,6 +217,7 @@ import {
   buildSharedOrchestrateCore,
   buildAvailableModelsByAccountDepsSlice,
 } from './build-orchestrate-deps.js';
+import { probeAvailableModelsByAccount } from '../infra/subscription-detect.js';
 import { makeModelGhostSuggester } from '../core/model-ghost.js';
 import type { IntentFrame } from '../core/intent.js';
 import { deriveDraftGoalSkeleton } from '../core/draft-goal.js';
@@ -3210,17 +3211,33 @@ export async function runChatLoop(
               /* best-effort */
             }
           };
-          // P1: populate availableModelsByAccount so turn freeze / selectExecutionLane
-          // see account-keyed inventory when managed accounts exist. Prefer any
-          // already-probed map on base; otherwise provisional copy of provider-global
-          // lists (true per-account CLI entitlement probe is follow-on).
-          const byAccountSlice =
+          // Populate availableModelsByAccount so turn freeze / selectExecutionLane
+          // see account-keyed inventory when managed accounts exist.
+          // Prefer: (1) already-set base map, (2) real per-account probe rows
+          // when any exist, (3) provisional copy of provider-global lists.
+          // Probe runs on account enrich / load — not every keystroke.
+          let byAccountSlice: {
+            availableModelsByAccount?: NonNullable<
+              OrchestrateDeps['availableModelsByAccount']
+            >;
+          } =
             base.availableModelsByAccount !== undefined
               ? { availableModelsByAccount: base.availableModelsByAccount }
-              : buildAvailableModelsByAccountDepsSlice(
-                  base.availableModels,
-                  allAccounts,
-                );
+              : {};
+          if (base.availableModelsByAccount === undefined) {
+            const probed = await probeAvailableModelsByAccount(
+              allAccounts,
+              process.cwd(),
+            );
+            if (probed !== undefined && Object.keys(probed).length > 0) {
+              byAccountSlice = { availableModelsByAccount: probed };
+            } else {
+              byAccountSlice = buildAvailableModelsByAccountDepsSlice(
+                base.availableModels,
+                allAccounts,
+              );
+            }
+          }
           return {
             ...base,
             subscriptionAccounts: allAccounts,
