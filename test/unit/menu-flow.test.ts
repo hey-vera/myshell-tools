@@ -7957,10 +7957,10 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
     );
   });
 
-  it('[s] → [3] opens Output detail selector (formerly autoUpdate position)', async () => {
+  it('[s] → [4] opens Output detail selector (D1: Output shifted after Effort/Speed)', async () => {
     const sink = makeSink();
     const ctx = makeCtx({
-      readLine: makeScriptedReader(['s', '3', '', 'q']),
+      readLine: makeScriptedReader(['s', '4', '', 'q']),
     });
 
     await assert.doesNotReject(
@@ -7970,7 +7970,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
 
     assert.ok(
       sink.buf.toLowerCase().includes('output detail') || sink.buf.toLowerCase().includes('quiet'),
-      'Output detail selector must appear after pressing [3]',
+      'Output detail selector must appear after pressing [4]',
     );
   });
 
@@ -7978,7 +7978,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
   // from the user-facing settings page (they are now automated default-on).
   // The old tests that toggled them via [7]/[8] are replaced below.
 
-  it('[s] → [4] toggles Appearance (formerly panel/learnRouting position)', async () => {
+  it('[s] → [5] toggles Appearance (D1: Appearance after Output detail)', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-appearance-toggle-${randomUUID()}`);
     const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
@@ -7999,7 +7999,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
   });
 
   // ---- Settings selector for the OVERSIGHT SPECTRUM (Phase 2b) -------------
-  it('[s] → [2] sets oversight to autonomous and persists it', async () => {
+  it('[s] → [3] sets oversight to autonomous and persists it', async () => {
     const sink = makeSink();
     const dir = join(tmpdir(), `menu-oversight-${randomUUID()}`);
     const config: AppConfig = { onboarded: true, setAsDefault: false, smartRoute: false };
@@ -8008,7 +8008,7 @@ describe('startMenu — update notifier: banner, [u], auto-update', () => {
       cwd: dir,
       readLine: makeScriptedReader([
         's',   // settings
-        '3',   // oversight select (D1: [2]=Speed)
+        '3',   // oversight select (D1: [1]=Effort [2]=Speed [3]=Oversight)
         '3',   // autonomous
         '',    // Enter → back from settings
         'q',   // quit
