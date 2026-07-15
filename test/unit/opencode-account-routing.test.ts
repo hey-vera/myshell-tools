@@ -359,7 +359,7 @@ describe('opencode adapter env injection', () => {
     assert.equal(env['XDG_DATA_HOME'] ?? '__absent__', '__absent__');
   });
 
-  it('preserves non-XDG parent env vars', () => {
+  it('preserves allowlisted parent env vars and strips non-allowlisted (R4.2)', () => {
     const req = makeReq({
       accountEnv: { XDG_DATA_HOME: '/custom' },
     });
@@ -367,10 +367,12 @@ describe('opencode adapter env injection', () => {
       HOME: '/home/user',
       PATH: '/usr/bin',
       FOO: 'bar',
+      OPENAI_API_KEY: 'sk-leak',
     });
     assert.equal(env['HOME'], '/home/user');
     assert.equal(env['PATH'], '/usr/bin');
-    assert.equal(env['FOO'], 'bar');
+    assert.equal(env['FOO'], undefined);
+    assert.equal(env['OPENAI_API_KEY'], undefined);
     assert.equal(env['XDG_DATA_HOME'], '/custom');
   });
 

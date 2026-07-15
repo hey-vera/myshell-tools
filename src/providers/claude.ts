@@ -39,6 +39,7 @@ import { claudeEnvWithStoredFallback, detectProvider } from './detect.js';
 import { classifyError } from './errors.js';
 import { parseClaudeLine } from './claude-parse.js';
 import { spawnGuarded, withHangCap, providerHangCapMs } from './hang-cap.js';
+import { resolveProviderParentEnv } from './child-env.js';
 
 // ---------------------------------------------------------------------------
 // Model alias mapping
@@ -278,6 +279,9 @@ export function applyAccountEnvOverride(
 /**
  * Build the child env for a claude spawn.
  *
+ * R4.2: parent env is allowlisted first (unless MYSHELL_PROVIDER_FULL_ENV=1)
+ * so ambient ANTHROPIC_API_KEY / other secrets are not inherited by default.
+ *
  * When req.accountEnv is present (account-scoped run), CLAUDE_CONFIG_DIR
  * overrides the global env AND is re-merged LAST so it is NOT shadowed by
  * claudeEnvWithStoredFallback. Stored credential fallback is also disabled
@@ -294,8 +298,11 @@ export async function buildClaudeEnv(
   req: ProviderRequest,
   parentEnv: NodeJS.ProcessEnv = process.env,
 ): Promise<NodeJS.ProcessEnv> {
+  // Allowlist (or full-env escape) before any credential / replit merge.
+  const safeParent = resolveProviderParentEnv(parentEnv, 'claude');
+
   if (req.accountEnv !== undefined) {
-    const accountScopedBase = buildAccountScopedBase(parentEnv, req.accountEnv);
+    const accountScopedBase = buildAccountScopedBase(safeParent, req.accountEnv);
     try {
       const withFallback = await claudeEnvWithStoredFallback(
         accountScopedBase,
@@ -310,9 +317,9 @@ export async function buildClaudeEnv(
 
   // Global path: default = official CLI auth; legacy injection only via env opt-in
   try {
-    return await claudeEnvWithStoredFallback(parentEnv, req.cwd);
+    return await claudeEnvWithStoredFallback(safeParent, req.cwd);
   } catch {
-    return parentEnv;
+    return safeParent;
   }
 }
 
