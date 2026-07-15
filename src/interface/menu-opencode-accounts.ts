@@ -31,6 +31,7 @@ import {
   type SubscriptionAccount,
 } from '../infra/subscriptions.js';
 import {
+  formatAccountListStatus,
   PRIORITY_WEIGHT_DETAIL_NOTE,
   PRIORITY_WEIGHT_EDIT_HELP,
   PRIORITY_WEIGHT_LIST_HINT,
@@ -53,7 +54,7 @@ function formatAccountRow(
   const weight = `(${acc.priorityWeight})`;
   const priority = `${acc.priority} ${weight}`.padEnd(17);
   const expiry = acc.expiresAt ? acc.expiresAt.slice(0, 10).padEnd(12) : '-'.padEnd(12);
-  const status = acc.enabled ? 'active' : 'disabled';
+  const status = formatAccountListStatus(acc);
   const row = ` ${marker}${num}  ${label}  ${pool}  ${priority}  ${expiry}  ${status}`;
   return selected ? bold(row, color) : row;
 }

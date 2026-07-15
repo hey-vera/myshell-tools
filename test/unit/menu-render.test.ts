@@ -670,6 +670,22 @@ describe('M1 conversation work status chips', () => {
     }), '');
   });
 
+  it('U8 reopen honesty: zero live workers never paints "working"; durable signals remain', () => {
+    // Process restart → in-process registry is empty; durable goals/jobs must still read true.
+    const reopen = formatConversationWorkStatus({
+      liveWorkers: 0, runningGoals: 2, parkedGoals: 1, activeJobs: 1,
+    });
+    assert.equal(reopen, '2 running · 1 parked · job alive');
+    assert.ok(!reopen.includes('working'), 'must not claim in-process workers after restart');
+    assert.equal(
+      formatConversationWorkStatus({
+        liveWorkers: 0, runningGoals: 0, parkedGoals: 0, activeJobs: 0,
+      }),
+      '',
+      'idle reopen stays blank (no fabricated chips)',
+    );
+  });
+
   it('buildConversationWorkStatusById aggregates goals + jobs + live workers', () => {
     const goals: Goal[] = [
       makeGoal({ id: 'g1', state: 'running', conversationId: 'conv-a' }),
