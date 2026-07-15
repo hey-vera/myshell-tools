@@ -4406,11 +4406,11 @@ Output ONLY valid JSON (no prose, no markdown).`;
         registerGoalWorker(convId, goalId, ac);
         void (async () => {
           let verifiedDone = false;
-          // PR-D: durable job enqueue + ensure detached worker (fail-soft).
-          // While the TUI process is alive we still run runGoalLoop in-process
-          // (full adaptive loop lives here). Job file + worker.pid let work be
-          // reclaimed after Esc/process exit; worker skeleton parks for resume
-          // until runGoalLoop is extracted into the worker.
+          // PR-D / M3: durable job enqueue + ensure detached worker (fail-soft).
+          // While the TUI process is alive we claim as 'tui' and run runGoalLoop
+          // in-process (avoids double-run). After Esc/process exit the worker
+          // reclaims orphaned jobs and runs the shared detached executor
+          // (provider turns + evidence-gated roadmap progress).
           try {
             await goalJobStore.enqueue({
               conversationId: convId,
