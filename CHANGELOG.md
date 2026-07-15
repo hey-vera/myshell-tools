@@ -4,6 +4,30 @@ All notable changes to **myshell-tools** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.172.0] - 2026-07-15 - multi-chat workers, accounts UX, Effort/Speed dials
+
+Product wave on main after **3.171.0**: home multi-chat live work status, exit handoff honesty, shared detached goal executor, accounts list navigation + rename, Effort/Speed dials (mode + intensity storage with user-facing Effort/Speed), and multi-OS packed smoke (win/mac) without renaming the required ubuntu package-check. Acceptances remain human-smoke pending; **`npm publish` is owner-only** (agents do not publish).
+
+### Added
+- **M1 home multi-chat live work status** — Recent shows live work status for multi-chat workers (`#210`).
+- **M2 exit handoff honesty** — release TUI jobs and ensure worker on exit handoff (`#212`).
+- **M3 shared detached goal executor** — real work after shell exit, not park-only (`#213`).
+- **A1 accounts list nav** — arrow / Enter / digit navigation (`#211`).
+- **A2 accounts rename** — label rename via `[l]` (`#214`).
+- **D1 Effort + Speed dials** — mode + intensity storage; user-facing Effort/Speed (`#215`).
+- **OS1 multi-OS packed smoke** — win/mac packed install smoke without renaming required ubuntu package-check (`#216`).
+
+### Changed
+- **Docs board tip** — package **3.172.0** after product wave M/A/D/OS.
+- Package version **3.171.0 → 3.172.0**.
+
+### Honest residuals (not claimed done)
+- Free-loop detached still one turn then park; full menu-parity multi-turn free loop.
+- Mouse on accounts.
+- Live per-account model probe.
+- Fenced leases.
+- **`npm publish` is owner-only.**
+
 ## [3.171.0] - 2026-07-15 - actualization wave R0–R9.1
 
 Ships the **actualization wave** production slices on main after **3.170.x**:
