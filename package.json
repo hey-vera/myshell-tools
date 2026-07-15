@@ -31,6 +31,7 @@
     "smoke:pty:menu-ink": "node scripts/pty-smoke-menu-ink.mjs",
     "smoke:checklist": "node scripts/checklist-smoke.mjs",
     "smoke:packed": "node scripts/packed-install-smoke.mjs",
+    "smoke:multichat": "node --import tsx/esm scripts/multichat-handoff-smoke.mjs",
     "smoke:repo-chat": "node --import tsx/esm scripts/pty-smoke.mjs",
     "bench:p0": "node scripts/pty-p0-benchmark.mjs",
     "auto-brain:preview": "node --import tsx/esm scripts/auto-brain-preview.mjs",
