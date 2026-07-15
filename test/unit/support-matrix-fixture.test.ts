@@ -44,6 +44,15 @@ interface SupportMatrix {
   packed_artifact: {
     smoke: string;
     ci_job: string;
+    ci_job_name?: string;
+    ci_jobs?: Array<{
+      id: string;
+      name: string;
+      os: string;
+      node: number;
+      required_status_check: boolean;
+      includes_dry_run_contents_check?: boolean;
+    }>;
     proves: string[];
   };
 }
@@ -85,6 +94,18 @@ describe('support-matrix fixture (R9)', () => {
 
     assert.equal(matrix.packed_artifact.smoke, 'scripts/packed-install-smoke.mjs');
     assert.equal(matrix.packed_artifact.ci_job, 'package-check');
+    // Required main branch-protection context must stay exact (OS1; no matrix rename).
+    assert.equal(
+      matrix.packed_artifact.ci_job_name,
+      'Package check (ubuntu-latest / node 22)',
+    );
+    assert.ok(Array.isArray(matrix.packed_artifact.ci_jobs));
+    const required = matrix.packed_artifact.ci_jobs!.filter((j) => j.required_status_check);
+    assert.equal(required.length, 1);
+    assert.equal(required[0]!.name, 'Package check (ubuntu-latest / node 22)');
+    assert.equal(required[0]!.os, 'ubuntu-latest');
+    const smokeOs = matrix.packed_artifact.ci_jobs!.map((j) => j.os).sort();
+    assert.deepEqual(smokeOs, ['macos-latest', 'ubuntu-latest', 'windows-latest']);
     assert.ok(matrix.packed_artifact.proves.includes('real npm pack tarball'));
     assert.ok(matrix.packed_artifact.proves.includes('both bin names --help and --version'));
   });
