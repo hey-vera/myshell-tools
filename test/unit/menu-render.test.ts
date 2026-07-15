@@ -2,7 +2,7 @@
  * test/unit/menu-render.test.ts — Slice 1 locked home skeleton render tests.
  *
  * Golden-ish substring assertions per docs/menu-build-spec-final.md (Slice 1):
- *   MUST contain:  `Effort Mode:`, `Session Manager`, `Choice:`, `ESC to exit`
+ *   MUST contain:  `Mode:`, `Session Manager`, `Choice:`, `ESC to exit`
  *   MUST NOT contain: `No runs yet`, `Health:`, `doctor`
  *
  * Drives renderMainScreen over injected state via a capturing OutputSink.
@@ -143,7 +143,7 @@ function makeMeta(overrides: Partial<ConversationMeta> = {}): ConversationMeta {
 /** Live Auto (smart) Effort box — default when config.mode is unset. */
 const EFFORT_BOX_AUTO = [
   '╭──────────────────────────────────────────────────╮',
-  '│  Effort Mode:  Auto (smart)                      │',
+  '│  Mode:  Auto (smart)                             │',
   '│  smart default — picks the effective level per   │',
   '│  task from how the turn is going                 │',
   '├──────────────────────────────────────────────────┤',
@@ -225,19 +225,19 @@ describe('renderMainScreen — Slice 1 locked home skeleton (populated)', () => 
     assert.equal(out, EXPECTED_HOME_POPULATED);
   });
 
-  it('contains the Effort Mode box landmark', async () => {
+  it('contains the Mode box landmark', async () => {
     const out = await render(ENV_CLAUDE_AUTHED, [makeMeta()]);
-    assert.ok(out.includes('Effort Mode:'), `expected "Effort Mode:" in:\n${out}`);
+    assert.ok(out.includes('Mode:'), `expected "Mode:" in:\n${out}`);
   });
 
-  it('contains the live Auto Effort Mode copy when mode is unset', async () => {
+  it('contains the live Auto Mode copy when mode is unset', async () => {
     const out = await render(ENV_CLAUDE_AUTHED, [makeMeta()]);
-    assert.ok(out.includes('Auto (smart)'), 'effort header shows Auto (smart)');
+    assert.ok(out.includes('Auto (smart)'), 'mode header shows Auto (smart)');
     assert.ok(
       out.includes('smart default — picks the effective level per'),
-      'effort box shows LEVEL_DESC for auto',
+      'mode box shows LEVEL_DESC for auto',
     );
-    assert.ok(out.includes('m = switch modes'), 'effort box advertises m = switch modes');
+    assert.ok(out.includes('m = switch modes'), 'mode box advertises m = switch modes');
   });
 
   it('reflects Budget when config.mode is cost-saver', async () => {
@@ -247,9 +247,9 @@ describe('renderMainScreen — Slice 1 locked home skeleton (populated)', () => 
       undefined,
       { mode: 'cost-saver' } as AppConfig,
     );
-    assert.ok(out.includes('Effort Mode:  Budget'), 'header shows Budget');
+    assert.ok(out.includes('Mode:  Budget'), 'header shows Budget');
     assert.ok(
-      out.includes('cheapest models, low/no reasoning effort,'),
+      out.includes('cheapest models, light verification,'),
       'shows Budget LEVEL_DESC',
     );
     assert.ok(
@@ -265,7 +265,7 @@ describe('renderMainScreen — Slice 1 locked home skeleton (populated)', () => 
       undefined,
       { mode: 'balanced' } as AppConfig,
     );
-    assert.ok(out.includes('Effort Mode:  Balanced'), 'header shows Balanced');
+    assert.ok(out.includes('Mode:  Balanced'), 'header shows Balanced');
     assert.ok(
       /m = switch modes\s+Balanced/.test(out),
       'footer right-aligns Balanced short label',
@@ -279,7 +279,7 @@ describe('renderMainScreen — Slice 1 locked home skeleton (populated)', () => 
       undefined,
       { mode: 'quality-first' } as AppConfig,
     );
-    assert.ok(out.includes('Effort Mode:  Max'), 'header shows Max');
+    assert.ok(out.includes('Mode:  Max'), 'header shows Max');
     assert.ok(
       /m = switch modes\s+Max/.test(out),
       'footer right-aligns Max short label',
@@ -390,9 +390,9 @@ describe('renderMainScreen — Slice 1 empty, not signed in', () => {
     assert.ok(!out.includes('[c] Continue last'), 'empty not-signed-in omits [c]');
   });
 
-  it('still renders the Effort Mode / Session Manager / Choice / ESC landmarks', async () => {
+  it('still renders the Mode / Session Manager / Choice / ESC landmarks', async () => {
     const out = await render(ENV_NONE_AUTHED, []);
-    assert.ok(out.includes('Effort Mode:'), 'empty not-signed-in still shows effort box');
+    assert.ok(out.includes('Mode:'), 'empty not-signed-in still shows mode box');
     assert.ok(out.includes('Session Manager'), 'empty not-signed-in still shows Session Manager');
     assert.ok(out.includes('Choice:'), 'empty not-signed-in still shows Choice:');
     assert.ok(out.includes('ESC to exit'), 'empty not-signed-in still shows ESC footer');
@@ -577,7 +577,7 @@ describe('S.1 visual polish format helpers', () => {
 
   it('buildEffortModeSections color:false matches locked plain skeleton text', () => {
     const { header, footer } = buildEffortModeSections(undefined, false);
-    assert.equal(header[0], 'Effort Mode:  Auto (smart)');
+    assert.equal(header[0], 'Mode:  Auto (smart)');
     assert.ok(header.some((l) => l.includes('smart default')));
     assert.ok(footer[0]?.includes('m = switch modes'));
     assert.ok(footer[0]?.includes('Auto (smart)'));
@@ -588,7 +588,7 @@ describe('S.1 visual polish format helpers', () => {
 
   it('buildEffortModeSections color:true keeps visible text, adds hierarchy ANSI', () => {
     const { header, footer } = buildEffortModeSections('balanced', true);
-    assert.equal(stripAnsi(header[0] ?? ''), 'Effort Mode:  Balanced');
+    assert.equal(stripAnsi(header[0] ?? ''), 'Mode:  Balanced');
     assert.ok((header[0] ?? '').includes('\x1b['), 'header has ANSI');
     assert.ok((footer[0] ?? '').includes('\x1b['), 'footer has ANSI');
     assert.equal(stripAnsi(footer[0] ?? '').includes('m = switch modes'), true);

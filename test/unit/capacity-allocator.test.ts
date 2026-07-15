@@ -195,6 +195,94 @@ describe('concurrencyCeilingForRegime — tuning is a CEILING (never above BASE_
   }
 });
 
+/**
+ * R8.1 production proof: Intensity is the concurrency dial. Changing intensity
+ * must change the tuning ceiling that feeds crossGoalCap (the same composition
+ * path menu.ts uses for multi-goal scheduling). Pure helpers are the production
+ * composition surface for capacity-allocator — no orchestration-profile layer.
+ */
+describe('R8.1 dial honesty — intensity affects concurrency ceiling / crossGoalCap', () => {
+  it('low intensity (1–2) ceilings crossGoalCap at 1 even with headroom elsewhere', () => {
+    for (const intensity of [1, 2] as const) {
+      const tuningCeiling = concurrencyCeilingForRegime(regimeForIntensity(intensity));
+      assert.equal(tuningCeiling, 1, `intensity ${intensity} → ceiling 1`);
+      assert.equal(
+        crossGoalCap({
+          activeLimit: 2,
+          tuningCeiling,
+          callBudgetCeiling: 2,
+          genuineParallelGoalCount: 3,
+        }),
+        1,
+        `intensity ${intensity} must cap concurrent goals at 1`,
+      );
+    }
+  });
+
+  it('fleet intensity (3–5) allows crossGoalCap of 2 when other ceilings allow', () => {
+    for (const intensity of [3, 4, 5] as const) {
+      const tuningCeiling = concurrencyCeilingForRegime(regimeForIntensity(intensity));
+      assert.equal(tuningCeiling, 2, `intensity ${intensity} → ceiling 2`);
+      assert.equal(
+        crossGoalCap({
+          activeLimit: 2,
+          tuningCeiling,
+          callBudgetCeiling: 2,
+          genuineParallelGoalCount: 3,
+        }),
+        2,
+        `intensity ${intensity} must allow concurrent goals up to 2`,
+      );
+    }
+  });
+
+  it('raising intensity from 1 to 3 raises the crossGoalCap when only tuning differs', () => {
+    // Same active/budget/demand — only intensity-derived tuningCeiling changes.
+    // Mirrors menu.ts: tuningCeiling = concurrencyCeilingForRegime(regimeForIntensity(...))
+    // then maxActive = min(tuningCeiling, callBudgetCeiling, genuineParallelGoalCount).
+    const lowCeiling = concurrencyCeilingForRegime(regimeForIntensity(1));
+    const highCeiling = concurrencyCeilingForRegime(regimeForIntensity(3));
+    assert.equal(lowCeiling, 1);
+    assert.equal(highCeiling, 2);
+    assert.equal(
+      crossGoalCap({
+        activeLimit: 2,
+        tuningCeiling: lowCeiling,
+        callBudgetCeiling: 2,
+        genuineParallelGoalCount: 2,
+      }),
+      1,
+    );
+    assert.equal(
+      crossGoalCap({
+        activeLimit: 2,
+        tuningCeiling: highCeiling,
+        callBudgetCeiling: 2,
+        genuineParallelGoalCount: 2,
+      }),
+      2,
+    );
+  });
+
+  it('legacy Mode still projects onto Intensity (Mode→Intensity bridge, not Speed dial)', () => {
+    assert.equal(legacyModeToIntensity('cost-saver'), 1);
+    assert.equal(
+      concurrencyCeilingForRegime(regimeForIntensity(legacyModeToIntensity('cost-saver'))),
+      1,
+    );
+    assert.equal(legacyModeToIntensity('balanced'), 3);
+    assert.equal(
+      concurrencyCeilingForRegime(regimeForIntensity(legacyModeToIntensity('balanced'))),
+      2,
+    );
+    assert.equal(legacyModeToIntensity('quality-first'), 5);
+    assert.equal(
+      concurrencyCeilingForRegime(regimeForIntensity(legacyModeToIntensity('quality-first'))),
+      2,
+    );
+  });
+});
+
 describe('crossGoalCap — load-bearing min of every ceiling + demand', () => {
   it('returns the minimum of the four inputs', () => {
     assert.equal(
