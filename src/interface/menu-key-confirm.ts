@@ -39,6 +39,10 @@ export const NAV_ESC = '\x1b';
 /** Left-arrow sequence — sentinel returned by {@link readMenuKey} signalling
  *  "pop one nav level" intent (a no-op at the root depth). */
 export const NAV_LEFT = '\x1b[D';
+/** Up-arrow sequence — list UIs move the highlight up; non-list menus treat as no-op. */
+export const NAV_UP = '\x1b[A';
+/** Down-arrow sequence — list UIs move the highlight down; non-list menus treat as no-op. */
+export const NAV_DOWN = '\x1b[B';
 
 export interface MenuStack {
   readonly depth: number;
@@ -73,17 +77,91 @@ export function resetMenuStack(): void { menuStack = createMenuStack(); }
  *   - `'\x03'` / `'\x04'`        → `null`  (Ctrl-C / Ctrl-D / EOF → exit)
  *   - `'\x1b'`   (bare ESC)      → {@link NAV_ESC}  (exit intent)
  *   - `'\x1b[D'` (left arrow)    → {@link NAV_LEFT} (pop one level)
- *   - `'\r'` / `'\n'` (Enter)    → `''`    (no-op re-render)
+ *   - `'\x1b[A'` (up arrow)      → {@link NAV_UP}   (list highlight up)
+ *   - `'\x1b[B'` (down arrow)    → {@link NAV_DOWN} (list highlight down)
+ *   - `'\r'` / `'\n'` (Enter)    → `''`    (list activate / non-list re-render)
  *   - single printable char      → that char, lower-cased (the menu choice)
- *   - anything else (up/right/down arrows, Tab, escape blobs) → `''` (no-op)
+ *   - anything else (right arrow, Tab, escape blobs) → `''` (no-op)
  */
 export function classifyMenuKey(raw: string): string | null {
   if (raw === '\x03' || raw === '\x04') return null;
   if (raw === NAV_ESC) return NAV_ESC;
   if (raw === NAV_LEFT) return NAV_LEFT;
+  if (raw === NAV_UP) return NAV_UP;
+  if (raw === NAV_DOWN) return NAV_DOWN;
   if (raw === '\r' || raw === '\n') return '';
   if (raw.length === 1 && raw >= ' ') return raw.toLowerCase();
   return '';
+}
+
+// ---------------------------------------------------------------------------
+// List selection helpers (accounts menus, reusable by other numbered lists)
+// ---------------------------------------------------------------------------
+
+/**
+ * Move a 0-based list highlight by `delta`, clamped to `[0, length-1]`.
+ * Empty list → `0` (safe default; callers should not activate when length is 0
+ * except for the explicit create-empty path).
+ */
+export function moveListHighlight(index: number, delta: number, length: number): number {
+  if (length <= 0) return 0;
+  const next = index + delta;
+  if (next < 0) return 0;
+  if (next >= length) return length - 1;
+  return next;
+}
+
+/**
+ * Map a digit key `'1'`…`'9'` to a 0-based row index when in range for `length`.
+ * Returns `null` when the key is not a digit row shortcut or out of range.
+ */
+export function listIndexFromDigit(key: string, length: number): number | null {
+  if (length <= 0 || key.length !== 1) return null;
+  if (key < '1' || key > '9') return null;
+  const n = key.charCodeAt(0) - 48; // '1'→1 … '9'→9
+  if (n < 1 || n > length) return null;
+  return n - 1;
+}
+
+/**
+ * Result of interpreting one key for a numbered highlight list.
+ *
+ * - `highlight` — only move selection (up/down); re-paint.
+ * - `activate` — open/edit the row at `index` (Enter on selection, or digit 1-9).
+ * - `create-empty` — Enter with zero rows → create flow.
+ * - `other` — letter shortcuts / nav exit; caller handles as before.
+ */
+export type ListKeyInterpretation =
+  | { readonly kind: 'highlight'; readonly index: number }
+  | { readonly kind: 'activate'; readonly index: number }
+  | { readonly kind: 'create-empty' }
+  | { readonly kind: 'other'; readonly key: string | null };
+
+/**
+ * Pure list-key interpreter for accounts (and similar) menus.
+ * Enter remains `''` from {@link classifyMenuKey} so non-list menus keep
+ * re-render-on-Enter; list screens treat `''` as activate (or create when empty).
+ */
+export function interpretListKey(
+  key: string | null,
+  selectedIndex: number,
+  length: number,
+): ListKeyInterpretation {
+  if (key === NAV_UP) {
+    return { kind: 'highlight', index: moveListHighlight(selectedIndex, -1, length) };
+  }
+  if (key === NAV_DOWN) {
+    return { kind: 'highlight', index: moveListHighlight(selectedIndex, 1, length) };
+  }
+  if (key === '') {
+    if (length <= 0) return { kind: 'create-empty' };
+    return { kind: 'activate', index: moveListHighlight(selectedIndex, 0, length) };
+  }
+  if (key !== null) {
+    const dig = listIndexFromDigit(key, length);
+    if (dig !== null) return { kind: 'activate', index: dig };
+  }
+  return { kind: 'other', key };
 }
 
 
@@ -243,7 +321,8 @@ export async function confirmViaKey(
  *   - the chosen key (a single lower-cased char) to act on,
  *   - {@link NAV_ESC} for a bare ESC (caller exits the app / cascades),
  *   - {@link NAV_LEFT} for the left-arrow (caller pops one nav level),
- *   - `''` for Enter / up-right-down arrows / other no-ops (caller re-renders),
+ *   - {@link NAV_UP} / {@link NAV_DOWN} for up/down arrows (list highlight),
+ *   - `''` for Enter / right-arrow / other no-ops (list activate or re-render),
  *   - `null` for Ctrl-C / Ctrl-D / EOF (caller exits).
  *
  * `stdin` is injectable for testing.
@@ -270,7 +349,8 @@ export async function readMenuKey(
     try {
       const raw = await inkReadKey();
       const verdict = classifyMenuKey(raw);
-      if (verdict !== null && verdict !== '' && verdict !== NAV_ESC && verdict !== NAV_LEFT) {
+      // Echo only printable single-char choices — never nav sentinels (ESC/arrows).
+      if (verdict !== null && verdict.length === 1 && verdict >= ' ') {
         out.write(verdict + '\n'); // echo (Ink's editor was inactive for this read)
       }
       return verdict;
@@ -286,7 +366,7 @@ export async function readMenuKey(
     try {
       const raw = await readSingleKey(input);
       const verdict = classifyMenuKey(raw);
-      if (verdict !== null && verdict !== '' && verdict !== NAV_ESC && verdict !== NAV_LEFT) {
+      if (verdict !== null && verdict.length === 1 && verdict >= ' ') {
         out.write(verdict + '\n'); // echo — raw mode suppressed the terminal's echo
       }
       return verdict;
