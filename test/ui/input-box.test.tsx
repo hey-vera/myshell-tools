@@ -1047,9 +1047,14 @@ test('Esc dismisses ghost without changing the buffer', async () => {
   await ghostTick();
   assert.ok(plain(lastFrame()).includes('release notes'), 'precondition: ghost shown');
   stdin.write(ESC);
-  await tick();
+  // Poll: product suppress blocks re-propose; short retry absorbs one slow Ink paint
+  // on macOS/Win Node 20 CI (single 50ms tick was flaky when frame lagged).
   assert.equal(bridge.currentLine(), 'ship the');
-  const frame = plain(lastFrame());
+  let frame = plain(lastFrame());
+  for (let i = 0; i < 8 && frame.includes('release notes'); i += 1) {
+    await tick();
+    frame = plain(lastFrame());
+  }
   assert.ok(!frame.includes('release notes'), `Esc must dismiss ghost, got:\n${frame}`);
 });
 
