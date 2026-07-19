@@ -33,6 +33,19 @@ import type { ConversationMeta, ConversationStore } from '../../src/infra/conver
 const ENTER = '\r';
 const tick = (ms = 50): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+async function waitForPendingKeyRead(
+  bridge: ReturnType<typeof createInkAppBridge>,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (bridge._keyResolver == null) {
+    if (Date.now() >= deadline) {
+      throw new Error('Ink key reader did not arm before the test deadline');
+    }
+    await tick(5);
+  }
+}
+
 function makeOut(): { sink: OutputSink; written: string[] } {
   const written: string[] = [];
   const sink: OutputSink = {
@@ -137,12 +150,11 @@ test('runSettings: a single [4] keypress (no Enter) opens Output-detail under In
     const readLineNever = (): Promise<string | null> => new Promise(() => {});
 
     const done = runSettings(ctx, mutableCtx, sink, readLineNever, () => bridge.readKey());
-    await tick();
+    await waitForPendingKeyRead(bridge);
     // D1 settings map: [1]Effort [2]Speed [3]Oversight [4]Output detail …
     stdin.write('4'); // open Output-detail (NO Enter)
-    await tick();
+    await waitForPendingKeyRead(bridge);
     stdin.write('1'); // pick "quiet" in the verbosity sub-dialog (NO Enter)
-    await tick();
     await done;
 
     // The single keys drove the whole flow: verbosity was set to quiet and saved.
@@ -169,9 +181,8 @@ test('runSettings: a bare Enter (single key) returns to the menu with no change'
     const done = runSettings(ctx, mutableCtx, sink, () => new Promise<string | null>(() => {}), () =>
       bridge.readKey(),
     );
-    await tick();
+    await waitForPendingKeyRead(bridge);
     stdin.write(ENTER); // bare Enter → back, no dialog, no save
-    await tick();
     await done;
     assert.deepEqual(mutableCtx.config, config, 'Enter is a no-op back');
   } finally {
@@ -235,9 +246,8 @@ test('runManage: a single [p] keypress (no Enter) enters the pin action under In
   };
 
   const done = runManage(ctx, sink, readLine, confirm, () => bridge.readKey());
-  await tick();
+  await waitForPendingKeyRead(bridge);
   stdin.write('p'); // single key, NO Enter → pin action
-  await tick();
   await done;
 
   // The line reader was used ONLY for the number prompt that follows the menu pick
