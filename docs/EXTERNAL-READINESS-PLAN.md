@@ -130,4 +130,3 @@ Every code slice:
 - Subscription resale / OAuth brokerage.
 - Merging abandoned two-dial feature branch wholesale.
 - Live paid multi-OS CI matrix (human smoke covers; CI stays hermetic).
-}
